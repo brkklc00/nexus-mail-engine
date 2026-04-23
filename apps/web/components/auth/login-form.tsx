@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import type { Route } from "next";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 
@@ -8,6 +9,31 @@ type FormValues = {
   email: string;
   password: string;
 };
+
+const FALLBACK_ROUTE: Route = "/dashboard";
+
+function sanitizeNextRoute(nextValue: string | null): Route {
+  if (!nextValue) {
+    return FALLBACK_ROUTE;
+  }
+
+  // Allow only internal app routes and reject protocol-relative/external patterns.
+  if (!nextValue.startsWith("/") || nextValue.startsWith("//") || nextValue.includes("://")) {
+    return FALLBACK_ROUTE;
+  }
+
+  // Prevent redirecting into API/internal system paths.
+  if (
+    nextValue.startsWith("/api") ||
+    nextValue.startsWith("/_next") ||
+    nextValue.startsWith("/track") ||
+    nextValue.startsWith("/unsubscribe")
+  ) {
+    return FALLBACK_ROUTE;
+  }
+
+  return nextValue as Route;
+}
 
 export function LoginForm() {
   const router = useRouter();
@@ -29,7 +55,7 @@ export function LoginForm() {
       setError(data.error ?? "Login failed");
       return;
     }
-    router.push(search.get("next") ?? "/dashboard");
+    router.push(sanitizeNextRoute(search.get("next")));
     router.refresh();
   });
 
