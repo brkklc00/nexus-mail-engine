@@ -2,6 +2,8 @@ type CampaignDetailPageProps = {
   params: Promise<{ id: string }>;
 };
 
+export const dynamic = "force-dynamic";
+
 export default async function CampaignDetailPage({ params }: CampaignDetailPageProps) {
   const { id } = await params;
   const { prisma } = await import("@nexus/db");

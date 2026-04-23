@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { LoginForm } from "@/components/auth/login-form";
 
 export default function LoginPage() {
@@ -6,7 +7,9 @@ export default function LoginPage() {
       <h2 className="text-2xl font-semibold text-white">Nexus Admin Login</h2>
       <p className="mt-2 text-sm text-zinc-400">Secure session access for operations control center.</p>
       <div className="mt-6">
-        <LoginForm />
+        <Suspense fallback={<p className="text-sm text-zinc-400">Loading login...</p>}>
+          <LoginForm />
+        </Suspense>
       </div>
     </div>
   );

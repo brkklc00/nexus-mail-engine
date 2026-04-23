@@ -1,6 +1,8 @@
 import { prisma } from "@nexus/db";
 import { CampaignTable } from "@/components/campaigns/campaign-table";
 
+export const dynamic = "force-dynamic";
+
 export default async function CampaignsPage() {
   const campaigns = await prisma.campaign.findMany({
     orderBy: { createdAt: "desc" },
