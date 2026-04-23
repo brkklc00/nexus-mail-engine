@@ -1,0 +1,38 @@
+{
+  "name": "nexus-platform",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.8.1",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm --filter @nexus/web dev",
+    "dev:web": "pnpm --filter @nexus/web dev",
+    "dev:worker": "pnpm --filter @nexus/worker dev",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "prisma:generate": "pnpm exec prisma generate --schema prisma/schema.prisma",
+    "prisma:migrate": "pnpm exec prisma migrate dev --schema prisma/schema.prisma",
+    "prisma:migrate:deploy": "pnpm exec prisma migrate deploy --schema prisma/schema.prisma",
+    "db:state-machine:apply": "tsx scripts/apply-state-machine-constraints.ts",
+    "prisma:seed": "pnpm exec prisma db seed --schema prisma/schema.prisma",
+    "test:tracking": "tsx scripts/verify-tracking.ts",
+    "test:rate": "pnpm --filter @nexus/worker test:rate",
+    "test:multi-worker": "tsx scripts/verify-multi-worker.ts",
+    "secrets:rotate": "tsx scripts/rotate-smtp-secrets.ts",
+    "secrets:rotate:apply": "tsx scripts/rotate-smtp-secrets.ts --apply",
+    "secrets:verify": "tsx scripts/verify-smtp-secrets.ts",
+    "benchmark:multi-worker": "tsx scripts/benchmark-multi-worker.ts",
+    "smoke:e2e": "tsx scripts/smoke-e2e.ts",
+    "boot:prodlike": "docker compose --profile smoke up --build --scale worker=2 --abort-on-container-exit --exit-code-from smoke smoke"
+  },
+  "devDependencies": {
+    "@prisma/client": "^6.19.3",
+    "@nexus/security": "workspace:*",
+    "pnpm": "^10.8.1",
+    "prisma": "^6.19.3",
+    "tsx": "^4.19.4"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}

@@ -1,0 +1,321 @@
+import type { Job } from "bullmq";
+import crypto from "node:crypto";
+import { prisma } from "@nexus/db";
+import type { DeliveryJob } from "@nexus/queue";
+import { MailTemplateRenderer } from "@nexus/mailer";
+import { decryptSmtpSecret } from "@nexus/security";
+import nodemailer from "nodemailer";
+import { getEffectiveRateForSmtp } from "../rate/effective-rate-runtime.service";
+import { canDispatch } from "../rate/pacing-engine";
+import { applySafetyToRate, recordDeliveryOutcome } from "../safety/distributed-safety.service";
+import { transitionCampaignRecipientStatus } from "../state/campaign-recipient-state.service";
+
+const renderer = new MailTemplateRenderer();
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function beginOfDay(date = new Date()) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function signTrackingToken(payload: {
+  campaignId: string;
+  recipientId: string;
+  type: "open" | "click" | "unsubscribe";
+  campaignLinkId?: string;
+  targetUrl?: string;
+  expiresAt: number;
+}) {
+  const secret = process.env.TRACKING_SECRET ?? "change-me";
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", secret).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+function normalizeHref(href: string): string | null {
+  if (!href) return null;
+  if (href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("#")) return null;
+  return href;
+}
+
+async function ensureCampaignLink(campaignId: string, originalUrl: string) {
+  const token = crypto.createHash("sha256").update(`${campaignId}:${originalUrl}`).digest("hex").slice(0, 48);
+  return prisma.campaignLink.upsert({
+    where: { token },
+    create: {
+      campaignId,
+      originalUrl,
+      token
+    },
+    update: {}
+  });
+}
+
+async function buildTrackedHtml(html: string, campaignId: string, recipientId: string) {
+  const baseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
+  const now = Date.now();
+  const links = Array.from(html.matchAll(/href="([^"]+)"/g)).map((match) => match[1]);
+  const uniqueLinks = Array.from(new Set(links.map(normalizeHref).filter(Boolean))) as string[];
+  const campaignLinks = await Promise.all(
+    uniqueLinks.map(async (url) => {
+      const link = await ensureCampaignLink(campaignId, url);
+      return [url, link] as const;
+    })
+  );
+  const linkMap = new Map(campaignLinks);
+
+  const rewritten = html.replace(/href="([^"]+)"/g, (_all, href: string) => {
+    const normalized = normalizeHref(href);
+    if (!normalized) {
+      return `href="${href}"`;
+    }
+    const link = linkMap.get(normalized);
+    if (!link) {
+      return `href="${href}"`;
+    }
+    const token = signTrackingToken({
+      campaignId,
+      recipientId,
+      type: "click",
+      campaignLinkId: link.id,
+      expiresAt: now + 1000 * 60 * 60 * 24 * 60
+    });
+    return `href="${baseUrl}/track/click/${token}"`;
+  });
+
+  const openToken = signTrackingToken({
+    campaignId,
+    recipientId,
+    type: "open",
+    expiresAt: now + 1000 * 60 * 60 * 24 * 7
+  });
+  const unsubscribeToken = signTrackingToken({
+    campaignId,
+    recipientId,
+    type: "unsubscribe",
+    expiresAt: now + 1000 * 60 * 60 * 24 * 365
+  });
+
+  const pixel = `<img src="${baseUrl}/track/open/${openToken}" width="1" height="1" style="display:none;" alt="" />`;
+  const unsubscribe = `${baseUrl}/unsubscribe/${unsubscribeToken}`;
+  const withMeta = rewritten
+    .replace(/\{\{tracking_pixel\}\}/g, pixel)
+    .replace(/\{\{unsubscribe_url\}\}/g, unsubscribe);
+  if (withMeta.includes("</body>")) {
+    return withMeta.replace("</body>", `${pixel}</body>`);
+  }
+  return `${withMeta}${pixel}`;
+}
+
+async function finalizeCampaignIfDone(campaignId: string) {
+  const [pendingCount, campaign] = await Promise.all([
+    prisma.campaignRecipient.count({ where: { campaignId, sendStatus: "pending" } }),
+    prisma.campaign.findUnique({ where: { id: campaignId } })
+  ]);
+  if (!campaign || pendingCount > 0) {
+    return;
+  }
+  const completedStatus =
+    campaign.totalFailed > 0 || campaign.totalSkipped > 0 ? "partially_completed" : "completed";
+  await prisma.campaign.update({
+    where: { id: campaignId },
+    data: {
+      status: completedStatus,
+      finishedAt: new Date(),
+      failureRate:
+        campaign.totalTargeted > 0 ? Number((campaign.totalFailed / campaign.totalTargeted).toFixed(4)) : 0
+    }
+  });
+}
+
+export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
+  const payload = job.data;
+
+  const existing = await prisma.campaignLog.findUnique({
+    where: { idempotencyKey: payload.idempotencyKey }
+  });
+  if (existing) {
+    return;
+  }
+
+  const campaign = await prisma.campaign.findUnique({
+    where: { id: payload.campaignId },
+    include: { template: true, smtpAccount: true }
+  });
+  const recipient = await prisma.recipient.findUnique({ where: { id: payload.recipientId } });
+
+  if (!campaign || !recipient || !campaign.template) {
+    throw new Error("delivery_missing_entities");
+  }
+  if (campaign.status !== "running") {
+    const skipped = await transitionCampaignRecipientStatus({
+      campaignId: campaign.id,
+      recipientId: recipient.id,
+      to: "skipped"
+    });
+    if (skipped) {
+      await prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { totalSkipped: { increment: 1 } }
+      });
+    }
+    await finalizeCampaignIfDone(campaign.id);
+    return;
+  }
+  if (recipient.status !== "active") {
+    const skipped = await transitionCampaignRecipientStatus({
+      campaignId: campaign.id,
+      recipientId: recipient.id,
+      to: "skipped"
+    });
+    if (skipped) {
+      await prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { totalSkipped: { increment: 1 } }
+      });
+    }
+    await finalizeCampaignIfDone(campaign.id);
+    return;
+  }
+
+  const decision = await getEffectiveRateForSmtp(campaign.smtpAccountId);
+  const safetyRate = await applySafetyToRate(campaign.smtpAccountId, decision.effectiveRatePerSecond);
+  const enforcedRate = Math.max(0.01, safetyRate.rate);
+  for (let i = 0; i < 30; i += 1) {
+    if (canDispatch(`smtp:${campaign.smtpAccountId}`, enforcedRate)) {
+      break;
+    }
+    await sleep(100);
+    if (i === 29) {
+      throw new Error("rate_limited_wait_timeout");
+    }
+  }
+
+  const rendered = renderer.render({
+    htmlBody: campaign.template.htmlBody,
+    plainTextBody: campaign.template.plainTextBody,
+    variables: {
+      name: recipient.name ?? "",
+      email: recipient.email,
+      first_name: recipient.firstName ?? "",
+      last_name: recipient.lastName ?? ""
+    }
+  });
+  const trackedHtml = await buildTrackedHtml(rendered.html, campaign.id, recipient.id);
+
+  const transporter = nodemailer.createTransport({
+    host: campaign.smtpAccount.host,
+    port: campaign.smtpAccount.port,
+    secure: campaign.smtpAccount.encryption === "ssl",
+    auth: {
+      user: campaign.smtpAccount.username,
+      pass: decryptSmtpSecret(campaign.smtpAccount.passwordEncrypted)
+    }
+  });
+
+  try {
+    await transporter.sendMail({
+      from: `"${campaign.smtpAccount.fromName ?? "Nexus"}" <${campaign.smtpAccount.fromEmail}>`,
+      to: recipient.email,
+      subject: campaign.subject,
+      html: trackedHtml,
+      text: rendered.text,
+      replyTo: campaign.smtpAccount.replyTo ?? undefined
+    });
+
+    const transitioned = await transitionCampaignRecipientStatus({
+      campaignId: campaign.id,
+      recipientId: recipient.id,
+      to: "sent",
+      sentAt: new Date()
+    });
+    if (!transitioned) {
+      return;
+    }
+
+    await prisma.$transaction([
+      prisma.campaignLog.create({
+        data: {
+          campaignId: campaign.id,
+          recipientId: recipient.id,
+          eventType: "sent",
+          status: "success",
+          idempotencyKey: payload.idempotencyKey,
+          message: `Delivered via ${campaign.smtpAccount.host}`,
+          metadata: {
+            effectiveRate: decision.effectiveRatePerSecond,
+            reasons: safetyRate.reason ? [...decision.reasons, safetyRate.reason] : decision.reasons,
+            warmupTier: decision.warmupTierName
+          }
+        }
+      }),
+      prisma.campaign.update({
+        where: { id: campaign.id },
+        data: {
+          totalSent: { increment: 1 },
+          effectiveRate: enforcedRate,
+          throttleReason: safetyRate.reason ?? decision.reasons.join(",")
+        }
+      }),
+      prisma.smtpWarmupStat.upsert({
+        where: {
+          smtpAccountId_date: {
+            smtpAccountId: campaign.smtpAccountId,
+            date: beginOfDay()
+          }
+        },
+        create: {
+          smtpAccountId: campaign.smtpAccountId,
+          date: beginOfDay(),
+          successfulDeliveries: 1,
+          tierName: decision.warmupTierName,
+          effectiveRate: enforcedRate
+        },
+        update: {
+          successfulDeliveries: { increment: 1 },
+          tierName: decision.warmupTierName,
+          effectiveRate: enforcedRate
+        }
+      })
+    ]);
+    await recordDeliveryOutcome(campaign.smtpAccountId, false);
+    await finalizeCampaignIfDone(campaign.id);
+  } catch (error) {
+    const failed = await transitionCampaignRecipientStatus({
+      campaignId: campaign.id,
+      recipientId: recipient.id,
+      to: "failed"
+    });
+    if (failed) {
+      await prisma.$transaction([
+        prisma.campaign.update({
+          where: { id: campaign.id },
+          data: { totalFailed: { increment: 1 } }
+        }),
+        prisma.smtpWarmupStat.upsert({
+          where: {
+            smtpAccountId_date: {
+              smtpAccountId: campaign.smtpAccountId,
+              date: beginOfDay()
+            }
+          },
+          create: {
+            smtpAccountId: campaign.smtpAccountId,
+            date: beginOfDay(),
+            failedDeliveries: 1
+          },
+          update: {
+            failedDeliveries: { increment: 1 }
+          }
+        })
+      ]);
+    }
+    await recordDeliveryOutcome(campaign.smtpAccountId, true);
+    await finalizeCampaignIfDone(campaign.id);
+    throw error;
+  }
+}

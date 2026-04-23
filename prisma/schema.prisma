@@ -1,0 +1,417 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  admin
+  operator
+  analyst
+}
+
+enum RecipientStatus {
+  active
+  unsubscribed
+  bounced
+  complained
+  invalid
+  blocked
+}
+
+enum CampaignStatus {
+  pending
+  queued
+  running
+  paused
+  completed
+  failed
+  canceled
+  partially_completed
+}
+
+enum CampaignLogStatus {
+  success
+  failed
+  skipped
+}
+
+enum CampaignRecipientSendStatus {
+  pending
+  queued
+  sent
+  failed
+  skipped
+}
+
+enum SegmentOperator {
+  eq
+  neq
+  in
+  not_in
+  contains
+  gte
+  lte
+}
+
+enum SuppressionScope {
+  global
+  list
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  role         UserRole @default(admin)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  audits       AuditLog[]
+}
+
+model MailTemplate {
+  id                  String   @id @default(uuid())
+  title               String
+  subject             String
+  preheader           String?
+  htmlBody            String
+  plainTextBody       String?
+  category            String?
+  status              String   @default("draft")
+  enableOpenTracking  Boolean  @default(true)
+  enableClickTracking Boolean  @default(true)
+  version             Int      @default(1)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  campaigns           Campaign[]
+
+  @@index([status, createdAt])
+}
+
+model RecipientList {
+  id          String   @id @default(uuid())
+  name        String
+  tags        String[]
+  notes       String?
+  maxSize     Int      @default(500)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships RecipientListMembership[]
+  segments    Segment[]
+  campaigns   Campaign[]
+
+  @@index([createdAt])
+}
+
+model Recipient {
+  id              String          @id @default(uuid())
+  email           String
+  emailNormalized String          @unique
+  name            String?
+  firstName       String?
+  lastName        String?
+  tags            String[]
+  customFields    Json?
+  status          RecipientStatus @default(active)
+  source          String?
+  notes           String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  memberships     RecipientListMembership[]
+  campaignLogs    CampaignLog[]
+  clickEvents     ClickEvent[]
+  openEvents      OpenEvent[]
+  campaigns       CampaignRecipient[]
+
+  @@index([status, createdAt])
+}
+
+model RecipientListMembership {
+  id          String   @id @default(uuid())
+  listId      String
+  recipientId String
+  createdAt   DateTime @default(now())
+
+  list        RecipientList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  recipient   Recipient     @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([listId, recipientId])
+  @@index([recipientId])
+}
+
+model Segment {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  listId      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  list        RecipientList? @relation(fields: [listId], references: [id], onDelete: SetNull)
+  rules       SegmentRule[]
+  campaigns   Campaign[]
+
+  @@index([listId, createdAt])
+}
+
+model SegmentRule {
+  id          String          @id @default(uuid())
+  segmentId   String
+  field       String
+  operator    SegmentOperator
+  value       String
+  isExclude   Boolean         @default(false)
+  createdAt   DateTime        @default(now())
+
+  segment     Segment         @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+
+  @@index([segmentId])
+}
+
+model Campaign {
+  id                  String         @id @default(uuid())
+  name                String
+  subject             String
+  status              CampaignStatus @default(pending)
+  templateId          String
+  listId              String?
+  segmentId           String?
+  smtpAccountId       String
+  provider            String
+  scheduledAt         DateTime?
+  startedAt           DateTime?
+  finishedAt          DateTime?
+  stoppedEarly        Boolean        @default(false)
+  effectiveRate       Float?
+  throttled           Boolean        @default(false)
+  throttleReason      String?
+  totalTargeted       Int            @default(0)
+  totalSent           Int            @default(0)
+  totalFailed         Int            @default(0)
+  totalSkipped        Int            @default(0)
+  totalOpened         Int            @default(0)
+  totalClicked        Int            @default(0)
+  unsubscribeCount    Int            @default(0)
+  bounceCount         Int            @default(0)
+  complaintCount      Int            @default(0)
+  openRate            Float          @default(0)
+  clickRate           Float          @default(0)
+  clickToOpenRate     Float          @default(0)
+  failureRate         Float          @default(0)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  template            MailTemplate       @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  list                RecipientList?     @relation(fields: [listId], references: [id], onDelete: SetNull)
+  segment             Segment?           @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+  smtpAccount         SmtpAccount        @relation(fields: [smtpAccountId], references: [id], onDelete: Restrict)
+  logs                CampaignLog[]
+  links               CampaignLink[]
+  clickEvents         ClickEvent[]
+  openEvents          OpenEvent[]
+  recipients          CampaignRecipient[]
+
+  @@index([status, createdAt])
+  @@index([smtpAccountId, status])
+  @@index([provider, status])
+  @@index([startedAt, finishedAt])
+}
+
+model CampaignRecipient {
+  id             String                     @id @default(uuid())
+  campaignId     String
+  recipientId    String
+  sendStatus     CampaignRecipientSendStatus @default(pending)
+  idempotencyKey String                     @unique
+  sentAt         DateTime?
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
+
+  campaign      Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipient     Recipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, recipientId])
+  @@index([sendStatus, createdAt])
+}
+
+model CampaignLog {
+  id             String            @id @default(uuid())
+  campaignId     String
+  recipientId    String?
+  eventType      String
+  status         CampaignLogStatus @default(success)
+  providerCode   String?
+  message        String?
+  idempotencyKey String?           @unique
+  metadata       Json?
+  createdAt      DateTime          @default(now())
+
+  campaign       Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipient      Recipient?        @relation(fields: [recipientId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId, createdAt])
+  @@index([status, createdAt])
+}
+
+model CampaignLink {
+  id             String   @id @default(uuid())
+  campaignId     String
+  originalUrl    String
+  token          String   @unique
+  createdAt      DateTime @default(now())
+
+  campaign       Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  clickEvents    ClickEvent[]
+
+  @@index([campaignId, createdAt])
+}
+
+model ClickEvent {
+  id             String   @id @default(uuid())
+  campaignId     String
+  recipientId    String
+  campaignLinkId String?
+  targetUrl      String
+  ip             String?
+  userAgent      String?
+  eventKey       String?
+  createdAt      DateTime @default(now())
+
+  campaign       Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipient      Recipient     @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  campaignLink   CampaignLink? @relation(fields: [campaignLinkId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId, createdAt])
+  @@index([recipientId, createdAt])
+  @@index([campaignLinkId, createdAt])
+}
+
+model OpenEvent {
+  id             String   @id @default(uuid())
+  campaignId     String
+  recipientId    String
+  ip             String?
+  userAgent      String?
+  eventKey       String?
+  createdAt      DateTime @default(now())
+
+  campaign       Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipient      Recipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, createdAt])
+  @@index([recipientId, createdAt])
+}
+
+model SmtpAccount {
+  id                               String   @id @default(uuid())
+  name                             String
+  host                             String
+  port                             Int
+  encryption                       String
+  username                         String
+  passwordEncrypted                String
+  fromEmail                        String
+  fromName                         String?
+  replyTo                          String?
+  providerLabel                    String?
+  isActive                         Boolean  @default(true)
+  isSoftDeleted                    Boolean  @default(false)
+  maxConnections                   Int?
+  maxMessages                      Int?
+  socketTimeout                    Int?
+  connectionTimeout                Int?
+  dailyCap                         Int?
+  hourlyCap                        Int?
+  targetRatePerSecond              Float    @default(1)
+  alibabaRateCap                   Float?
+  maxRatePerSecond                 Float?
+  alibabaWarmupMaxRatePerSecond    Float?
+  isThrottled                      Boolean  @default(false)
+  throttleReason                   String?
+  notes                            String?
+  createdAt                        DateTime @default(now())
+  updatedAt                        DateTime @updatedAt
+
+  campaigns                        Campaign[]
+  warmupStats                      SmtpWarmupStat[]
+
+  @@index([isActive, createdAt])
+  @@index([providerLabel])
+}
+
+model SmtpWarmupStat {
+  id                  String   @id @default(uuid())
+  smtpAccountId       String
+  date                DateTime
+  successfulDeliveries Int     @default(0)
+  failedDeliveries    Int      @default(0)
+  tierName            String?
+  effectiveRate       Float?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  smtpAccount         SmtpAccount @relation(fields: [smtpAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([smtpAccountId, date])
+  @@index([date, smtpAccountId])
+}
+
+model RateLimitConfig {
+  id                            String   @id @default(uuid())
+  globalMaxRatePerSecond        Float?
+  providerMaxRatePerSecond      Json?
+  smtpDefaultTargetRatePerSecond Float?  @default(1)
+  safetyModeErrorThreshold      Float    @default(0.12)
+  safetyModeBackoffMultiplier   Float    @default(0.6)
+  safetyModeRecoveryStep        Float    @default(1.1)
+  updatedAt                     DateTime @updatedAt
+  createdAt                     DateTime @default(now())
+}
+
+model SuppressionEntry {
+  id               String            @id @default(uuid())
+  email            String
+  emailNormalized  String
+  scope            SuppressionScope  @default(global)
+  listId           String?
+  recipientId      String?
+  reason           String
+  source           String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@unique([emailNormalized, scope], name: "emailNormalized_scope")
+  @@index([reason, createdAt])
+  @@index([listId, createdAt])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?
+  action      String
+  resource    String
+  resourceId  String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([resource, createdAt])
+  @@index([userId, createdAt])
+}
+
+model AppSetting {
+  key         String   @id
+  value       Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

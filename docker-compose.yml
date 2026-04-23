@@ -1,0 +1,147 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nexus
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: nexus-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  bootstrap:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      TRACKING_SECRET: ${TRACKING_SECRET}
+      AUTH_SECRET: ${AUTH_SECRET}
+      SMTP_SECRET_KEY: ${SMTP_SECRET_KEY}
+      SMTP_SECRET_KEY_VERSION: ${SMTP_SECRET_KEY_VERSION:-v1}
+      SMTP_SECRET_KEY_PREVIOUS: ${SMTP_SECRET_KEY_PREVIOUS:-}
+      SMTP_SECRET_KEY_PREVIOUS_VERSION: ${SMTP_SECRET_KEY_PREVIOUS_VERSION:-v0}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      SEED_SMTP_PASSWORD: ${SEED_SMTP_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["sh", "scripts/bootstrap-prod.sh"]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      TRACKING_SECRET: ${TRACKING_SECRET}
+      AUTH_SECRET: ${AUTH_SECRET}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
+      SMTP_SECRET_KEY: ${SMTP_SECRET_KEY}
+      SMTP_SECRET_KEY_VERSION: ${SMTP_SECRET_KEY_VERSION:-v1}
+      SMTP_SECRET_KEY_PREVIOUS: ${SMTP_SECRET_KEY_PREVIOUS:-}
+      SMTP_SECRET_KEY_PREVIOUS_VERSION: ${SMTP_SECRET_KEY_PREVIOUS_VERSION:-v0}
+      WORKER_HEALTH_URL: ${WORKER_HEALTH_URL:-http://worker:4050/health}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      TRACKING_SECRET: ${TRACKING_SECRET}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
+      SMTP_SECRET_KEY: ${SMTP_SECRET_KEY}
+      SMTP_SECRET_KEY_VERSION: ${SMTP_SECRET_KEY_VERSION:-v1}
+      SMTP_SECRET_KEY_PREVIOUS: ${SMTP_SECRET_KEY_PREVIOUS:-}
+      SMTP_SECRET_KEY_PREVIOUS_VERSION: ${SMTP_SECRET_KEY_PREVIOUS_VERSION:-v0}
+      WORKER_HEALTH_PORT: 4050
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    ports:
+      - "4050:4050"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4050/health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  smoke:
+    profiles: ["smoke"]
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      APP_BASE_URL: http://web:3000
+      TRACKING_SECRET: ${TRACKING_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+    depends_on:
+      web:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    command: ["pnpm", "exec", "tsx", "scripts/smoke-e2e.ts"]
+
+volumes:
+  postgres_data:
+  redis_data:

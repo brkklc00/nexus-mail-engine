@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "baseUrl": ".",
+    "paths": {
+      "@nexus/domain/*": ["packages/domain/src/*"],
+      "@nexus/db/*": ["packages/db/src/*"],
+      "@nexus/queue/*": ["packages/queue/src/*"],
+      "@nexus/rate-control/*": ["packages/rate-control/src/*"],
+      "@nexus/mailer/*": ["packages/mailer/src/*"],
+      "@nexus/data-hygiene/*": ["packages/data-hygiene/src/*"],
+      "@nexus/validators/*": ["packages/validators/src/*"],
+      "@nexus/security/*": ["packages/security/src/*"]
+    }
+  }
+}
