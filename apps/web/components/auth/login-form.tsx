@@ -24,10 +24,12 @@ function sanitizeNextRoute(nextValue: string | null): Route {
 
   // Prevent redirecting into API/internal system paths.
   if (
+    nextValue === "/" ||
     nextValue.startsWith("/api") ||
     nextValue.startsWith("/_next") ||
     nextValue.startsWith("/track") ||
-    nextValue.startsWith("/unsubscribe")
+    nextValue.startsWith("/unsubscribe") ||
+    nextValue.startsWith("/login")
   ) {
     return FALLBACK_ROUTE;
   }
@@ -64,8 +66,12 @@ export function LoginForm() {
         return;
       }
 
-      router.push(sanitizeNextRoute(search.get("next")));
+      const safeTarget = sanitizeNextRoute(search.get("next"));
+      router.replace(safeTarget);
       router.refresh();
+      window.setTimeout(() => {
+        window.location.href = safeTarget;
+      }, 300);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Login request failed");
     } finally {
