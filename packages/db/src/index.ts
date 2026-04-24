@@ -1,7 +1,3 @@
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
-
 declare global {
   // eslint-disable-next-line no-var
   var __nexusPrisma: ReturnType<typeof createPrismaClient> | undefined;
