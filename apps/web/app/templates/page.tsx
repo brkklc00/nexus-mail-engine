@@ -9,6 +9,9 @@ export const dynamic = "force-dynamic";
 export default async function TemplatesPage() {
   const [templates, smtps] = await Promise.all([
     prisma.mailTemplate.findMany({
+      include: {
+        _count: { select: { campaigns: true } }
+      },
       orderBy: { updatedAt: "desc" },
       take: 100
     }),
@@ -43,7 +46,8 @@ export default async function TemplatesPage() {
           plainTextBody: template.plainTextBody,
           version: template.version,
           status: template.status,
-          updatedAt: template.updatedAt.toISOString()
+          updatedAt: template.updatedAt.toISOString(),
+          campaignCount: template._count.campaigns
         }))}
         smtpOptions={smtps}
       />

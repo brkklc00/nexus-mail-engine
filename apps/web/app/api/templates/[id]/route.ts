@@ -4,12 +4,14 @@ import { prisma } from "@nexus/db";
 import { getSession } from "@/server/auth/session";
 import { writeAuditLog } from "@/server/auth/guard";
 
+const templateStatusSchema = z.enum(["draft", "active", "archived", "disabled"]);
+
 const updateSchema = z.object({
   title: z.string().min(2).optional(),
   subject: z.string().min(1).optional(),
   htmlBody: z.string().min(1).optional(),
   plainTextBody: z.string().optional().nullable(),
-  status: z.string().optional()
+  status: templateStatusSchema.optional()
 });
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -46,11 +48,24 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   }
   const { id } = await params;
 
+  const usageCount = await prisma.campaign.count({ where: { templateId: id } });
+  if (usageCount > 0) {
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "template_in_use",
+        error: "Template is used by campaigns. Archive it instead.",
+        campaignCount: usageCount
+      },
+      { status: 409 }
+    );
+  }
+
   try {
     await prisma.mailTemplate.delete({ where: { id } });
     await writeAuditLog(session.userId, "template.delete", "mail_template", { templateId: id });
     return NextResponse.json({ ok: true });
   } catch {
-    return NextResponse.json({ ok: false, error: "Template cannot be deleted" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "Template cannot be deleted." }, { status: 400 });
   }
 }
