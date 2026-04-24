@@ -39,24 +39,38 @@ export function LoginForm() {
   const router = useRouter();
   const search = useSearchParams();
   const [error, setError] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
   const { register, handleSubmit, formState } = useForm<FormValues>({
     defaultValues: { email: "", password: "" }
   });
 
   const onSubmit = handleSubmit(async (values) => {
     setError(null);
-    const response = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(values)
-    });
-    if (!response.ok) {
-      const data = (await response.json().catch(() => ({}))) as { error?: string };
-      setError(data.error ?? "Login failed");
-      return;
+    setIsPending(true);
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values)
+      });
+
+      const data = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
+
+      if (!response.ok || !data.ok) {
+        setError(data.error ?? "Login failed");
+        return;
+      }
+
+      router.push(sanitizeNextRoute(search.get("next")));
+      router.refresh();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Login request failed");
+    } finally {
+      setIsPending(false);
     }
-    router.push(sanitizeNextRoute(search.get("next")));
-    router.refresh();
   });
 
   return (
@@ -80,10 +94,10 @@ export function LoginForm() {
       {error ? <p className="text-sm text-red-400">{error}</p> : null}
       <button
         type="submit"
-        disabled={formState.isSubmitting}
+        disabled={formState.isSubmitting || isPending}
         className="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
       >
-        {formState.isSubmitting ? "Signing in..." : "Sign In"}
+        {formState.isSubmitting || isPending ? "Signing in..." : "Sign In"}
       </button>
     </form>
   );

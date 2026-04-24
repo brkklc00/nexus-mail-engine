@@ -19,6 +19,21 @@ function sign(data: string): string {
   return crypto.createHmac("sha256", getSecret()).update(data).digest("base64url");
 }
 
+function shouldUseSecureCookie(): boolean {
+  const explicit = process.env.AUTH_COOKIE_SECURE;
+  if (explicit === "true") {
+    return true;
+  }
+  if (explicit === "false") {
+    return false;
+  }
+  const appBaseUrl = process.env.APP_BASE_URL;
+  if (appBaseUrl) {
+    return appBaseUrl.startsWith("https://");
+  }
+  return process.env.NODE_ENV === "production";
+}
+
 function encode(payload: SessionPayload): string {
   const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
   return `${encoded}.${sign(encoded)}`;
@@ -52,8 +67,9 @@ export async function createSessionCookie(user: { id: string; email: string; rol
   store.set(SESSION_COOKIE, encode(payload), {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/"
+    secure: shouldUseSecureCookie(),
+    path: "/",
+    maxAge: Math.floor(SESSION_TTL_MS / 1000)
   });
 }
 
