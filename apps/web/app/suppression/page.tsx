@@ -56,7 +56,7 @@ export default async function SuppressionPage({
 
       {entries.length === 0 ? (
         <EmptyState
-          icon={Ban}
+          icon="ban"
           title={q ? "Arama sonucu yok" : "Suppression kaydi yok"}
           description={
             q

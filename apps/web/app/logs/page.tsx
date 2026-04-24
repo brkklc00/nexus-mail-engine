@@ -63,7 +63,7 @@ export default async function LogsPage({
           <h3 className="mb-3 text-sm font-medium text-zinc-200">Campaign Logs</h3>
           {campaignLogs.length === 0 ? (
             <EmptyState
-              icon={Activity}
+              icon="activity"
               title="Campaign log yok"
               description="Worker eventleri olustugunda bu alanda gorunur."
             />
@@ -90,7 +90,7 @@ export default async function LogsPage({
           <h3 className="mb-3 text-sm font-medium text-zinc-200">Audit Logs</h3>
           {auditLogs.length === 0 ? (
             <EmptyState
-              icon={Activity}
+              icon="activity"
               title="Audit log yok"
               description="Admin/Operator islemleri audit stream olarak burada gorunur."
             />

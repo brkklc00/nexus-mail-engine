@@ -64,7 +64,7 @@ export function QueueObservabilityWidget() {
       ) : null}
       {error ? (
         <div className="mt-3">
-          <EmptyState icon={Loader2} title="Queue verisi alinamadi" description={error} />
+          <EmptyState icon="loader" title="Queue verisi alinamadi" description={error} />
         </div>
       ) : null}
       <div className="mt-3 grid grid-cols-2 gap-3 text-sm">

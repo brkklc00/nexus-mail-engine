@@ -20,7 +20,7 @@ export default async function CampaignsPage() {
       />
       {campaigns.length === 0 ? (
         <EmptyState
-          icon={Megaphone}
+          icon="megaphone"
           title="Kampanya bulunamadi"
           description="Send ekranindan yeni bir kampanya baslattiginda burada listelenecek."
         />

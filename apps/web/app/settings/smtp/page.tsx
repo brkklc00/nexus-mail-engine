@@ -37,7 +37,7 @@ export default async function SmtpSettingsPage() {
 
       {accounts.length === 0 ? (
         <EmptyState
-          icon={ServerCog}
+          icon="server"
           title="SMTP hesabi yok"
           description="Yeni bir SMTP hesabı eklendiginde warmup ve saglik durumlari burada gorunecek."
           ctaLabel="Add SMTP account"

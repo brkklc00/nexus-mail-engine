@@ -193,7 +193,7 @@ export default async function DashboardPage() {
             <div className="space-y-2">
               {smtpStates.length === 0 ? (
                 <EmptyState
-                  icon={BarChart3}
+                  icon="chart-bar"
                   title="SMTP account bulunamadi"
                   description="SMTP hesaplari eklendiginde saglik ve throttle durumu burada gorunecek."
                 />
@@ -222,7 +222,7 @@ export default async function DashboardPage() {
         <h3 className="mb-3 text-sm font-medium text-zinc-200">Recent Activity</h3>
         {recentLogs.length === 0 ? (
           <EmptyState
-            icon={BarChart3}
+            icon="chart-bar"
             title="Aktivite kaydi yok"
             description="Kampanya islemleri basladiginda son event'ler burada listelenecek."
           />

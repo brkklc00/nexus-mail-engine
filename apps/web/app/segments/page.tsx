@@ -34,7 +34,7 @@ export default async function SegmentsPage() {
 
       {segments.length === 0 ? (
         <EmptyState
-          icon={Filter}
+          icon="filter"
           title="Segment tanimlanmamis"
           description="Kural tabanli segment olusturdugunda kampanya hedeflemesi burada yonetilecek."
           ctaLabel="Create first segment"

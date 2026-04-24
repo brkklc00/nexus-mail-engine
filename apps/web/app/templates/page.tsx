@@ -28,7 +28,7 @@ export default async function TemplatesPage() {
 
       {templates.length === 0 ? (
         <EmptyState
-          icon={MailPlus}
+          icon="mail-plus"
           title="Henuz template yok"
           description="Ilk template'i olusturarak kampanya akisina baslayabilirsin."
           ctaLabel="Create template"

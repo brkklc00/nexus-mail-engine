@@ -2,7 +2,6 @@
 
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { EmptyState } from "@/components/ui/empty-state";
-import { BarChart3 } from "lucide-react";
 
 export function DeliveryChart({
   chartData
@@ -13,7 +12,7 @@ export function DeliveryChart({
     return (
       <div className="rounded-lg border border-border bg-card p-4">
         <EmptyState
-          icon={BarChart3}
+          icon="chart-bar"
           title="Delivery grafiği için veri yok"
           description="Bugune ait sent/failed event olustugunda saatlik dagilim burada gorunecek."
         />

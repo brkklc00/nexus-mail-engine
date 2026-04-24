@@ -11,7 +11,6 @@ import {
   XAxis,
   YAxis
 } from "recharts";
-import { PieChart as PieChartIcon } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 
 export function PerformanceCharts({
@@ -27,7 +26,7 @@ export function PerformanceCharts({
         <p className="mb-3 text-sm text-zinc-300">Open / Click Rate</p>
         {rateData.length === 0 ? (
           <EmptyState
-            icon={PieChartIcon}
+            icon="chart-pie"
             title="Rate trend verisi yok"
             description="Kampanya open/click oranlari olustukca haftalik trend burada listelenir."
           />
@@ -48,7 +47,7 @@ export function PerformanceCharts({
         <p className="mb-3 text-sm text-zinc-300">Failure Reasons</p>
         {failureData.length === 0 ? (
           <EmptyState
-            icon={PieChartIcon}
+            icon="chart-pie"
             title="Failure verisi yok"
             description="Failed event message'lari biriktikce dagilim burada gosterilir."
           />

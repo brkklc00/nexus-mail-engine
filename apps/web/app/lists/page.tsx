@@ -38,7 +38,7 @@ export default async function ListsPage() {
 
       {lists.length === 0 ? (
         <EmptyState
-          icon={FolderPlus}
+          icon="folder-plus"
           title="Liste yok"
           description="Import islemi ile alici listelerini sisteme ekleyebilirsin."
           ctaLabel="Import recipients"
