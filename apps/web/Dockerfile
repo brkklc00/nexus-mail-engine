@@ -14,7 +14,7 @@ RUN corepack enable && pnpm install
 
 FROM deps AS build
 COPY . .
-RUN pnpm --filter @nexus/web build
+RUN pnpm -r build && pnpm --filter @nexus/web build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
