@@ -1,8 +1,8 @@
-import { Ban, PlusCircle, Search } from "lucide-react";
+import { Ban, Search } from "lucide-react";
 import { prisma } from "@nexus/db";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
-import { StatusBadge } from "@/components/ui/status-badge";
+import { SuppressionManager } from "@/components/suppression/suppression-manager";
 
 export const dynamic = "force-dynamic";
 
@@ -32,16 +32,7 @@ export default async function SuppressionPage({
       <PageHeader
         title="Suppression"
         description="Global ve list bazli suppression kayitlari."
-        action={
-          <button
-            type="button"
-            disabled
-            className="inline-flex cursor-not-allowed items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-zinc-500"
-          >
-            <PlusCircle className="h-4 w-4" />
-            Add Entry
-          </button>
-        }
+        action={<span className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-300">Manage suppression</span>}
       />
 
       <form className="flex items-center gap-2 rounded-xl border border-border bg-card p-3">
@@ -61,38 +52,20 @@ export default async function SuppressionPage({
           description={
             q
               ? "Farkli bir e-posta veya reason ile tekrar deneyin."
-              : "Suppression kayitlari olustugunda veya manuel eklendiginde burada listelenecek."
+              : "Asagidaki panelden manuel veya bulk suppression ekleyebilirsin."
           }
-          ctaLabel="Manual add"
         />
-      ) : (
-        <div className="overflow-x-auto rounded-2xl border border-border bg-card">
-          <table className="w-full text-sm">
-            <thead className="border-b border-border bg-zinc-900/60 text-left text-xs uppercase tracking-wider text-zinc-400">
-              <tr>
-                <th className="px-4 py-3">Email</th>
-                <th className="px-4 py-3">Scope</th>
-                <th className="px-4 py-3">Reason</th>
-                <th className="px-4 py-3">Source</th>
-                <th className="px-4 py-3">Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((entry: any) => (
-                <tr key={entry.id} className="border-b border-border/70 text-zinc-200">
-                  <td className="px-4 py-3 font-medium text-white">{entry.email}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge label={entry.scope} tone={entry.scope === "global" ? "danger" : "warning"} />
-                  </td>
-                  <td className="px-4 py-3">{entry.reason}</td>
-                  <td className="px-4 py-3 text-zinc-400">{entry.source ?? "-"}</td>
-                  <td className="px-4 py-3 text-zinc-400">{new Date(entry.createdAt).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      ) : null}
+      <SuppressionManager
+        initialEntries={entries.map((entry: any) => ({
+          id: entry.id,
+          email: entry.email,
+          scope: entry.scope,
+          reason: entry.reason,
+          source: entry.source,
+          createdAt: entry.createdAt.toISOString()
+        }))}
+      />
     </div>
   );
 }

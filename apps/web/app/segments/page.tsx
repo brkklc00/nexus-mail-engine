@@ -1,36 +1,32 @@
-import { Filter, PlusCircle } from "lucide-react";
+import { Filter } from "lucide-react";
 import { prisma } from "@nexus/db";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { SegmentsManager } from "@/components/segments/segments-manager";
 
 export const dynamic = "force-dynamic";
 
 export default async function SegmentsPage() {
-  const segments = await prisma.segment.findMany({
-    orderBy: { createdAt: "desc" },
-    include: {
-      _count: { select: { rules: true, campaigns: true } },
-      list: { select: { name: true } }
-    }
-  });
+  const [segments, lists] = await Promise.all([
+    prisma.segment.findMany({
+      orderBy: { createdAt: "desc" },
+      include: {
+        _count: { select: { rules: true, campaigns: true } },
+        list: { select: { name: true } }
+      }
+    }),
+    prisma.recipientList.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } })
+  ]);
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="Segments"
         description="Rule-based hedefleme kurgulari ve bagli kampanya etkisi."
-        action={
-          <button
-            type="button"
-            disabled
-            className="inline-flex cursor-not-allowed items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-zinc-500"
-          >
-            <PlusCircle className="h-4 w-4" />
-            Create Segment
-          </button>
-        }
+        action={<span className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-300">Segment builder</span>}
       />
+      <SegmentsManager lists={lists} />
 
       {segments.length === 0 ? (
         <EmptyState

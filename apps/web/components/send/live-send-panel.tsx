@@ -91,6 +91,10 @@ export function LiveSendPanel() {
   }, [toast]);
 
   const progressWidth = useMemo(() => `${Math.min(100, Math.max(0, live?.progress ?? 0))}%`, [live]);
+  const campaignStatus = live?.status ?? "idle";
+  const canPause = campaignStatus === "running";
+  const canResume = campaignStatus === "paused";
+  const canCancel = ["running", "paused", "queued", "pending"].includes(campaignStatus);
 
   async function createAndStartCampaign() {
     setActionLoading("create");
@@ -221,7 +225,7 @@ export function LiveSendPanel() {
         <button
           className="inline-flex items-center gap-1 rounded border border-border px-3 py-2 text-sm disabled:opacity-60"
           onClick={() => void action("pause")}
-          disabled={actionLoading !== null || !campaignId}
+          disabled={actionLoading !== null || !campaignId || !canPause}
         >
           <Pause className="h-4 w-4" />
           Pause
@@ -229,7 +233,7 @@ export function LiveSendPanel() {
         <button
           className="inline-flex items-center gap-1 rounded border border-border px-3 py-2 text-sm disabled:opacity-60"
           onClick={() => void action("resume")}
-          disabled={actionLoading !== null || !campaignId}
+          disabled={actionLoading !== null || !campaignId || !canResume}
         >
           <Play className="h-4 w-4" />
           Resume
@@ -237,7 +241,7 @@ export function LiveSendPanel() {
         <button
           className="inline-flex items-center gap-1 rounded border border-red-500 px-3 py-2 text-sm text-red-300 disabled:opacity-60"
           onClick={() => void action("cancel")}
-          disabled={actionLoading !== null || !campaignId}
+          disabled={actionLoading !== null || !campaignId || !canCancel}
         >
           <StopCircle className="h-4 w-4" />
           Cancel
