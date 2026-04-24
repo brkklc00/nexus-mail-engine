@@ -20,5 +20,7 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app ./
+COPY --from=build /app/apps/worker/package.json /app/apps/worker/package.json
+RUN node -e "const fs=require('fs');const pkg=JSON.parse(fs.readFileSync('/app/apps/worker/package.json','utf8'));if(pkg.type!=='module'){throw new Error('apps/worker/package.json must have type=module');}"
 EXPOSE 4050
 CMD ["node","apps/worker/dist/index.js"]
