@@ -81,7 +81,7 @@ services:
         condition: service_healthy
       bootstrap:
         condition: service_completed_successfully
-    command: ["node","apps/web/.next/standalone/server.js"]
+    command: ["sh","-c","pnpm --filter @nexus/web start"]
     ports:
       - "3000:3000"
     healthcheck:

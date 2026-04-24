@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import { prisma } from "@nexus/db";
 import { deliveryQueue, withDistributedLock } from "@nexus/queue";
-import { FairCampaignScheduler } from "./fair-scheduler";
-import { transitionCampaignRecipientStatus } from "../state/campaign-recipient-state.service";
+import { FairCampaignScheduler } from "./fair-scheduler.js";
+import { transitionCampaignRecipientStatus } from "../state/campaign-recipient-state.service.js";
 
 const scheduler = new FairCampaignScheduler();
 

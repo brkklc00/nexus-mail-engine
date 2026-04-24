@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import IORedis from "ioredis";
+import { Redis } from "ioredis";
 import { createServer } from "node:http";
 import { prisma } from "@nexus/db";
 import {
@@ -10,12 +10,12 @@ import {
   retryQueue,
   withDistributedLock
 } from "@nexus/queue";
-import { processDelivery } from "./processors/delivery.processor";
-import { processRetry } from "./processors/retry.processor";
-import { dispatchFairBatch } from "./scheduler/campaign-dispatch.service";
-import { getAllSafetyStates } from "./safety/distributed-safety.service";
+import { processDelivery } from "./processors/delivery.processor.js";
+import { processRetry } from "./processors/retry.processor.js";
+import { dispatchFairBatch } from "./scheduler/campaign-dispatch.service.js";
+import { getAllSafetyStates } from "./safety/distributed-safety.service.js";
 
-const redis = new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379", {
+const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
   maxRetriesPerRequest: null
 });
 

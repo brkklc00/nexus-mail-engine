@@ -1,5 +1,5 @@
 import { prisma } from "@nexus/db";
-import { getEffectiveRateForSmtp } from "../rate/effective-rate-runtime.service";
+import { getEffectiveRateForSmtp } from "../rate/effective-rate-runtime.service.js";
 
 async function run() {
   const smtpId = process.argv[2];

@@ -5,10 +5,10 @@ import type { DeliveryJob } from "@nexus/queue";
 import { MailTemplateRenderer } from "@nexus/mailer";
 import { decryptSmtpSecret } from "@nexus/security";
 import nodemailer from "nodemailer";
-import { getEffectiveRateForSmtp } from "../rate/effective-rate-runtime.service";
-import { canDispatch } from "../rate/pacing-engine";
-import { applySafetyToRate, recordDeliveryOutcome } from "../safety/distributed-safety.service";
-import { transitionCampaignRecipientStatus } from "../state/campaign-recipient-state.service";
+import { getEffectiveRateForSmtp } from "../rate/effective-rate-runtime.service.js";
+import { canDispatch } from "../rate/pacing-engine.js";
+import { applySafetyToRate, recordDeliveryOutcome } from "../safety/distributed-safety.service.js";
+import { transitionCampaignRecipientStatus } from "../state/campaign-recipient-state.service.js";
 
 const renderer = new MailTemplateRenderer();
 

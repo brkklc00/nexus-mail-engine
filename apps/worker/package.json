@@ -2,7 +2,7 @@
   "name": "@nexus/worker",
   "version": "0.1.0",
   "private": true,
-  "type": "commonjs",
+  "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "pnpm --filter @nexus/domain --filter @nexus/db --filter @nexus/queue --filter @nexus/rate-control --filter @nexus/mailer --filter @nexus/security build && tsc -p tsconfig.json",

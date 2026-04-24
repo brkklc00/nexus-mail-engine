@@ -19,6 +19,7 @@ RUN pnpm --filter @nexus/web build
 FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+RUN corepack enable
 COPY --from=build /app ./
 EXPOSE 3000
-CMD ["node","apps/web/.next/standalone/server.js"]
+CMD ["sh","-c","pnpm --filter @nexus/web start"]
