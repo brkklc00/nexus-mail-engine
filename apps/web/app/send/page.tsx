@@ -1,15 +1,16 @@
 import { LiveSendPanel } from "@/components/send/live-send-panel";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function SendPage() {
   return (
-    <div className="space-y-4 rounded-lg border border-border bg-card p-6">
-      <div>
-        <h2 className="text-xl font-semibold text-white">Send Control</h2>
-        <p className="mt-2 text-sm text-zinc-400">
-          Campaign oluştur, başlat, duraklat/devam ettir ve canlı metrik akışını takip et.
-        </p>
+    <div className="space-y-4">
+      <PageHeader
+        title="Send Control"
+        description="Kampanya olustur, baslat, canli ilerlemeyi izle ve aksiyonlari tek panelden yonet."
+      />
+      <div className="rounded-2xl border border-border bg-card p-5">
+        <LiveSendPanel />
       </div>
-      <LiveSendPanel />
     </div>
   );
 }

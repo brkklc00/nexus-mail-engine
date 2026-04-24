@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
+import { StatusBadge } from "@/components/ui/status-badge";
 
 type QueuePayload = {
   deliveryCounts: Record<string, number>;
@@ -21,14 +24,26 @@ type QueuePayload = {
 
 export function QueueObservabilityWidget() {
   const [data, setData] = useState<QueuePayload | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
     const pull = async () => {
-      const response = await fetch("/api/observability/queues");
-      if (!response.ok) return;
-      const payload = (await response.json()) as QueuePayload;
-      if (mounted) setData(payload);
+      try {
+        const response = await fetch("/api/observability/queues");
+        if (!response.ok) {
+          throw new Error("Queue metrics unavailable");
+        }
+        const payload = (await response.json()) as QueuePayload;
+        if (mounted) {
+          setData(payload);
+          setError(null);
+        }
+      } catch (pullError) {
+        if (mounted) {
+          setError(pullError instanceof Error ? pullError.message : "Metrics request failed");
+        }
+      }
     };
     void pull();
     const interval = setInterval(() => void pull(), 4000);
@@ -41,6 +56,17 @@ export function QueueObservabilityWidget() {
   return (
     <div className="rounded-lg border border-border bg-card p-4">
       <h3 className="text-sm text-zinc-300">Queue Observability</h3>
+      {!data && !error ? (
+        <div className="mt-3 flex items-center gap-2 text-xs text-zinc-400">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading queue metrics...
+        </div>
+      ) : null}
+      {error ? (
+        <div className="mt-3">
+          <EmptyState icon={Loader2} title="Queue verisi alinamadi" description={error} />
+        </div>
+      ) : null}
       <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
         <Stat label="Active Jobs" value={data?.deliveryCounts.active ?? 0} />
         <Stat label="Waiting Jobs" value={data?.deliveryCounts.waiting ?? 0} />
@@ -58,9 +84,10 @@ export function QueueObservabilityWidget() {
         <p className="mb-1 uppercase tracking-wider text-zinc-400">Throttle State</p>
         {(data?.throttledStates ?? []).length === 0 ? <p>No throttled SMTP.</p> : null}
         {(data?.throttledStates ?? []).map((item) => (
-          <p key={item.id}>
-            {item.name}: {item.throttleReason ?? "throttled"}
-          </p>
+          <div key={item.id} className="mb-1 flex items-center justify-between gap-2">
+            <p>{item.name}</p>
+            <StatusBadge label={item.throttleReason ?? "throttled"} tone="warning" />
+          </div>
         ))}
       </div>
       <div className="mt-3 rounded bg-zinc-900/60 p-3 text-xs text-zinc-300">

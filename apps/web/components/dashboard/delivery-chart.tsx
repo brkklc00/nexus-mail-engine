@@ -1,17 +1,26 @@
 "use client";
 
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { EmptyState } from "@/components/ui/empty-state";
+import { BarChart3 } from "lucide-react";
 
-const chartData = [
-  { hour: "00", sent: 1200, failed: 60 },
-  { hour: "04", sent: 1900, failed: 70 },
-  { hour: "08", sent: 2800, failed: 95 },
-  { hour: "12", sent: 4100, failed: 120 },
-  { hour: "16", sent: 4800, failed: 138 },
-  { hour: "20", sent: 3200, failed: 90 }
-];
+export function DeliveryChart({
+  chartData
+}: {
+  chartData: Array<{ hour: string; sent: number; failed: number }>;
+}) {
+  if (chartData.length === 0) {
+    return (
+      <div className="rounded-lg border border-border bg-card p-4">
+        <EmptyState
+          icon={BarChart3}
+          title="Delivery grafiği için veri yok"
+          description="Bugune ait sent/failed event olustugunda saatlik dagilim burada gorunecek."
+        />
+      </div>
+    );
+  }
 
-export function DeliveryChart() {
   return (
     <div className="h-72 rounded-lg border border-border bg-card p-4">
       <p className="mb-3 text-sm text-zinc-300">Delivery Overview</p>
