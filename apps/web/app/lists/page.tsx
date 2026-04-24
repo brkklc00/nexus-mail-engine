@@ -35,9 +35,17 @@ export default async function ListsPage() {
         initialLists={lists.map((list: any) => ({
           id: list.id,
           name: list.name,
+          notes: list.notes,
           maxSize: list.maxSize,
           tags: list.tags,
-          count: list._count.memberships,
+          summary: {
+            totalRecipients: list._count.memberships,
+            validCount: 0,
+            invalidCount: 0,
+            duplicateSkippedCount: 0,
+            suppressedCount: 0,
+            lastImportDate: null
+          },
           createdAt: list.createdAt.toISOString()
         }))}
       />

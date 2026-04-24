@@ -9,26 +9,25 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
   const { id: listId } = await params;
-
-  const rows = await prisma.recipientListMembership.findMany({
-    where: { listId },
-    include: { recipient: true },
-    orderBy: { createdAt: "asc" }
-  });
-
-  const seen = new Set<string>();
-  let removed = 0;
-
-  for (const row of rows as any[]) {
-    const email = row.recipient.emailNormalized;
-    if (!email) continue;
-    if (seen.has(email)) {
-      await prisma.recipientListMembership.delete({ where: { id: row.id } });
-      removed += 1;
-      continue;
-    }
-    seen.add(email);
-  }
+  const removedRows = (await prisma.$queryRaw`
+    WITH ranked AS (
+      SELECT id, ROW_NUMBER() OVER (
+        PARTITION BY "listId", "recipientId"
+        ORDER BY "createdAt" ASC
+      ) AS rn
+      FROM "RecipientListMembership"
+      WHERE "listId" = ${listId}
+    ),
+    deleted AS (
+      DELETE FROM "RecipientListMembership" m
+      USING ranked r
+      WHERE m.id = r.id
+        AND r.rn > 1
+      RETURNING m.id
+    )
+    SELECT COUNT(*)::bigint AS removed FROM deleted
+  `) as Array<{ removed: bigint }>;
+  const removed = Number(removedRows[0]?.removed ?? BigInt(0));
 
   await writeAuditLog(session.userId, "list.dedupe", "recipient_list", { listId, removed });
   return NextResponse.json({ ok: true, removed });

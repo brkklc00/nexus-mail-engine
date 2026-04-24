@@ -6,7 +6,8 @@ import { writeAuditLog } from "@/server/auth/guard";
 
 const schema = z.object({
   name: z.string().min(2),
-  maxSize: z.number().int().positive().max(1_000_000).default(500),
+  notes: z.string().max(2000).optional(),
+  maxSize: z.number().int().positive().max(5_000_000).optional(),
   tags: z.array(z.string()).default([])
 });
 
@@ -24,7 +25,8 @@ export async function POST(req: Request) {
   const list = await prisma.recipientList.create({
     data: {
       name: parsed.data.name,
-      maxSize: parsed.data.maxSize,
+      notes: parsed.data.notes ?? null,
+      maxSize: parsed.data.maxSize ?? 1_000_000,
       tags: parsed.data.tags
     }
   });
