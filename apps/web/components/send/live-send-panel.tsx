@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, CircleCheck, Loader2, Pause, Play, Rocket, StopCircle } from "lucide-react";
+import { Loader2, Pause, Play, Rocket, StopCircle } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { useConfirm, useToast } from "@/components/ui/notification-provider";
 
 type BootstrapData = {
   templates: Array<{ id: string; title: string }>;
@@ -28,11 +29,12 @@ type LiveEvent = {
 };
 
 export function LiveSendPanel() {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [campaignId, setCampaignId] = useState("");
   const [live, setLive] = useState<LiveEvent | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
-  const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [loadingBootstrap, setLoadingBootstrap] = useState(true);
   const [actionLoading, setActionLoading] = useState<null | "create" | "pause" | "resume" | "cancel">(null);
   const [form, setForm] = useState({
@@ -58,7 +60,7 @@ export function LiveSendPanel() {
           smtpAccountId: data.smtps[0]?.id ?? ""
         }));
       } catch (error) {
-        setToast({ kind: "error", text: error instanceof Error ? error.message : "Bootstrap request failed" });
+        toast.error("Send bootstrap yüklenemedi", error instanceof Error ? error.message : "Request failed");
       } finally {
         setLoadingBootstrap(false);
       }
@@ -83,12 +85,6 @@ export function LiveSendPanel() {
     });
     return () => source.close();
   }, [campaignId]);
-
-  useEffect(() => {
-    if (!toast) return;
-    const t = window.setTimeout(() => setToast(null), 2800);
-    return () => window.clearTimeout(t);
-  }, [toast]);
 
   const progressWidth = useMemo(() => `${Math.min(100, Math.max(0, live?.progress ?? 0))}%`, [live]);
   const campaignStatus = live?.status ?? "idle";
@@ -121,9 +117,9 @@ export function LiveSendPanel() {
       }
       setCampaignId(created.campaign.id);
       setLogs((prev) => [`campaign created + started: ${created.campaign.id}`, ...prev]);
-      setToast({ kind: "ok", text: "Campaign started successfully" });
+      toast.success("Campaign başlatıldı");
     } catch (error) {
-      setToast({ kind: "error", text: error instanceof Error ? error.message : "Campaign action failed" });
+      toast.error("Campaign başlatılamadı", error instanceof Error ? error.message : "Action failed");
     } finally {
       setActionLoading(null);
     }
@@ -131,6 +127,16 @@ export function LiveSendPanel() {
 
   async function action(kind: "pause" | "resume" | "cancel") {
     if (!campaignId) return;
+    if (kind === "cancel") {
+      const accepted = await confirm({
+        title: "Campaign iptal edilsin mi?",
+        message: "Bekleyen gönderimler skipped durumuna geçecek.",
+        confirmLabel: "İptal et",
+        cancelLabel: "Vazgeç",
+        tone: "danger"
+      });
+      if (!accepted) return;
+    }
     setActionLoading(kind);
     try {
       const res = await fetch(`/api/campaigns/${campaignId}/${kind}`, { method: "POST" });
@@ -138,9 +144,9 @@ export function LiveSendPanel() {
         const err = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(err.error ?? `${kind} failed`);
       }
-      setToast({ kind: "ok", text: `Campaign ${kind} request accepted` });
+      toast.info(`Campaign ${kind} isteği alındı`);
     } catch (error) {
-      setToast({ kind: "error", text: error instanceof Error ? error.message : `${kind} failed` });
+      toast.error(`Campaign ${kind} başarısız`, error instanceof Error ? error.message : `${kind} failed`);
     } finally {
       setActionLoading(null);
     }
@@ -158,19 +164,6 @@ export function LiveSendPanel() {
 
   return (
     <div className="space-y-4">
-      {toast ? (
-        <div
-          className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm ${
-            toast.kind === "ok"
-              ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-300"
-              : "border-rose-400/40 bg-rose-500/10 text-rose-300"
-          }`}
-        >
-          {toast.kind === "ok" ? <CircleCheck className="h-4 w-4" /> : <CircleAlert className="h-4 w-4" />}
-          {toast.text}
-        </div>
-      ) : null}
-
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <input
           className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"

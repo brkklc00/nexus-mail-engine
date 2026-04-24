@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AppShell } from "@/components/shell/app-shell";
+import { NotificationProvider } from "@/components/ui/notification-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,7 +15,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className="dark">
       <body className="min-h-screen bg-bg text-zinc-100">
-        <AppShell>{children}</AppShell>
+        <NotificationProvider>
+          <AppShell>{children}</AppShell>
+        </NotificationProvider>
       </body>
     </html>
   );

@@ -3,11 +3,13 @@
 import { useState } from "react";
 import { PlusCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useToast } from "@/components/ui/notification-provider";
 
 type ListOption = { id: string; name: string };
 
 export function SegmentsManager({ lists }: { lists: ListOption[] }) {
   const router = useRouter();
+  const toast = useToast();
   const [form, setForm] = useState({
     name: "",
     description: "",
@@ -15,8 +17,6 @@ export function SegmentsManager({ lists }: { lists: ListOption[] }) {
     includeTag: "",
     excludeTag: ""
   });
-  const [toast, setToast] = useState<string | null>(null);
-
   async function createSegment() {
     const response = await fetch("/api/segments", {
       method: "POST",
@@ -29,11 +29,13 @@ export function SegmentsManager({ lists }: { lists: ListOption[] }) {
       })
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    setToast(response.ok && payload.ok ? "Segment created" : payload.error ?? "Segment create failed");
     if (response.ok && payload.ok) {
+      toast.success("Segment oluşturuldu");
       setForm({ name: "", description: "", listId: "", includeTag: "", excludeTag: "" });
       router.refresh();
+      return;
     }
+    toast.error("Segment oluşturulamadı", payload.error ?? "İşlem başarısız.");
   }
 
   return (
@@ -85,7 +87,6 @@ export function SegmentsManager({ lists }: { lists: ListOption[] }) {
         <PlusCircle className="h-4 w-4" />
         Save Segment
       </button>
-      {toast ? <p className="mt-2 text-xs text-zinc-300">{toast}</p> : null}
     </div>
   );
 }

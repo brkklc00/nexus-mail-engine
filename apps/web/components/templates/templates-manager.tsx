@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { FlaskConical, Pencil, Save, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { useConfirm, useToast } from "@/components/ui/notification-provider";
 
 type TemplateItem = {
   id: string;
@@ -26,9 +27,10 @@ export function TemplatesManager({
   smtpOptions: SmtpOption[];
 }) {
   const router = useRouter();
+  const toast = useToast();
+  const confirm = useConfirm();
   const [templates, setTemplates] = useState(initialTemplates);
   const [selectedId, setSelectedId] = useState(initialTemplates[0]?.id ?? "");
-  const [toast, setToast] = useState<string | null>(null);
   const [form, setForm] = useState({
     title: "",
     subject: "",
@@ -49,12 +51,12 @@ export function TemplatesManager({
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateItem };
     if (!response.ok || !payload.ok || !payload.template) {
-      setToast(payload.error ?? "Create failed");
+      toast.error("Template oluşturulamadı", payload.error ?? "İşlem başarısız.");
       return;
     }
     setTemplates((prev) => [payload.template!, ...prev]);
     setSelectedId(payload.template.id);
-    setToast("Template created");
+    toast.success("Template oluşturuldu");
     router.refresh();
   }
 
@@ -72,38 +74,54 @@ export function TemplatesManager({
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateItem };
     if (!response.ok || !payload.ok || !payload.template) {
-      setToast(payload.error ?? "Update failed");
+      toast.error("Template güncellenemedi", payload.error ?? "İşlem başarısız.");
       return;
     }
     setTemplates((prev) => prev.map((t) => (t.id === payload.template!.id ? payload.template! : t)));
-    setToast("Template updated");
+    toast.success("Template güncellendi");
     router.refresh();
   }
 
   async function deleteTemplate() {
     if (!selected) return;
+    const accepted = await confirm({
+      title: "Template silinsin mi?",
+      message: `"${selected.title}" kalıcı olarak silinecek.`,
+      confirmLabel: "Sil",
+      cancelLabel: "Vazgeç",
+      tone: "danger"
+    });
+    if (!accepted) return;
     const response = await fetch(`/api/templates/${selected.id}`, { method: "DELETE" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      setToast(payload.error ?? "Delete failed");
+      toast.error("Template silinemedi", payload.error ?? "İşlem başarısız.");
       return;
     }
     const next = templates.filter((t) => t.id !== selected.id);
     setTemplates(next);
     setSelectedId(next[0]?.id ?? "");
-    setToast("Template deleted");
+    toast.success("Template silindi");
     router.refresh();
   }
 
   async function runTestSend() {
     if (!selected) return;
+    if (!testSend.toEmail.trim()) {
+      toast.warning("Test e-posta adresi gerekli");
+      return;
+    }
     const response = await fetch(`/api/templates/${selected.id}/test-send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(testSend)
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    setToast(response.ok && payload.ok ? "Test send delivered" : payload.error ?? "Test send failed");
+    if (response.ok && payload.ok) {
+      toast.success("Test gönderimi başarılı");
+      return;
+    }
+    toast.error("Test gönderimi başarısız", payload.error ?? "SMTP veya alıcı kontrol edin.");
   }
 
   return (
@@ -151,7 +169,6 @@ export function TemplatesManager({
       <section className="rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-sm font-medium text-zinc-200">Template Library</h3>
-          {toast ? <p className="text-xs text-zinc-300">{toast}</p> : null}
         </div>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[260px_1fr]">
           <div className="space-y-2">

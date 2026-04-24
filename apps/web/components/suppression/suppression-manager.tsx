@@ -4,6 +4,7 @@ import { useState } from "react";
 import { PlusCircle, Trash2, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { useConfirm, useToast } from "@/components/ui/notification-provider";
 
 type Entry = {
   id: string;
@@ -16,10 +17,11 @@ type Entry = {
 
 export function SuppressionManager({ initialEntries }: { initialEntries: Entry[] }) {
   const router = useRouter();
+  const toast = useToast();
+  const confirm = useConfirm();
   const [entries, setEntries] = useState(initialEntries);
   const [manual, setManual] = useState({ email: "", reason: "manual_add", source: "admin-ui" });
   const [bulkText, setBulkText] = useState("");
-  const [toast, setToast] = useState<string | null>(null);
 
   async function addManual() {
     const response = await fetch("/api/suppressions", {
@@ -29,12 +31,12 @@ export function SuppressionManager({ initialEntries }: { initialEntries: Entry[]
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; entry?: Entry };
     if (!response.ok || !payload.ok || !payload.entry) {
-      setToast(payload.error ?? "Add failed");
+      toast.error("Suppression eklenemedi", payload.error ?? "İşlem başarısız.");
       return;
     }
     setEntries((prev) => [payload.entry!, ...prev]);
     setManual((prev) => ({ ...prev, email: "" }));
-    setToast("Suppression entry added");
+    toast.success("Suppression kaydı eklendi");
     router.refresh();
   }
 
@@ -44,6 +46,14 @@ export function SuppressionManager({ initialEntries }: { initialEntries: Entry[]
       .map((line) => line.trim())
       .filter(Boolean);
     if (!emails.length) return;
+    const accepted = await confirm({
+      title: "Bulk suppression import yapılsın mı?",
+      message: `${emails.length} e-posta suppression listesine eklenecek.`,
+      confirmLabel: "Import et",
+      cancelLabel: "Vazgeç",
+      tone: "warning"
+    });
+    if (!accepted) return;
     const response = await fetch("/api/suppressions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -55,30 +65,36 @@ export function SuppressionManager({ initialEntries }: { initialEntries: Entry[]
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; inserted?: number };
     if (!response.ok || !payload.ok) {
-      setToast(payload.error ?? "Bulk import failed");
+      toast.error("Bulk import başarısız", payload.error ?? "Veriyi kontrol edin.");
       return;
     }
-    setToast(`Bulk imported ${payload.inserted ?? emails.length} entries`);
+    toast.success("Bulk import tamamlandı", `Eklenen kayıt: ${payload.inserted ?? emails.length}`);
     setBulkText("");
     router.refresh();
   }
 
   async function removeEntry(id: string) {
+    const accepted = await confirm({
+      title: "Suppression kaydı kaldırılsın mı?",
+      message: "Bu alıcı tekrar gönderim kapsamına girebilir.",
+      confirmLabel: "Kaldır",
+      cancelLabel: "Vazgeç",
+      tone: "danger"
+    });
+    if (!accepted) return;
     const response = await fetch(`/api/suppressions/${id}`, { method: "DELETE" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      setToast(payload.error ?? "Remove failed");
+      toast.error("Suppression kaldırılamadı", payload.error ?? "İşlem başarısız.");
       return;
     }
     setEntries((prev) => prev.filter((entry) => entry.id !== id));
-    setToast("Suppression removed");
+    toast.info("Suppression kaydı kaldırıldı");
     router.refresh();
   }
 
   return (
     <div className="space-y-3">
-      {toast ? <p className="text-xs text-zinc-300">{toast}</p> : null}
-
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <div className="rounded-xl border border-border bg-zinc-900/60 p-3">
           <p className="text-xs uppercase tracking-wide text-zinc-400">Manual Add</p>

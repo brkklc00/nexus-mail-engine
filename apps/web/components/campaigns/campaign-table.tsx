@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Loader2, Pause, Play, Rocket, SquareX } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { useConfirm, useToast } from "@/components/ui/notification-provider";
 
 type CampaignRow = {
   id: string;
@@ -18,10 +19,21 @@ type CampaignRow = {
 
 export function CampaignTable({ campaigns }: { campaigns: CampaignRow[] }) {
   const router = useRouter();
+  const toast = useToast();
+  const confirm = useConfirm();
   const [pending, setPending] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
 
   async function action(id: string, kind: "start" | "pause" | "resume" | "cancel") {
+    if (kind === "cancel") {
+      const accepted = await confirm({
+        title: "Campaign iptal edilsin mi?",
+        message: "Bu işlem kampanyayı durdurur ve bekleyen gönderimleri sonlandırır.",
+        confirmLabel: "İptal et",
+        cancelLabel: "Vazgeç",
+        tone: "danger"
+      });
+      if (!accepted) return;
+    }
     setPending(`${id}:${kind}`);
     try {
       const response = await fetch(`/api/campaigns/${id}/${kind}`, { method: "POST" });
@@ -29,13 +41,12 @@ export function CampaignTable({ campaigns }: { campaigns: CampaignRow[] }) {
         const data = (await response.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error ?? `${kind} failed`);
       }
-      setMessage(`Campaign ${kind} action completed`);
+      toast.success(`Campaign ${kind} tamamlandı`);
       router.refresh();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : `${kind} failed`);
+      toast.error(`Campaign ${kind} başarısız`, error instanceof Error ? error.message : `${kind} failed`);
     } finally {
       setPending(null);
-      window.setTimeout(() => setMessage(null), 2000);
     }
   }
 
@@ -48,9 +59,6 @@ export function CampaignTable({ campaigns }: { campaigns: CampaignRow[] }) {
 
   return (
     <div className="overflow-x-auto rounded-2xl border border-border bg-card">
-      {message ? (
-        <div className="border-b border-border bg-zinc-900/70 px-3 py-2 text-xs text-zinc-300">{message}</div>
-      ) : null}
       <table className="w-full text-sm">
         <thead className="bg-zinc-900/60 text-left text-xs uppercase tracking-wider text-zinc-400">
           <tr>

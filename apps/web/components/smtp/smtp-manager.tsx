@@ -4,6 +4,7 @@ import { useState } from "react";
 import { PlusCircle, PlugZap, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { useConfirm, useToast } from "@/components/ui/notification-provider";
 
 type Account = {
   id: string;
@@ -21,8 +22,9 @@ type Account = {
 
 export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] }) {
   const router = useRouter();
+  const toast = useToast();
+  const confirm = useConfirm();
   const [accounts, setAccounts] = useState(initialAccounts);
-  const [toast, setToast] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: "",
     host: "",
@@ -34,6 +36,13 @@ export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] })
     fromName: "",
     providerLabel: ""
   });
+  const [editing, setEditing] = useState<null | {
+    id: string;
+    name: string;
+    host: string;
+    port: number;
+    fromEmail: string;
+  }>(null);
 
   async function createAccount() {
     const response = await fetch("/api/smtp", {
@@ -43,11 +52,11 @@ export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] })
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
-      setToast(payload.error ?? "SMTP create failed");
+      toast.error("SMTP oluşturulamadı", payload.error ?? "Alanları kontrol edin.");
       return;
     }
     setAccounts((prev) => [payload.account!, ...prev]);
-    setToast("SMTP account created");
+    toast.success("SMTP hesabı oluşturuldu");
     setForm({
       name: "",
       host: "",
@@ -63,6 +72,16 @@ export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] })
   }
 
   async function toggleAccount(account: Account) {
+    if (account.isActive) {
+      const accepted = await confirm({
+        title: "SMTP hesabı pasifleştirilsin mi?",
+        message: `"${account.name}" yeni kampanyalarda kullanılmayacak.`,
+        confirmLabel: "Pasifleştir",
+        cancelLabel: "Vazgeç",
+        tone: "warning"
+      });
+      if (!accepted) return;
+    }
     const response = await fetch(`/api/smtp/${account.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -70,54 +89,74 @@ export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] })
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
-      setToast(payload.error ?? "Update failed");
+      toast.error("SMTP güncellenemedi", payload.error ?? "İşlem başarısız.");
       return;
     }
     setAccounts((prev) => prev.map((item) => (item.id === account.id ? payload.account! : item)));
-    setToast("SMTP state updated");
+    toast.info(payload.account.isActive ? "SMTP aktif edildi" : "SMTP pasif edildi");
     router.refresh();
   }
 
   async function testConnection(account: Account) {
     const response = await fetch(`/api/smtp/${account.id}/test-connection`, { method: "POST" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    setToast(response.ok && payload.ok ? "Connection successful" : payload.error ?? "Connection failed");
+    if (response.ok && payload.ok) {
+      toast.success("SMTP bağlantısı başarılı");
+      return;
+    }
+    toast.error("SMTP bağlantı testi başarısız", payload.error ?? "Bağlantı kurulamadı.");
   }
 
   async function editAccount(account: Account) {
-    const nextName = window.prompt("SMTP name", account.name) ?? account.name;
-    const nextHost = window.prompt("SMTP host", account.host) ?? account.host;
-    const nextPort = Number(window.prompt("SMTP port", String(account.port)) ?? account.port);
-    const nextFromEmail = window.prompt("From email", account.fromEmail) ?? account.fromEmail;
-    const response = await fetch(`/api/smtp/${account.id}`, {
+    setEditing({
+      id: account.id,
+      name: account.name,
+      host: account.host,
+      port: account.port,
+      fromEmail: account.fromEmail
+    });
+  }
+
+  async function submitEdit() {
+    if (!editing) return;
+    const response = await fetch(`/api/smtp/${editing.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: nextName,
-        host: nextHost,
-        port: nextPort,
-        fromEmail: nextFromEmail
+        name: editing.name,
+        host: editing.host,
+        port: editing.port,
+        fromEmail: editing.fromEmail
       })
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
-      setToast(payload.error ?? "Update failed");
+      toast.error("SMTP düzenleme başarısız", payload.error ?? "İşlem başarısız.");
       return;
     }
-    setAccounts((prev) => prev.map((item) => (item.id === account.id ? payload.account! : item)));
-    setToast("SMTP updated");
+    setAccounts((prev) => prev.map((item) => (item.id === editing.id ? payload.account! : item)));
+    setEditing(null);
+    toast.success("SMTP güncellendi");
     router.refresh();
   }
 
   async function removeAccount(account: Account) {
+    const accepted = await confirm({
+      title: "SMTP hesabı silinsin mi?",
+      message: `"${account.name}" soft-delete olarak pasiflenecek.`,
+      confirmLabel: "Sil",
+      cancelLabel: "Vazgeç",
+      tone: "danger"
+    });
+    if (!accepted) return;
     const response = await fetch(`/api/smtp/${account.id}`, { method: "DELETE" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      setToast(payload.error ?? "Delete failed");
+      toast.error("SMTP silinemedi", payload.error ?? "İşlem başarısız.");
       return;
     }
     setAccounts((prev) => prev.filter((item) => item.id !== account.id));
-    setToast("SMTP removed");
+    toast.success("SMTP silindi");
     router.refresh();
   }
 
@@ -144,8 +183,45 @@ export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] })
           <PlusCircle className="h-4 w-4" />
           Save SMTP
         </button>
-        {toast ? <p className="mt-2 text-xs text-zinc-300">{toast}</p> : null}
       </div>
+      {editing ? (
+        <div className="rounded-2xl border border-border bg-card p-4">
+          <h3 className="text-sm font-medium text-zinc-200">Edit SMTP</h3>
+          <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+            <input
+              className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
+              value={editing.name}
+              onChange={(e) => setEditing((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
+            />
+            <input
+              className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
+              value={editing.host}
+              onChange={(e) => setEditing((prev) => (prev ? { ...prev, host: e.target.value } : prev))}
+            />
+            <input
+              className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
+              type="number"
+              value={editing.port}
+              onChange={(e) =>
+                setEditing((prev) => (prev ? { ...prev, port: Number(e.target.value) || prev.port } : prev))
+              }
+            />
+            <input
+              className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
+              value={editing.fromEmail}
+              onChange={(e) => setEditing((prev) => (prev ? { ...prev, fromEmail: e.target.value } : prev))}
+            />
+          </div>
+          <div className="mt-3 flex gap-2">
+            <button type="button" onClick={() => void submitEdit()} className="rounded-lg bg-accent px-3 py-2 text-sm text-white">
+              Save Changes
+            </button>
+            <button type="button" onClick={() => setEditing(null)} className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-200">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
         {accounts.map((account) => (

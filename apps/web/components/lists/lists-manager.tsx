@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Download, PlusCircle, Trash2, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { useConfirm, useToast } from "@/components/ui/notification-provider";
 
 type ListItem = {
   id: string;
@@ -27,9 +28,10 @@ type Membership = {
 
 export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   const router = useRouter();
+  const toast = useToast();
+  const confirm = useConfirm();
   const [lists, setLists] = useState(initialLists);
   const [selectedId, setSelectedId] = useState(initialLists[0]?.id ?? "");
-  const [toast, setToast] = useState<string | null>(null);
   const [memberships, setMemberships] = useState<Membership[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [listForm, setListForm] = useState({ name: "", maxSize: 500 });
@@ -47,7 +49,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       list?: { memberships: Membership[] };
     };
     if (!response.ok || !payload.ok) {
-      setToast(payload.error ?? "List detail load failed");
+      toast.error("Liste yüklenemedi", payload.error ?? "Detaylar alınamadı.");
       setLoadingMembers(false);
       return;
     }
@@ -63,7 +65,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; list?: any };
     if (!response.ok || !payload.ok || !payload.list) {
-      setToast(payload.error ?? "Create list failed");
+      toast.error("Liste oluşturulamadı", payload.error ?? "İşlem başarısız.");
       return;
     }
     const next: ListItem = {
@@ -76,7 +78,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     };
     setLists((prev) => [next, ...prev]);
     setListForm({ name: "", maxSize: 500 });
-    setToast("List created");
+    toast.success("Liste oluşturuldu");
     await loadList(next.id);
     router.refresh();
   }
@@ -90,7 +92,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; list?: any };
     if (!response.ok || !payload.ok || !payload.list) {
-      setToast(payload.error ?? "Update failed");
+      toast.error("Liste güncellenemedi", payload.error ?? "İşlem başarısız.");
       return;
     }
     setLists((prev) =>
@@ -100,23 +102,31 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
           : item
       )
     );
-    setToast("List updated");
+    toast.success("Liste güncellendi");
     router.refresh();
   }
 
   async function deleteList() {
     if (!selected) return;
+    const accepted = await confirm({
+      title: "Liste silinsin mi?",
+      message: `"${selected.name}" silinecek ve bağlı segmentler kaldırılacak.`,
+      confirmLabel: "Sil",
+      cancelLabel: "Vazgeç",
+      tone: "danger"
+    });
+    if (!accepted) return;
     const response = await fetch(`/api/lists/${selected.id}`, { method: "DELETE" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      setToast(payload.error ?? "Delete failed");
+      toast.error("Liste silinemedi", payload.error ?? "İşlem başarısız.");
       return;
     }
     const next = lists.filter((list) => list.id !== selected.id);
     setLists(next);
     setSelectedId(next[0]?.id ?? "");
     setMemberships([]);
-    setToast("List deleted");
+    toast.success("Liste silindi");
     router.refresh();
   }
 
@@ -129,17 +139,25 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      setToast(payload.error ?? "Add recipient failed");
+      toast.error("Alıcı eklenemedi", payload.error ?? "E-posta formatını kontrol edin.");
       return;
     }
     setManualEmail("");
-    setToast("Recipient added");
+    toast.success("Alıcı eklendi");
     await loadList(selected.id);
     router.refresh();
   }
 
   async function removeRecipient(recipientId: string) {
     if (!selected) return;
+    const accepted = await confirm({
+      title: "Alıcı listeden çıkarılsın mı?",
+      message: "Bu işlem yalnızca mevcut listeden üyeliği kaldırır.",
+      confirmLabel: "Kaldır",
+      cancelLabel: "Vazgeç",
+      tone: "warning"
+    });
+    if (!accepted) return;
     const response = await fetch(`/api/lists/${selected.id}/recipients`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
@@ -147,16 +165,26 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      setToast(payload.error ?? "Remove failed");
+      toast.error("Alıcı kaldırılamadı", payload.error ?? "İşlem başarısız.");
       return;
     }
-    setToast("Recipient removed");
+    toast.info("Alıcı listeden kaldırıldı");
     await loadList(selected.id);
     router.refresh();
   }
 
   async function importBulk() {
     if (!selected || !bulkText.trim()) return;
+    if (memberships.length > 0) {
+      const accepted = await confirm({
+        title: "Bulk import mevcut listeye eklensin mi?",
+        message: "Mevcut üyeler korunur, duplicate satırlar atlanır.",
+        confirmLabel: "Import et",
+        cancelLabel: "Vazgeç",
+        tone: "warning"
+      });
+      if (!accepted) return;
+    }
     const response = await fetch(`/api/lists/${selected.id}/recipients`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -170,11 +198,12 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       duplicateCount?: number;
     };
     if (!response.ok || !payload.ok) {
-      setToast(payload.error ?? "Import failed");
+      toast.error("Import başarısız", payload.error ?? "CSV verisini kontrol edin.");
       return;
     }
     setBulkText("");
-    setToast(
+    toast.success(
+      "Import tamamlandı",
       `Import complete: +${payload.insertedCount ?? 0}, invalid ${payload.invalidCount ?? 0}, duplicate ${
         payload.duplicateCount ?? 0
       }`
@@ -185,13 +214,21 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
 
   async function dedupe() {
     if (!selected) return;
+    const accepted = await confirm({
+      title: "Liste deduplicate edilsin mi?",
+      message: "Aynı normalize e-postaya sahip tekrarlar kaldırılacak.",
+      confirmLabel: "Dedupe uygula",
+      cancelLabel: "Vazgeç",
+      tone: "warning"
+    });
+    if (!accepted) return;
     const response = await fetch(`/api/lists/${selected.id}/dedupe`, { method: "POST" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; removed?: number };
     if (!response.ok || !payload.ok) {
-      setToast(payload.error ?? "Dedupe failed");
+      toast.error("Dedupe başarısız", payload.error ?? "İşlem başarısız.");
       return;
     }
-    setToast(`Dedupe complete: removed ${payload.removed ?? 0}`);
+    toast.info("Dedupe tamamlandı", `Kaldırılan kayıt: ${payload.removed ?? 0}`);
     await loadList(selected.id);
     router.refresh();
   }
@@ -200,7 +237,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     if (!selected) return;
     const response = await fetch(`/api/lists/${selected.id}/export`);
     if (!response.ok) {
-      setToast("Export failed");
+      toast.error("Export başarısız");
       return;
     }
     const csv = await response.text();
@@ -211,7 +248,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     a.download = `list-${selected.id}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    setToast("Exported CSV");
+    toast.success("CSV export tamamlandı");
   }
 
   return (
@@ -241,7 +278,6 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
             Add list
           </button>
         </div>
-        {toast ? <p className="mt-3 text-xs text-zinc-300">{toast}</p> : null}
       </section>
 
       <section className="rounded-2xl border border-border bg-card p-4">
