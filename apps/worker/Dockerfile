@@ -14,11 +14,11 @@ RUN corepack enable && pnpm install
 
 FROM deps AS build
 COPY . .
-RUN pnpm --filter @nexus/worker build
+RUN pnpm --filter @nexus/worker build || pnpm -r build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app ./
 EXPOSE 4050
-CMD ["pnpm", "--filter", "@nexus/worker", "start"]
+CMD ["node","apps/worker/dist/index.js"]

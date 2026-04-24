@@ -21,4 +21,4 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app ./
 EXPOSE 3000
-CMD ["pnpm", "--filter", "@nexus/web", "start"]
+CMD ["node","apps/web/.next/standalone/server.js"]

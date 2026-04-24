@@ -81,6 +81,7 @@ services:
         condition: service_healthy
       bootstrap:
         condition: service_completed_successfully
+    command: ["node","apps/web/.next/standalone/server.js"]
     ports:
       - "3000:3000"
     healthcheck:
@@ -113,8 +114,7 @@ services:
         condition: service_healthy
       bootstrap:
         condition: service_completed_successfully
-    ports:
-      - "4050:4050"
+    command: ["node","apps/worker/dist/index.js"]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:4050/health >/dev/null 2>&1"]
       interval: 10s
