@@ -1,5 +1,5 @@
 import { prisma } from "@nexus/db";
-import { campaignQueue, withDistributedLock } from "@nexus/queue";
+import { campaignQueue, getRedisClient, QUEUE_NAMES, withDistributedLock } from "@nexus/queue";
 import { listSegmentRecipientIds, type SegmentQueryInput } from "@/server/segments/segment-query.service";
 
 const CAMPAIGN_LOCK_TTL_MS = 30_000;
@@ -88,6 +88,21 @@ function chooseSmtpForRecipient(
   }
   const slot = Math.floor(index / Math.max(1, config.rotateEvery)) % activeSmtpIds.length;
   return activeSmtpIds[slot];
+}
+
+function serializeError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    };
+  }
+  return {
+    name: "UnknownError",
+    message: String(error),
+    stack: undefined
+  };
 }
 
 export async function createCampaign(input: {
@@ -238,7 +253,7 @@ export async function startCampaign(campaignId: string) {
       orderBy: { createdAt: "asc" }
     });
     if (smtps.length === 0) {
-      throw new Error("smtp_pool_empty");
+      throw new Error("no_smtp_accounts");
     }
 
     const sortedSmtpIds = configuredIds.filter((id) => smtps.some((smtp: any) => smtp.id === id));
@@ -281,6 +296,15 @@ export async function startCampaign(campaignId: string) {
     let suppressedSkipped = 0;
     let inserted = 0;
     let chunkIndex = 0;
+    const startContext = {
+      campaignId: campaign.id,
+      targetType: campaign.listId ? "list" : campaign.segmentId ? "saved_segment" : "ad_hoc_segment",
+      targetId: campaign.listId ?? campaign.segmentId ?? "ad_hoc",
+      listId: campaign.listId ?? null,
+      segmentId: campaign.segmentId ?? null,
+      templateId: campaign.templateId,
+      smtpAccountIdsCount: activeSmtpIds.length
+    };
 
     try {
       const importChunkRows = async (rows: Array<{ id: string; emailNormalized: string; status: string }>) => {
@@ -381,20 +405,41 @@ export async function startCampaign(campaignId: string) {
         }
       }
     } catch (error) {
+      const serialized = serializeError(error);
+      console.error("[campaign.start] recipient import failed", {
+        ...startContext,
+        recipientCount: inserted,
+        error: serialized
+      });
       await prisma.campaignLog.create({
         data: {
           campaignId: campaign.id,
           eventType: "campaign_start_failed",
           status: "failed",
-          message: `Campaign recipient import failed: ${(error as Error).message}`
+          message: `Campaign recipient import failed: ${serialized.message}`
         }
       });
-      throw new Error("campaign_import_failed");
+      throw new Error("db_insert_failed");
     }
 
     const totalTargeted = await prisma.campaignRecipient.count({
       where: { campaignId: campaign.id }
     });
+    if (totalTargeted <= 0) {
+      console.error("[campaign.start] no recipients after import", {
+        ...startContext,
+        recipientCount: totalTargeted
+      });
+      await prisma.campaignLog.create({
+        data: {
+          campaignId: campaign.id,
+          eventType: "campaign_start_failed",
+          status: "failed",
+          message: "Campaign has no recipients after import."
+        }
+      });
+      throw new Error("no_recipients");
+    }
     const updated = await prisma.campaign.update({
       where: { id: campaign.id },
       data: {
@@ -413,21 +458,35 @@ export async function startCampaign(campaignId: string) {
       }
     });
     try {
+      if (!process.env.REDIS_URL) {
+        throw new Error("missing_redis_url");
+      }
+      const ping = await getRedisClient().ping();
+      if (typeof ping !== "string" || ping.toUpperCase() !== "PONG") {
+        throw new Error(`redis_ping_unhealthy:${ping}`);
+      }
       await campaignQueue.add(
         "campaign_start",
         { campaignId: campaign.id, trigger: "manual" },
         { jobId: `campaign_start:${campaign.id}` }
       );
-    } catch {
+    } catch (error) {
+      const serialized = serializeError(error);
+      console.error("[campaign.start] queue enqueue failed", {
+        ...startContext,
+        queueName: QUEUE_NAMES.CAMPAIGN,
+        recipientCount: totalTargeted,
+        error: serialized
+      });
       await prisma.campaignLog.create({
         data: {
           campaignId: campaign.id,
           eventType: "campaign_queue_failed",
           status: "failed",
-          message: "Campaign started but queue enqueue failed."
+          message: `Campaign started but queue enqueue failed: ${serialized.message}`
         }
       });
-      throw new Error("campaign_queue_failed");
+      throw new Error("queue_unavailable");
     }
 
     return updated;
