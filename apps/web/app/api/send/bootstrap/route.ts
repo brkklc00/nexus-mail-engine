@@ -17,6 +17,11 @@ const defaultPoolSettings = {
   cooldownAfterErrorSec: 60
 } as const;
 
+function isUnknownSegmentFieldError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Unknown argument `isArchived`") || message.includes("Unknown argument `lastMatchedCount`");
+}
+
 export async function GET() {
   const session = await getSession();
   if (!session) {
@@ -24,6 +29,26 @@ export async function GET() {
   }
 
   try {
+    const segmentsPromise = prisma.segment
+      .findMany({
+        where: { isArchived: false, lastMatchedCount: { gt: 0 } },
+        select: { id: true, name: true, lastMatchedCount: true, updatedAt: true },
+        orderBy: { updatedAt: "desc" },
+        take: 200
+      })
+      .catch(async (error: unknown) => {
+        if (isUnknownSegmentFieldError(error)) {
+          const legacyRows = await prisma.segment.findMany({
+            select: { id: true, name: true, updatedAt: true },
+            orderBy: { updatedAt: "desc" },
+            take: 200
+          });
+          return legacyRows.map((row: { id: string; name: string; updatedAt: Date }) => ({ ...row, lastMatchedCount: 0 }));
+        }
+        console.error("[send.bootstrap] segment query failed", error);
+        return [] as Array<{ id: string; name: string; updatedAt: Date; lastMatchedCount: number }>;
+      });
+
     const [templatesRaw, listsRaw, smtpRaw, campaignsRaw, segmentsRaw, poolSettingsRaw, queueObs] = await Promise.all([
       prisma.mailTemplate.findMany({
         where: { status: { in: ["active", "draft"] } },
@@ -58,12 +83,7 @@ export async function GET() {
         take: 30,
         select: { id: true, name: true, status: true }
       }),
-      prisma.segment.findMany({
-        where: { isArchived: false, lastMatchedCount: { gt: 0 } },
-        select: { id: true, name: true, lastMatchedCount: true, updatedAt: true },
-        orderBy: { updatedAt: "desc" },
-        take: 200
-      }),
+      segmentsPromise,
       prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }),
       getQueueObservability()
     ]);

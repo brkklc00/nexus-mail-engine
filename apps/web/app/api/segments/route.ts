@@ -24,72 +24,130 @@ function normalizePageSize(value: string | null): number {
   return [25, 50, 100].includes(parsed) ? parsed : 25;
 }
 
+function isUnknownSegmentFieldError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Unknown argument `isArchived`") ||
+    message.includes("Unknown argument `lastMatchedCount`") ||
+    message.includes("Unknown argument `lastCalculatedAt`")
+  );
+}
+
 export async function GET(req: Request) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const url = new URL(req.url);
-  const page = clampPage(url.searchParams.get("page"));
-  const pageSize = normalizePageSize(url.searchParams.get("pageSize"));
-  const search = (url.searchParams.get("search") ?? "").trim();
-  const includeArchived = (url.searchParams.get("includeArchived") ?? "false").toLowerCase() === "true";
-  const where: any = {
-    ...(includeArchived ? {} : { isArchived: false }),
-    ...(search
-      ? {
-          OR: [{ name: { contains: search, mode: "insensitive" } }, { description: { contains: search, mode: "insensitive" } }]
+  try {
+    const url = new URL(req.url);
+    const page = clampPage(url.searchParams.get("page"));
+    const pageSize = normalizePageSize(url.searchParams.get("pageSize"));
+    const search = (url.searchParams.get("search") ?? "").trim();
+    const includeArchived = (url.searchParams.get("includeArchived") ?? "false").toLowerCase() === "true";
+    const baseWhere: any = {
+      ...(search
+        ? {
+            OR: [{ name: { contains: search, mode: "insensitive" } }, { description: { contains: search, mode: "insensitive" } }]
+          }
+        : {})
+    };
+
+    let items: any[] = [];
+    let total = 0;
+    let usedLegacyFallback = false;
+
+    try {
+      const where: any = includeArchived ? baseWhere : { ...baseWhere, isArchived: false };
+      [items, total] = await Promise.all([
+        prisma.segment.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+          include: {
+            list: { select: { id: true, name: true } },
+            _count: { select: { campaigns: true, rules: true } }
+          }
+        }),
+        prisma.segment.count({ where })
+      ]);
+    } catch (error) {
+      if (!isUnknownSegmentFieldError(error)) throw error;
+      usedLegacyFallback = true;
+      [items, total] = await Promise.all([
+        prisma.segment.findMany({
+          where: baseWhere,
+          orderBy: { createdAt: "desc" },
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+          include: {
+            list: { select: { id: true, name: true } },
+            _count: { select: { campaigns: true, rules: true } }
+          }
+        }),
+        prisma.segment.count({ where: baseWhere })
+      ]);
+    }
+
+    const listAnalytics = await Promise.all(
+      items.map(async (segment: any) => {
+        const matchedCount = await getSegmentMatchedCount((segment.queryConfig as any) ?? { baseListId: segment.listId ?? null });
+        try {
+          await prisma.segment.update({
+            where: { id: segment.id },
+            data: {
+              lastCalculatedAt: new Date(),
+              lastMatchedCount: matchedCount
+            }
+          });
+        } catch (error) {
+          if (!isUnknownSegmentFieldError(error)) throw error;
+          await prisma.segment.update({
+            where: { id: segment.id },
+            data: {
+              lastCalculatedAt: new Date()
+            }
+          });
         }
-      : {})
-  };
+        return {
+          id: segment.id,
+          name: segment.name,
+          description: segment.description,
+          isArchived: Boolean((segment as any).isArchived ?? false),
+          list: segment.list,
+          rulesSummary: segment.queryConfig ?? { listId: segment.listId },
+          matchedCount,
+          lastCalculatedAt: new Date().toISOString(),
+          campaignsUsing: segment._count.campaigns
+        };
+      })
+    );
 
-  const [items, total] = await Promise.all([
-    prisma.segment.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-      include: {
-        list: { select: { id: true, name: true } },
-        _count: { select: { campaigns: true, rules: true } }
-      }
-    }),
-    prisma.segment.count({ where })
-  ]);
-
-  const listAnalytics = await Promise.all(
-    items.map(async (segment: any) => {
-      const matchedCount = await getSegmentMatchedCount((segment.queryConfig as any) ?? { baseListId: segment.listId ?? null });
-      await prisma.segment.update({
-        where: { id: segment.id },
-        data: {
-          lastCalculatedAt: new Date(),
-          lastMatchedCount: matchedCount
-        }
-      });
-      return {
-        id: segment.id,
-        name: segment.name,
-        description: segment.description,
-        isArchived: segment.isArchived,
-        list: segment.list,
-        rulesSummary: segment.queryConfig ?? { listId: segment.listId },
-        matchedCount,
-        lastCalculatedAt: new Date().toISOString(),
-        campaignsUsing: segment._count.campaigns
-      };
-    })
-  );
-
-  return NextResponse.json({
-    ok: true,
-    items: listAnalytics,
-    total,
-    page,
-    pageSize,
-    totalPages: Math.max(1, Math.ceil(total / pageSize))
-  });
+    return NextResponse.json({
+      ok: true,
+      items: listAnalytics,
+      data: listAnalytics,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      fallback: usedLegacyFallback
+    });
+  } catch (error) {
+    console.error("[segments.GET] failed", error);
+    return NextResponse.json({
+      ok: true,
+      items: [],
+      data: [],
+      error: null,
+      total: 0,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+      fallback: true
+    });
+  }
 }
 
 export async function POST(req: Request) {

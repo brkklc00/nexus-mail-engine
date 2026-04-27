@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Copy, Download, Loader2, RefreshCw, Save, Trash2 } from "lucide-react";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -90,6 +90,7 @@ export function SegmentsManager() {
   const [saveName, setSaveName] = useState("");
   const [saveDescription, setSaveDescription] = useState("");
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const initialLoadErrorShown = useRef(false);
 
   const hasTrackingData = useMemo(() => Boolean(queryResult?.stats.topClickedLinks.length || queryResult?.stats.openedCount), [queryResult]);
 
@@ -100,7 +101,14 @@ export function SegmentsManager() {
     setBootstrap(payload);
   }
 
-  async function loadSegments() {
+  function showInitialLoadErrorOnce(title: string, description: string) {
+    if (initialLoadErrorShown.current) return;
+    initialLoadErrorShown.current = true;
+    toast.error(title, description);
+  }
+
+  async function loadSegments(options?: { silent?: boolean }) {
+    const silent = Boolean(options?.silent);
     setLoadingSegments(true);
     try {
       const response = await fetch("/api/segments?page=1&pageSize=50", { cache: "no-store" });
@@ -110,7 +118,12 @@ export function SegmentsManager() {
       }
       setSegments(payload.items ?? []);
     } catch (error) {
-      toast.error("Segment list could not be loaded", error instanceof Error ? error.message : "Unexpected error");
+      setSegments([]);
+      if (!silent) {
+        toast.error("Segment list could not be loaded", error instanceof Error ? error.message : "Unexpected error");
+      } else {
+        showInitialLoadErrorOnce("Segment list could not be loaded", error instanceof Error ? error.message : "Unexpected error");
+      }
     } finally {
       setLoadingSegments(false);
     }
@@ -119,9 +132,10 @@ export function SegmentsManager() {
   useEffect(() => {
     void (async () => {
       try {
-        await Promise.all([loadBootstrap(), loadSegments()]);
+        await Promise.all([loadBootstrap(), loadSegments({ silent: true })]);
       } catch (error) {
-        toast.error("Segment bootstrap could not be loaded", error instanceof Error ? error.message : "Request failed");
+        showInitialLoadErrorOnce("Segment bootstrap could not be loaded", error instanceof Error ? error.message : "Request failed");
+        setSegments([]);
       }
     })();
   }, []);

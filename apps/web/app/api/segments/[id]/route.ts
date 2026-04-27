@@ -13,6 +13,11 @@ const patchSchema = z.object({
   action: z.enum(["duplicate"]).optional()
 });
 
+function isUnknownSegmentFieldError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Unknown argument `isArchived`");
+}
+
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) {
@@ -30,29 +35,54 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   }
 
   if (parsed.data.action === "duplicate") {
-    const duplicated = await prisma.segment.create({
-      data: {
-        name: `${segment.name} (copy)`,
-        description: segment.description,
-        listId: segment.listId,
-        queryConfig: segment.queryConfig,
-        isArchived: false
-      }
-    });
+    let duplicated: any;
+    try {
+      duplicated = await prisma.segment.create({
+        data: {
+          name: `${segment.name} (copy)`,
+          description: segment.description,
+          listId: segment.listId,
+          queryConfig: segment.queryConfig,
+          isArchived: false
+        }
+      });
+    } catch (error) {
+      if (!isUnknownSegmentFieldError(error)) throw error;
+      duplicated = await prisma.segment.create({
+        data: {
+          name: `${segment.name} (copy)`,
+          description: segment.description,
+          listId: segment.listId,
+          queryConfig: segment.queryConfig
+        }
+      });
+    }
     await writeAuditLog(session.userId, "segment.duplicate", "segment", { sourceSegmentId: id, segmentId: duplicated.id });
     return NextResponse.json({ ok: true, segment: duplicated });
   }
 
-  const updated = await prisma.segment.update({
-    where: { id },
-    data: {
-      ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
-      ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
-      ...(parsed.data.listId !== undefined ? { listId: parsed.data.listId } : {}),
-      ...(parsed.data.queryConfig !== undefined ? { queryConfig: parsed.data.queryConfig } : {}),
-      ...(parsed.data.isArchived !== undefined ? { isArchived: parsed.data.isArchived } : {})
-    }
-  });
+  const patchData: Record<string, unknown> = {
+    ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+    ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
+    ...(parsed.data.listId !== undefined ? { listId: parsed.data.listId } : {}),
+    ...(parsed.data.queryConfig !== undefined ? { queryConfig: parsed.data.queryConfig } : {}),
+    ...(parsed.data.isArchived !== undefined ? { isArchived: parsed.data.isArchived } : {})
+  };
+
+  let updated: any;
+  try {
+    updated = await prisma.segment.update({
+      where: { id },
+      data: patchData
+    });
+  } catch (error) {
+    if (!isUnknownSegmentFieldError(error)) throw error;
+    const { isArchived: _ignored, ...legacyPatchData } = patchData;
+    updated = await prisma.segment.update({
+      where: { id },
+      data: legacyPatchData
+    });
+  }
   await writeAuditLog(session.userId, "segment.update", "segment", { segmentId: id });
   return NextResponse.json({ ok: true, segment: updated });
 }
