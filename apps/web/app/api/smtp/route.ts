@@ -40,7 +40,9 @@ const schema = z.object({
   warmupIncrementStep: z.number().positive().optional(),
   warmupMaxRps: z.number().positive().optional().nullable(),
   tags: z.array(z.string()).optional(),
-  groupLabel: z.string().optional().nullable()
+  groupLabel: z.string().optional().nullable(),
+  connectionTimeout: z.number().int().positive().optional().nullable(),
+  socketTimeout: z.number().int().positive().optional().nullable()
 });
 
 function isAlibabaProvider(providerLabel?: string | null, host?: string | null): boolean {
@@ -117,6 +119,8 @@ export async function GET() {
         cooldownUntil: true,
         tags: true,
         groupLabel: true,
+        connectionTimeout: true,
+        socketTimeout: true,
         updatedAt: true
       }
     }),
@@ -221,6 +225,8 @@ export async function POST(req: Request) {
       warmupMaxRps: normalized.warmupMaxRps ?? null,
       tags: normalized.tags ?? [],
       groupLabel: normalized.groupLabel ?? null,
+      connectionTimeout: normalized.connectionTimeout ?? null,
+      socketTimeout: normalized.socketTimeout ?? null,
       healthStatus: "healthy"
     }
   });

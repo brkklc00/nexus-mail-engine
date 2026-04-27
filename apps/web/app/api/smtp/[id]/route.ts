@@ -6,7 +6,7 @@ import { getSession } from "@/server/auth/session";
 import { writeAuditLog } from "@/server/auth/guard";
 
 const schema = z.object({
-  action: z.enum(["reset_throttle"]).optional(),
+  action: z.enum(["reset_throttle", "disable", "archive"]).optional(),
   name: z.string().min(2).optional(),
   host: z.string().min(2).optional(),
   port: z.number().int().positive().optional(),
@@ -29,7 +29,9 @@ const schema = z.object({
   warmupMaxRps: z.number().positive().optional().nullable(),
   tags: z.array(z.string()).optional(),
   groupLabel: z.string().optional().nullable(),
-  healthStatus: z.enum(["healthy", "error", "disabled"]).optional()
+  healthStatus: z.enum(["healthy", "error", "disabled"]).optional(),
+  connectionTimeout: z.number().int().positive().optional().nullable(),
+  socketTimeout: z.number().int().positive().optional().nullable()
 });
 
 function isAlibabaProvider(providerLabel?: string | null, host?: string | null): boolean {
@@ -81,6 +83,17 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     data.healthStatus = "healthy";
     delete data.action;
   }
+  if (parsed.data.action === "disable") {
+    data.isActive = false;
+    data.healthStatus = "disabled";
+    delete data.action;
+  }
+  if (parsed.data.action === "archive") {
+    data.isActive = false;
+    data.isSoftDeleted = true;
+    data.healthStatus = "disabled";
+    delete data.action;
+  }
   if (parsed.data.password) {
     data.passwordEncrypted = encryptSmtpSecret(parsed.data.password);
     delete data.password;
@@ -105,47 +118,31 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
   const { id } = await params;
-  const [campaignUsage, recipientUsage] = await Promise.all([
-    prisma.campaign.count({ where: { smtpAccountId: id } }),
-    prisma.campaignRecipient.count({ where: { smtpAccountId: id } })
-  ]);
-
-  const totalUsage = campaignUsage + recipientUsage;
-  if (totalUsage > 0) {
-    try {
+  try {
+    await prisma.smtpAccount.delete({ where: { id } });
+    await writeAuditLog(session.userId, "smtp.hard_delete", "smtp_account", { smtpAccountId: id });
+    return NextResponse.json({ ok: true, actionTaken: "hard_deleted" });
+  } catch (error: any) {
+    const code = error?.code ?? error?.meta?.code;
+    if (code === "P2003") {
       await prisma.smtpAccount.update({
         where: { id },
-        data: { isActive: false, healthStatus: "disabled" }
+        data: { isSoftDeleted: true, isActive: false, healthStatus: "disabled" }
       });
-    } catch {
+      await writeAuditLog(session.userId, "smtp.archive_in_use", "smtp_account", { smtpAccountId: id });
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "smtp_in_use",
+          error: "SMTP is used in campaigns, archived instead of deleted.",
+          actionTaken: "archived"
+        },
+        { status: 409 }
+      );
+    }
+    if (code === "P2025") {
       return NextResponse.json({ ok: false, error: "SMTP account not found" }, { status: 404 });
     }
-    await writeAuditLog(session.userId, "smtp.disable_in_use", "smtp_account", {
-      smtpAccountId: id,
-      campaignUsage,
-      campaignRecipientUsage: recipientUsage
-    });
-    return NextResponse.json(
-      {
-        ok: false,
-        code: "smtp_in_use",
-        error: "This SMTP is used by campaigns. Disable/archive instead.",
-        campaignUsage,
-        campaignRecipientUsage: recipientUsage,
-        actionTaken: "disabled"
-      },
-      { status: 409 }
-    );
+    return NextResponse.json({ ok: false, error: "SMTP delete failed" }, { status: 400 });
   }
-
-  try {
-    await prisma.smtpAccount.update({
-      where: { id },
-      data: { isSoftDeleted: true, isActive: false, healthStatus: "disabled" }
-    });
-  } catch {
-    return NextResponse.json({ ok: false, error: "SMTP account not found" }, { status: 404 });
-  }
-  await writeAuditLog(session.userId, "smtp.soft_delete", "smtp_account", { smtpAccountId: id });
-  return NextResponse.json({ ok: true, actionTaken: "soft_deleted" });
 }
