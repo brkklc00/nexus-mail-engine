@@ -20,16 +20,6 @@ const defaultPoolSettings = {
   cooldownAfterErrorSec: 60
 } as const;
 
-function isUnknownSegmentFieldError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("Unknown argument `isArchived`") || message.includes("Unknown argument `lastMatchedCount`");
-}
-
-function isUnknownSmtpFieldError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("Invalid `prisma.smtpAccount") && message.includes("Unknown argument");
-}
-
 export async function GET() {
   const session = await getSession();
   if (!session) {
@@ -37,88 +27,6 @@ export async function GET() {
   }
 
   try {
-    const segmentsPromise = prisma.segment
-      .findMany({
-        where: { isArchived: false, lastMatchedCount: { gt: 0 } },
-        select: { id: true, name: true, lastMatchedCount: true, updatedAt: true },
-        orderBy: { updatedAt: "desc" },
-        take: 200
-      })
-      .catch(async (error: unknown) => {
-        if (isUnknownSegmentFieldError(error)) {
-          const legacyRows = await prisma.segment.findMany({
-            select: { id: true, name: true, updatedAt: true },
-            orderBy: { updatedAt: "desc" },
-            take: 200
-          });
-          return legacyRows.map((row: { id: string; name: string; updatedAt: Date }) => ({ ...row, lastMatchedCount: 0 }));
-        }
-        console.error("[send.bootstrap] segment query failed", error);
-        return [] as Array<{ id: string; name: string; updatedAt: Date; lastMatchedCount: number }>;
-      });
-
-    const smtpPromise = prisma.smtpAccount
-      .findMany({
-        where: { isActive: true, isSoftDeleted: false },
-        orderBy: { createdAt: "desc" },
-        take: 200,
-        select: {
-          id: true,
-          name: true,
-          host: true,
-          port: true,
-          encryption: true,
-          username: true,
-          fromEmail: true,
-          providerLabel: true,
-          isActive: true,
-          healthStatus: true,
-          isThrottled: true,
-          targetRatePerSecond: true,
-          maxRatePerSecond: true
-        }
-      })
-      .catch(async (error: unknown) => {
-        if (isUnknownSmtpFieldError(error)) {
-          const legacyRows = await prisma.smtpAccount.findMany({
-            where: { isActive: true, isSoftDeleted: false },
-            orderBy: { createdAt: "desc" },
-            take: 200,
-            select: {
-              id: true,
-              name: true,
-              host: true,
-              port: true,
-              encryption: true,
-              username: true,
-              fromEmail: true,
-              providerLabel: true,
-              isActive: true,
-              isThrottled: true,
-              targetRatePerSecond: true,
-              maxRatePerSecond: true
-            }
-          });
-          return legacyRows.map((row: any) => ({ ...row, healthStatus: row.healthStatus ?? "healthy" }));
-        }
-        console.error("[send.bootstrap] smtp query failed", error);
-        return [] as Array<{
-          id: string;
-          name: string;
-          host: string;
-          port: number;
-          encryption: string;
-          username: string;
-          fromEmail: string;
-          providerLabel: string | null;
-          isActive: boolean;
-          healthStatus: string | null;
-          isThrottled: boolean;
-          targetRatePerSecond: number;
-          maxRatePerSecond: number | null;
-        }>;
-      });
-
     const [templatesRaw, listsRaw, smtpRaw, campaignsRaw, segmentsRaw, poolSettingsRaw, queueObs] = await Promise.all([
       prisma.mailTemplate.findMany({
         where: { status: { in: ["active", "draft"] } },
@@ -135,13 +43,43 @@ export async function GET() {
           }
         }
       }),
-      smtpPromise,
+      prisma.smtpAccount.findMany({
+        where: { isActive: true, isSoftDeleted: false },
+        orderBy: { createdAt: "desc" },
+        take: 200,
+        select: {
+          id: true,
+          name: true,
+          host: true,
+          port: true,
+          encryption: true,
+          username: true,
+          fromEmail: true,
+          providerLabel: true,
+          isActive: true,
+          isThrottled: true,
+          healthStatus: true,
+          lastError: true,
+          lastTestAt: true,
+          lastSuccessAt: true,
+          cooldownUntil: true,
+          tags: true,
+          groupLabel: true,
+          targetRatePerSecond: true,
+          maxRatePerSecond: true
+        }
+      }),
       prisma.campaign.findMany({
         orderBy: { createdAt: "desc" },
         take: 30,
         select: { id: true, name: true, status: true }
       }),
-      segmentsPromise,
+      prisma.segment.findMany({
+        where: { isArchived: false, lastMatchedCount: { gt: 0 } },
+        select: { id: true, name: true, isArchived: true, lastMatchedCount: true, lastCalculatedAt: true, updatedAt: true },
+        orderBy: { updatedAt: "desc" },
+        take: 200
+      }),
       prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }),
       getQueueObservability()
     ]);
@@ -162,7 +100,9 @@ export async function GET() {
     const segments = segmentsRaw.map((segment: any) => ({
       id: segment.id,
       name: segment.name,
+      isArchived: Boolean(segment.isArchived),
       lastMatchedCount: Number(segment.lastMatchedCount ?? 0),
+      lastCalculatedAt: segment.lastCalculatedAt ? segment.lastCalculatedAt.toISOString() : null,
       updatedAt: segment.updatedAt.toISOString()
     }));
     const smtpAccounts = smtpRaw.map((smtp: any) => ({
@@ -179,6 +119,12 @@ export async function GET() {
       maxRatePerSecond: smtp.maxRatePerSecond ? Number(smtp.maxRatePerSecond) : null,
       isThrottled: Boolean(smtp.isThrottled),
       healthStatus: smtp.healthStatus ?? null,
+      lastError: smtp.lastError ?? null,
+      lastTestAt: smtp.lastTestAt ? smtp.lastTestAt.toISOString() : null,
+      lastSuccessAt: smtp.lastSuccessAt ? smtp.lastSuccessAt.toISOString() : null,
+      cooldownUntil: smtp.cooldownUntil ? smtp.cooldownUntil.toISOString() : null,
+      tags: Array.isArray(smtp.tags) ? smtp.tags : [],
+      groupLabel: smtp.groupLabel ?? null,
       warning:
         smtp.healthStatus && smtp.healthStatus !== "healthy"
           ? `SMTP health: ${smtp.healthStatus}`
@@ -226,7 +172,7 @@ export async function GET() {
     return NextResponse.json(
       {
         ok: false,
-        error: "Bootstrap failed",
+        error: "Bootstrap failed due to server schema/client mismatch.",
         reason: message,
         templates: [],
         lists: [],

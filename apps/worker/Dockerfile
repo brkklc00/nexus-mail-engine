@@ -13,9 +13,11 @@ COPY packages/security/package.json packages/security/package.json
 RUN corepack enable && pnpm install
 
 FROM deps AS build
-COPY prisma ./prisma
-RUN rm -rf node_modules/.prisma && pnpm exec prisma generate --schema prisma/schema.prisma && node -e "const p=require.resolve('@prisma/client'); console.log('Prisma client:', p);"
 COPY . .
+RUN rm -rf node_modules/.prisma node_modules/@prisma/client .next apps/web/.next \
+  && pnpm exec prisma generate --schema prisma/schema.prisma \
+  && node -e "const {Prisma}=require('@prisma/client'); const m=Prisma.dmmf.datamodel.models; const sm=m.find(x=>x.name==='SmtpAccount'); const sg=m.find(x=>x.name==='Segment'); console.log(sm.fields.map(f=>f.name)); console.log(sg.fields.map(f=>f.name)); if(!sm.fields.some(f=>f.name==='healthStatus')) process.exit(1); if(!sg.fields.some(f=>f.name==='isArchived')) process.exit(1);" \
+  && node -e "const p=require.resolve('@prisma/client'); console.log('Prisma client:', p);"
 RUN pnpm --filter @nexus/worker build || pnpm -r build
 
 FROM node:22-alpine AS runner
