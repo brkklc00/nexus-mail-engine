@@ -14,7 +14,7 @@ RUN corepack enable && pnpm install
 
 FROM deps AS build
 COPY prisma ./prisma
-RUN rm -rf node_modules/.prisma && pnpm exec prisma generate --schema prisma/schema.prisma
+RUN rm -rf node_modules/.prisma && pnpm exec prisma generate --schema prisma/schema.prisma && node -e "const p=require.resolve('@prisma/client'); console.log('Prisma client:', p);"
 COPY . .
 RUN pnpm --filter @nexus/domain --filter @nexus/db --filter @nexus/queue --filter @nexus/rate-control --filter @nexus/mailer --filter @nexus/security build && pnpm --filter @nexus/web build
 
