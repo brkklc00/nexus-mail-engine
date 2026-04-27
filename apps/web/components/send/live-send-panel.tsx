@@ -14,19 +14,33 @@ type BootstrapData = {
   smtpAccounts?: Array<{
     id: string;
     name: string;
+    host: string;
+    port: number;
+    encryption: string;
+    username: string;
+    fromEmail: string;
+    providerLabel: string | null;
+    isActive: boolean;
     targetRatePerSecond: number;
     maxRatePerSecond: number | null;
     isThrottled: boolean;
-    healthStatus?: string;
+    healthStatus?: string | null;
     warning?: string | null;
   }>;
   smtps: Array<{
     id: string;
     name: string;
+    host: string;
+    port: number;
+    encryption: string;
+    username: string;
+    fromEmail: string;
+    providerLabel: string | null;
+    isActive: boolean;
     targetRatePerSecond: number;
     maxRatePerSecond: number | null;
     isThrottled: boolean;
-    healthStatus?: string;
+    healthStatus?: string | null;
     warning?: string | null;
   }>;
   campaigns: Array<{ id: string; name: string; status: string }>;
@@ -125,8 +139,8 @@ export function LiveSendPanel() {
         const firstTemplate = safeTemplates.find((item) => item.status === "active")?.id ?? safeTemplates[0]?.id ?? "";
         const firstList = safeLists.find((item) => item.estimatedRecipients > 0)?.id ?? safeLists[0]?.id ?? "";
         const firstSegment = safeSegments[0]?.id ?? "";
-        const defaultSmtpPool = safeSmtps
-          .filter((smtp) => smtp.healthStatus ? smtp.healthStatus === "healthy" : true)
+        const activeSmtpPool = safeSmtps
+          .filter((smtp) => smtp.isActive !== false)
           .map((smtp) => smtp.id);
 
         setBootstrap(data);
@@ -137,8 +151,8 @@ export function LiveSendPanel() {
           templateId: firstTemplate,
           listId: firstList,
           segmentId: firstSegment,
-          smtpAccountId: safeSmtps[0]?.id ?? "",
-          smtpIds: defaultSmtpPool.length > 0 ? defaultSmtpPool : safeSmtps[0]?.id ? [safeSmtps[0].id] : [],
+          smtpAccountId: activeSmtpPool[0] ?? safeSmtps[0]?.id ?? "",
+          smtpIds: activeSmtpPool.length > 0 ? activeSmtpPool : safeSmtps[0]?.id ? [safeSmtps[0].id] : [],
           rotateEvery: Number(data.defaults?.rotateEvery ?? data.poolSettings?.rotateEvery ?? 500),
           parallelSmtpCount: Number(data.defaults?.parallelSmtpCount ?? data.poolSettings?.parallelSmtpLanes ?? 1),
           smtpMode: data.defaults?.smtpMode ?? data.poolSettings?.sendingMode ?? "pool",
@@ -182,15 +196,15 @@ export function LiveSendPanel() {
   const listOptions = bootstrap?.lists ?? [];
   const segmentOptions = bootstrap?.segments ?? [];
   const smtpOptions = bootstrap?.smtpAccounts ?? bootstrap?.smtps ?? [];
-  const healthySmtpOptions = smtpOptions.filter((smtp) => (smtp.healthStatus ? smtp.healthStatus === "healthy" : true));
+  const activeSmtpOptions = smtpOptions.filter((smtp) => smtp.isActive !== false);
   const selectedList = bootstrap?.lists.find((list) => list.id === form.listId) ?? null;
   const selectedSegment = bootstrap?.segments.find((segment) => segment.id === form.segmentId) ?? null;
   const selectedTemplate = templateOptions.find((item) => item.id === form.templateId) ?? null;
-  const selectedPool = smtpOptions.filter((smtp) =>
+  const selectedPool = activeSmtpOptions.filter((smtp) =>
     form.smtpMode === "single" ? smtp.id === form.smtpAccountId : form.smtpIds.includes(smtp.id)
   );
   const estimatedRate = selectedPool.reduce((sum, smtp) => sum + (smtp.maxRatePerSecond ?? smtp.targetRatePerSecond ?? 0), 0);
-  const poolEmpty = form.smtpMode === "pool" ? form.smtpIds.length === 0 : !form.smtpAccountId;
+  const poolEmpty = form.smtpMode === "pool" ? selectedPool.length === 0 : !form.smtpAccountId;
   const targetEmpty =
     form.targetMode === "list"
       ? !form.listId
@@ -199,7 +213,7 @@ export function LiveSendPanel() {
         : !form.adHocDomain && !form.adHocOpened && !form.adHocClicked && !form.adHocFailed && !form.adHocSuppressed;
   const estimatedTarget =
     form.targetMode === "list" ? selectedList?.estimatedRecipients ?? 0 : selectedSegment?.lastMatchedCount ?? 0;
-  const selectedSmtpCount = form.smtpMode === "single" ? (form.smtpAccountId ? 1 : 0) : form.smtpIds.length;
+  const selectedSmtpCount = selectedPool.length;
   const targetZero =
     form.targetMode === "list"
       ? Boolean(form.listId) && estimatedTarget <= 0
@@ -207,7 +221,7 @@ export function LiveSendPanel() {
         ? Boolean(form.segmentId) && estimatedTarget <= 0
         : false;
   const noTemplate = !form.templateId;
-  const noUsableSmtp = smtpOptions.length === 0 || selectedSmtpCount === 0;
+  const noUsableSmtp = activeSmtpOptions.length === 0 || selectedSmtpCount === 0;
 
   function toggleSmtpInPool(smtpId: string) {
     setForm((prev) => {
@@ -234,7 +248,7 @@ export function LiveSendPanel() {
       toast.warning(t("send.targetZeroTitle"), t("send.targetZeroBody"));
       return;
     }
-    if (noUsableSmtp || healthySmtpOptions.length === 0) {
+    if (noUsableSmtp) {
       toast.warning(t("send.smtpRequiredTitle"), t("send.smtpRequiredBody"));
       return;
     }
@@ -429,10 +443,10 @@ export function LiveSendPanel() {
           className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
           value={form.smtpAccountId}
           onChange={(e) => setForm((s) => ({ ...s, smtpAccountId: e.target.value }))}
-          disabled={smtpOptions.length === 0}
+          disabled={activeSmtpOptions.length === 0}
         >
-          {smtpOptions.length === 0 ? <option value="">No active SMTP accounts</option> : null}
-          {smtpOptions.map((s) => (
+          {activeSmtpOptions.length === 0 ? <option value="">No active SMTP accounts</option> : null}
+          {activeSmtpOptions.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name}{s.warning ? ` (${s.warning})` : ""}
             </option>
@@ -488,11 +502,11 @@ export function LiveSendPanel() {
         </div>
       ) : null}
 
-      {templateOptions.length === 0 || listOptions.length === 0 || smtpOptions.length === 0 ? (
+      {templateOptions.length === 0 || listOptions.length === 0 || activeSmtpOptions.length === 0 ? (
         <div className="flex flex-wrap gap-2 rounded-md border border-border bg-zinc-900/50 p-3 text-xs text-zinc-300">
           {templateOptions.length === 0 ? <Link className="rounded border border-border px-2 py-1" href="/templates">Create template</Link> : null}
           {listOptions.length === 0 ? <Link className="rounded border border-border px-2 py-1" href="/lists">Create recipient list</Link> : null}
-          {smtpOptions.length === 0 ? <Link className="rounded border border-border px-2 py-1" href="/settings/smtp">Add SMTP account</Link> : null}
+          {activeSmtpOptions.length === 0 ? <Link className="rounded border border-border px-2 py-1" href="/settings/smtp">Add SMTP account</Link> : null}
         </div>
       ) : null}
 
@@ -503,13 +517,13 @@ export function LiveSendPanel() {
             <button
               type="button"
               className="rounded border border-border px-2 py-1 text-xs text-zinc-300"
-              onClick={() => setForm((s) => ({ ...s, smtpIds: smtpOptions.map((smtp) => smtp.id) }))}
+              onClick={() => setForm((s) => ({ ...s, smtpIds: activeSmtpOptions.map((smtp) => smtp.id) }))}
             >
               Select all active SMTPs
             </button>
           </div>
           <div className="grid gap-2 md:grid-cols-2">
-            {smtpOptions.map((smtp) => {
+            {activeSmtpOptions.map((smtp) => {
               const checked = form.smtpIds.includes(smtp.id);
               return (
                 <label

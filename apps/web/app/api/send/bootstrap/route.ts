@@ -62,6 +62,13 @@ export async function GET() {
         select: {
           id: true,
           name: true,
+          host: true,
+          port: true,
+          encryption: true,
+          username: true,
+          fromEmail: true,
+          providerLabel: true,
+          isActive: true,
           healthStatus: true,
           isThrottled: true,
           targetRatePerSecond: true,
@@ -77,18 +84,32 @@ export async function GET() {
             select: {
               id: true,
               name: true,
+              host: true,
+              port: true,
+              encryption: true,
+              username: true,
+              fromEmail: true,
+              providerLabel: true,
+              isActive: true,
               isThrottled: true,
               targetRatePerSecond: true,
               maxRatePerSecond: true
             }
           });
-          return legacyRows.map((row: any) => ({ ...row, healthStatus: "healthy" }));
+          return legacyRows.map((row: any) => ({ ...row, healthStatus: row.healthStatus ?? "healthy" }));
         }
         console.error("[send.bootstrap] smtp query failed", error);
         return [] as Array<{
           id: string;
           name: string;
-          healthStatus: string;
+          host: string;
+          port: number;
+          encryption: string;
+          username: string;
+          fromEmail: string;
+          providerLabel: string | null;
+          isActive: boolean;
+          healthStatus: string | null;
           isThrottled: boolean;
           targetRatePerSecond: number;
           maxRatePerSecond: number | null;
@@ -144,17 +165,25 @@ export async function GET() {
     const smtpAccounts = smtpRaw.map((smtp: any) => ({
       id: smtp.id,
       name: smtp.name,
+      host: smtp.host,
+      port: Number(smtp.port ?? 0),
+      encryption: smtp.encryption,
+      username: smtp.username,
+      fromEmail: smtp.fromEmail,
+      providerLabel: smtp.providerLabel ?? null,
+      isActive: smtp.isActive !== false,
       targetRatePerSecond: Number(smtp.targetRatePerSecond ?? 0),
       maxRatePerSecond: smtp.maxRatePerSecond ? Number(smtp.maxRatePerSecond) : null,
       isThrottled: Boolean(smtp.isThrottled),
-      healthStatus: smtp.healthStatus,
+      healthStatus: smtp.healthStatus ?? null,
       warning:
-        smtp.healthStatus !== "healthy"
+        smtp.healthStatus && smtp.healthStatus !== "healthy"
           ? `SMTP health: ${smtp.healthStatus}`
           : smtp.isThrottled
             ? "SMTP is throttled"
             : null
     }));
+    console.info(`[send.bootstrap] smtpAccounts loaded: ${smtpAccounts.length}`);
 
     const poolSettings = ((poolSettingsRaw?.value as any) ?? defaultPoolSettings) as {
       sendingMode?: "single" | "pool";
