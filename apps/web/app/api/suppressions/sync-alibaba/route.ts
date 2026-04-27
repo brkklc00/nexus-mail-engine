@@ -11,6 +11,7 @@ const schema = z.object({
 });
 
 type Category = "invalid" | "hard_bounce" | "complaint" | "blocked_rejected" | "temporary";
+type SyncMode = "real_api" | "mock" | "disabled";
 
 function classify(providerCode: string | null, message: string | null): Category {
   const text = `${providerCode ?? ""} ${message ?? ""}`.toLowerCase();
@@ -26,6 +27,25 @@ function chunk<T>(items: T[], size: number): T[][] {
   const output: T[][] = [];
   for (let i = 0; i < items.length; i += size) output.push(items.slice(i, i + size));
   return output;
+}
+
+function resolveCredentialsPresent(): boolean {
+  const keyId =
+    process.env.ALIBABA_DM_ACCESS_KEY_ID ??
+    process.env.ALIBABA_ACCESS_KEY_ID ??
+    process.env.ALIYUN_ACCESS_KEY_ID;
+  const keySecret =
+    process.env.ALIBABA_DM_ACCESS_KEY_SECRET ??
+    process.env.ALIBABA_ACCESS_KEY_SECRET ??
+    process.env.ALIYUN_ACCESS_KEY_SECRET;
+  return Boolean(keyId && keySecret);
+}
+
+function resolveMode(): SyncMode {
+  const configured = (process.env.ALIBABA_SUPPRESSION_SYNC_MODE ?? "").trim().toLowerCase();
+  if (configured === "disabled") return "disabled";
+  if (configured === "real_api") return "real_api";
+  return "mock";
 }
 
 export async function POST(req: Request) {
@@ -44,6 +64,64 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Invalid date range" }, { status: 400 });
   }
 
+  const mode = resolveMode();
+  const credentialsPresent = resolveCredentialsPresent();
+  const errors: string[] = [];
+  let apiRequestMade = false;
+  let totalReportsReturned = 0;
+
+  if (mode === "disabled") {
+    await writeAuditLog(session.userId, "suppression.sync_alibaba", "suppression", {
+      mode,
+      credentialsPresent,
+      dateRange: { from: from.toISOString(), to: to.toISOString() }
+    });
+    return NextResponse.json({
+      ok: true,
+      mode,
+      dateRange: { from: from.toISOString(), to: to.toISOString() },
+      credentialsPresent,
+      apiRequestMade,
+      totalReportsReturned,
+      scanned: 0,
+      matched: 0,
+      added: 0,
+      alreadySuppressed: 0,
+      ignoredTemporary: 0,
+      ignoredByCategory: 0,
+      errors
+    });
+  }
+
+  if (mode === "real_api") {
+    if (!credentialsPresent) {
+      errors.push("Alibaba credentials are not configured.");
+    } else {
+      errors.push("Alibaba sync is not connected to the real API yet.");
+    }
+    await writeAuditLog(session.userId, "suppression.sync_alibaba", "suppression", {
+      mode,
+      credentialsPresent,
+      dateRange: { from: from.toISOString(), to: to.toISOString() },
+      errors
+    });
+    return NextResponse.json({
+      ok: true,
+      mode,
+      dateRange: { from: from.toISOString(), to: to.toISOString() },
+      credentialsPresent,
+      apiRequestMade,
+      totalReportsReturned,
+      scanned: 0,
+      matched: 0,
+      added: 0,
+      alreadySuppressed: 0,
+      ignoredTemporary: 0,
+      ignoredByCategory: 0,
+      errors
+    });
+  }
+
   const logs = await prisma.campaignLog.findMany({
     where: {
       status: "failed",
@@ -58,6 +136,7 @@ export async function POST(req: Request) {
     orderBy: { createdAt: "desc" },
     take: 10000
   });
+  totalReportsReturned = logs.length;
 
   const selected = new Set(parsed.data.categories);
   let scanned = 0;
@@ -114,6 +193,14 @@ export async function POST(req: Request) {
   }
 
   const summary = {
+    mode,
+    dateRange: {
+      from: from.toISOString(),
+      to: to.toISOString()
+    },
+    credentialsPresent,
+    apiRequestMade,
+    totalReportsReturned,
     scanned,
     selectedCategories: parsed.data.categories,
     matched: candidates.length,
@@ -123,5 +210,19 @@ export async function POST(req: Request) {
     ignoredByCategory
   };
   await writeAuditLog(session.userId, "suppression.sync_alibaba", "suppression", summary);
-  return NextResponse.json({ ok: true, summary });
+  return NextResponse.json({
+    ok: true,
+    mode,
+    dateRange: summary.dateRange,
+    credentialsPresent,
+    apiRequestMade,
+    totalReportsReturned,
+    scanned,
+    matched: candidates.length,
+    added,
+    alreadySuppressed: existing.size,
+    ignoredTemporary,
+    ignoredByCategory,
+    errors
+  });
 }

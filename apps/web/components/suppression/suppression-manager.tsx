@@ -38,6 +38,23 @@ type QueryResponse = {
   sourceOptions: string[];
 };
 
+type AlibabaSyncResult = {
+  ok?: boolean;
+  error?: string;
+  mode: "real_api" | "mock" | "disabled";
+  dateRange: { from: string; to: string };
+  credentialsPresent: boolean;
+  apiRequestMade: boolean;
+  totalReportsReturned: number;
+  scanned: number;
+  matched: number;
+  added: number;
+  alreadySuppressed: number;
+  ignoredTemporary: number;
+  ignoredByCategory: number;
+  errors: string[];
+};
+
 type Filters = {
   q: string;
   reason: string;
@@ -133,7 +150,7 @@ export function SuppressionManager() {
     blocked_rejected: true
   });
   const [syncLoading, setSyncLoading] = useState(false);
-  const [syncSummary, setSyncSummary] = useState<string | null>(null);
+  const [syncSummary, setSyncSummary] = useState<AlibabaSyncResult | null>(null);
   const [syncSummaryOpen, setSyncSummaryOpen] = useState(false);
 
   const pageSizeOptions = [25, 50, 100];
@@ -371,25 +388,23 @@ export function SuppressionManager() {
           categories
         })
       });
-      const payload = (await response.json().catch(() => ({}))) as {
-        ok?: boolean;
-        error?: string;
-        summary?: {
-          scanned: number;
-          matched: number;
-          added: number;
-          alreadySuppressed: number;
-          ignoredTemporary: number;
-          ignoredByCategory: number;
-        };
-      };
-      if (!response.ok || !payload.ok || !payload.summary) {
+      const payload = (await response.json().catch(() => ({}))) as AlibabaSyncResult;
+      if (!response.ok || !payload.ok) {
         throw new Error(payload.error ?? "Alibaba sync failed");
       }
-      const text = `scanned ${payload.summary.scanned}, matched ${payload.summary.matched}, added ${payload.summary.added}, alreadySuppressed ${payload.summary.alreadySuppressed}, ignoredTemporary ${payload.summary.ignoredTemporary}, ignoredByCategory ${payload.summary.ignoredByCategory}`;
-      setSyncSummary(text);
+      setSyncSummary(payload);
       setSyncSummaryOpen(true);
-      toast.success("Alibaba sync completed", text);
+      const statusText =
+        payload.mode === "disabled"
+          ? "Alibaba sync is disabled by configuration."
+          : payload.mode === "mock"
+            ? "Alibaba sync is not connected to the real API yet."
+            : !payload.credentialsPresent
+              ? "Alibaba credentials are not configured."
+              : payload.apiRequestMade && payload.totalReportsReturned === 0
+                ? "Alibaba API connected, but no failed delivery reports were found for the selected date range."
+                : `Scanned ${payload.scanned}, matched ${payload.matched}, added ${payload.added}.`;
+      toast.success("Alibaba sync completed", statusText);
       await loadStats();
       if (hasQueried || hasFilterInput) {
         await runQuery({ ...filters, page: 1 });
@@ -690,7 +705,11 @@ export function SuppressionManager() {
           ))}
         </div>
         <p className="mt-2 text-xs text-zinc-500">Temporary failures are reported as ignored during sync and are not added to suppression.</p>
-        {syncSummary ? <p className="mt-2 text-xs text-zinc-300">{syncSummary}</p> : null}
+        {syncSummary ? (
+          <p className="mt-2 text-xs text-zinc-300">
+            Last run: mode {syncSummary.mode}, reports {syncSummary.totalReportsReturned}, added {syncSummary.added}
+          </p>
+        ) : null}
       </section>
 
       <section className="rounded-2xl border border-border bg-card">
@@ -806,7 +825,53 @@ export function SuppressionManager() {
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-2xl border border-border/80 bg-[#0f1420] p-4 shadow-2xl">
             <h3 className="text-sm font-semibold text-zinc-100">Alibaba Sync Summary</h3>
-            <p className="mt-2 text-sm text-zinc-300">{syncSummary}</p>
+            <div className="mt-2 space-y-1 text-sm text-zinc-300">
+              <p>
+                Date range: {new Date(syncSummary.dateRange.from).toLocaleString()} - {new Date(syncSummary.dateRange.to).toLocaleString()}
+              </p>
+              <p>Mode: {syncSummary.mode === "real_api" ? "Real API" : syncSummary.mode === "mock" ? "Mock" : "Disabled"}</p>
+              <p>Credentials configured: {syncSummary.credentialsPresent ? "Yes" : "No"}</p>
+              <p>Alibaba API request made: {syncSummary.apiRequestMade ? "Yes" : "No"}</p>
+              <p>Total reports returned: {syncSummary.totalReportsReturned}</p>
+              <p>
+                Scanned: {syncSummary.scanned} | Matched: {syncSummary.matched} | Added: {syncSummary.added}
+              </p>
+              <p>
+                Already suppressed: {syncSummary.alreadySuppressed} | Ignored temporary: {syncSummary.ignoredTemporary} | Ignored by category:{" "}
+                {syncSummary.ignoredByCategory}
+              </p>
+              {syncSummary.mode === "mock" ? (
+                <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
+                  Alibaba sync is not connected to the real API yet.
+                </p>
+              ) : null}
+              {syncSummary.mode === "disabled" ? (
+                <p className="rounded border border-zinc-500/30 bg-zinc-500/10 p-2 text-zinc-200">
+                  Alibaba sync is disabled by configuration.
+                </p>
+              ) : null}
+              {syncSummary.mode === "real_api" && !syncSummary.credentialsPresent ? (
+                <p className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-rose-200">
+                  Alibaba credentials are not configured.
+                </p>
+              ) : null}
+              {syncSummary.mode === "real_api" &&
+              syncSummary.credentialsPresent &&
+              syncSummary.apiRequestMade &&
+              syncSummary.totalReportsReturned === 0 ? (
+                <p className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
+                  Alibaba API connected, but no failed delivery reports were found for the selected date range.
+                </p>
+              ) : null}
+              {syncSummary.errors.length > 0 ? (
+                <div className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-rose-200">
+                  <p className="font-medium">Errors</p>
+                  {syncSummary.errors.map((item) => (
+                    <p key={item}>- {item}</p>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             <div className="mt-4 flex justify-end">
               <button
                 type="button"
