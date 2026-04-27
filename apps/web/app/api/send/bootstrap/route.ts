@@ -22,6 +22,11 @@ function isUnknownSegmentFieldError(error: unknown): boolean {
   return message.includes("Unknown argument `isArchived`") || message.includes("Unknown argument `lastMatchedCount`");
 }
 
+function isUnknownSmtpFieldError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Invalid `prisma.smtpAccount") && message.includes("Unknown argument");
+}
+
 export async function GET() {
   const session = await getSession();
   if (!session) {
@@ -49,6 +54,47 @@ export async function GET() {
         return [] as Array<{ id: string; name: string; updatedAt: Date; lastMatchedCount: number }>;
       });
 
+    const smtpPromise = prisma.smtpAccount
+      .findMany({
+        where: { isActive: true, isSoftDeleted: false },
+        orderBy: { createdAt: "desc" },
+        take: 200,
+        select: {
+          id: true,
+          name: true,
+          healthStatus: true,
+          isThrottled: true,
+          targetRatePerSecond: true,
+          maxRatePerSecond: true
+        }
+      })
+      .catch(async (error: unknown) => {
+        if (isUnknownSmtpFieldError(error)) {
+          const legacyRows = await prisma.smtpAccount.findMany({
+            where: { isActive: true, isSoftDeleted: false },
+            orderBy: { createdAt: "desc" },
+            take: 200,
+            select: {
+              id: true,
+              name: true,
+              isThrottled: true,
+              targetRatePerSecond: true,
+              maxRatePerSecond: true
+            }
+          });
+          return legacyRows.map((row: any) => ({ ...row, healthStatus: "healthy" }));
+        }
+        console.error("[send.bootstrap] smtp query failed", error);
+        return [] as Array<{
+          id: string;
+          name: string;
+          healthStatus: string;
+          isThrottled: boolean;
+          targetRatePerSecond: number;
+          maxRatePerSecond: number | null;
+        }>;
+      });
+
     const [templatesRaw, listsRaw, smtpRaw, campaignsRaw, segmentsRaw, poolSettingsRaw, queueObs] = await Promise.all([
       prisma.mailTemplate.findMany({
         where: { status: { in: ["active", "draft"] } },
@@ -65,19 +111,7 @@ export async function GET() {
           }
         }
       }),
-      prisma.smtpAccount.findMany({
-        where: { isActive: true, isSoftDeleted: false },
-        orderBy: { createdAt: "desc" },
-        take: 200,
-        select: {
-          id: true,
-          name: true,
-          healthStatus: true,
-          isThrottled: true,
-          targetRatePerSecond: true,
-          maxRatePerSecond: true
-        }
-      }),
+      smtpPromise,
       prisma.campaign.findMany({
         orderBy: { createdAt: "desc" },
         take: 30,

@@ -78,6 +78,11 @@ function startOfToday() {
   return now;
 }
 
+function isUnknownSmtpFieldError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Invalid `prisma.smtpAccount") && message.includes("Unknown argument");
+}
+
 export async function GET() {
   const session = await getSession();
   if (!session) {
@@ -85,110 +90,164 @@ export async function GET() {
   }
 
   const today = startOfToday();
-  const [accounts, sentTodayAgg, failedTodayAgg, warmupRows, poolSetting] = await Promise.all([
-    prisma.smtpAccount.findMany({
-      where: { isSoftDeleted: false },
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        name: true,
-        host: true,
-        port: true,
-        encryption: true,
-        username: true,
-        fromEmail: true,
-        fromName: true,
-        replyTo: true,
-        providerLabel: true,
-        isActive: true,
-        isThrottled: true,
-        throttleReason: true,
-        targetRatePerSecond: true,
-        maxRatePerSecond: true,
-        dailyCap: true,
-        hourlyCap: true,
-        minuteCap: true,
-        warmupEnabled: true,
-        warmupStartRps: true,
-        warmupIncrementStep: true,
-        warmupMaxRps: true,
-        healthStatus: true,
-        lastError: true,
-        lastTestAt: true,
-        lastSuccessAt: true,
-        cooldownUntil: true,
-        tags: true,
-        groupLabel: true,
-        connectionTimeout: true,
-        socketTimeout: true,
-        updatedAt: true
-      }
-    }),
-    prisma.$queryRaw<Array<{ total: bigint }>>`
-      SELECT COUNT(*)::bigint as total
-      FROM "CampaignLog" cl
-      JOIN "Campaign" c ON c.id = cl."campaignId"
-      WHERE cl."eventType" = 'sent' AND cl."createdAt" >= ${today}
-    `,
-    prisma.$queryRaw<Array<{ total: bigint }>>`
-      SELECT COUNT(*)::bigint as total
-      FROM "CampaignLog" cl
-      JOIN "Campaign" c ON c.id = cl."campaignId"
-      WHERE cl."status" = 'failed' AND cl."createdAt" >= ${today}
-    `,
-    prisma.smtpWarmupStat.findMany({
-      where: { date: { gte: today } },
-      select: { smtpAccountId: true, successfulDeliveries: true, failedDeliveries: true, tierName: true, effectiveRate: true }
-    }),
-    prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } })
-  ]);
+  try {
+    const accountsPromise = prisma.smtpAccount
+      .findMany({
+        where: { isSoftDeleted: false },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          name: true,
+          host: true,
+          port: true,
+          encryption: true,
+          username: true,
+          fromEmail: true,
+          fromName: true,
+          replyTo: true,
+          providerLabel: true,
+          isActive: true,
+          isThrottled: true,
+          throttleReason: true,
+          targetRatePerSecond: true,
+          maxRatePerSecond: true,
+          dailyCap: true,
+          hourlyCap: true,
+          minuteCap: true,
+          warmupEnabled: true,
+          warmupStartRps: true,
+          warmupIncrementStep: true,
+          warmupMaxRps: true,
+          healthStatus: true,
+          lastError: true,
+          lastTestAt: true,
+          lastSuccessAt: true,
+          cooldownUntil: true,
+          tags: true,
+          groupLabel: true,
+          connectionTimeout: true,
+          socketTimeout: true,
+          updatedAt: true
+        }
+      })
+      .catch(async (error: unknown) => {
+        if (!isUnknownSmtpFieldError(error)) throw error;
+        console.warn("[api/smtp GET] falling back to legacy smtp fields");
+        const legacyRows = await prisma.smtpAccount.findMany({
+          where: { isSoftDeleted: false },
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            name: true,
+            host: true,
+            port: true,
+            encryption: true,
+            username: true,
+            fromEmail: true,
+            fromName: true,
+            replyTo: true,
+            providerLabel: true,
+            isActive: true,
+            isThrottled: true,
+            throttleReason: true,
+            targetRatePerSecond: true,
+            maxRatePerSecond: true,
+            dailyCap: true,
+            hourlyCap: true,
+            connectionTimeout: true,
+            socketTimeout: true,
+            updatedAt: true
+          }
+        });
+        return legacyRows.map((row: any) => ({
+          ...row,
+          minuteCap: null,
+          warmupEnabled: true,
+          warmupStartRps: 1,
+          warmupIncrementStep: 1,
+          warmupMaxRps: null,
+          healthStatus: "healthy",
+          lastError: null,
+          lastTestAt: null,
+          lastSuccessAt: null,
+          cooldownUntil: null,
+          tags: [],
+          groupLabel: null
+        }));
+      });
 
-  const warmupMap = new Map<string, { smtpAccountId: string; successfulDeliveries: number; failedDeliveries: number; tierName: string | null; effectiveRate: number | null }>(
-    warmupRows.map((row: any) => [
-      row.smtpAccountId as string,
-      {
-        smtpAccountId: row.smtpAccountId as string,
-        successfulDeliveries: Number(row.successfulDeliveries ?? 0),
-        failedDeliveries: Number(row.failedDeliveries ?? 0),
-        tierName: row.tierName ?? null,
-        effectiveRate: row.effectiveRate ?? null
-      }
-    ])
-  );
-  const enriched = accounts.map((account: any) => {
-    const row = warmupMap.get(account.id);
-    return {
-      ...account,
-      sentToday: Number(row?.successfulDeliveries ?? 0),
-      failedToday: Number(row?.failedDeliveries ?? 0),
-      warmupTier: row?.tierName ?? null,
-      effectiveRps: row?.effectiveRate ?? account.targetRatePerSecond
-    };
-  });
-  const totalAccounts = enriched.length;
-  const activeAccounts = enriched.filter((account: any) => account.isActive).length;
-  const healthyAccounts = enriched.filter((account: any) => account.isActive && account.healthStatus === "healthy" && !account.isThrottled).length;
-  const throttledAccounts = enriched.filter((account: any) => account.isThrottled).length;
-  const effectiveTotalRps = enriched
-    .filter((account: any) => account.isActive && !account.isThrottled)
-    .reduce((sum: number, account: any) => sum + Number(account.effectiveRps ?? account.targetRatePerSecond ?? 0), 0);
-  const estimatedDailyCapacity = Math.floor(effectiveTotalRps * 86400);
+    const [accounts, sentTodayAgg, failedTodayAgg, warmupRows, poolSetting] = await Promise.all([
+      accountsPromise,
+      prisma.$queryRaw<Array<{ total: bigint }>>`
+        SELECT COUNT(*)::bigint as total
+        FROM "CampaignLog" cl
+        JOIN "Campaign" c ON c.id = cl."campaignId"
+        WHERE cl."eventType" = 'sent' AND cl."createdAt" >= ${today}
+      `,
+      prisma.$queryRaw<Array<{ total: bigint }>>`
+        SELECT COUNT(*)::bigint as total
+        FROM "CampaignLog" cl
+        JOIN "Campaign" c ON c.id = cl."campaignId"
+        WHERE cl."status" = 'failed' AND cl."createdAt" >= ${today}
+      `,
+      prisma.smtpWarmupStat.findMany({
+        where: { date: { gte: today } },
+        select: { smtpAccountId: true, successfulDeliveries: true, failedDeliveries: true, tierName: true, effectiveRate: true }
+      }),
+      prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } })
+    ]);
 
-  return NextResponse.json({
-    ok: true,
-    accounts: enriched,
-    metrics: {
-      totalSmtpAccounts: totalAccounts,
-      activeSmtpAccounts: activeAccounts,
-      healthySmtpAccounts: healthyAccounts,
-      throttledSmtpAccounts: throttledAccounts,
-      totalSentToday: Number(sentTodayAgg[0]?.total ?? 0),
-      totalFailedToday: Number(failedTodayAgg[0]?.total ?? 0),
-      effectiveTotalRps: Number(effectiveTotalRps.toFixed(2)),
-      estimatedDailyCapacity
-    },
-    poolSettings: (poolSetting?.value as any) ?? poolSettingsDefaults
-  });
+    const warmupMap = new Map<string, { smtpAccountId: string; successfulDeliveries: number; failedDeliveries: number; tierName: string | null; effectiveRate: number | null }>(
+      warmupRows.map((row: any) => [
+        row.smtpAccountId as string,
+        {
+          smtpAccountId: row.smtpAccountId as string,
+          successfulDeliveries: Number(row.successfulDeliveries ?? 0),
+          failedDeliveries: Number(row.failedDeliveries ?? 0),
+          tierName: row.tierName ?? null,
+          effectiveRate: row.effectiveRate ?? null
+        }
+      ])
+    );
+    const enriched = accounts.map((account: any) => {
+      const row = warmupMap.get(account.id);
+      return {
+        ...account,
+        sentToday: Number(row?.successfulDeliveries ?? 0),
+        failedToday: Number(row?.failedDeliveries ?? 0),
+        warmupTier: row?.tierName ?? null,
+        effectiveRps: row?.effectiveRate ?? account.targetRatePerSecond
+      };
+    });
+    const totalAccounts = enriched.length;
+    const activeAccounts = enriched.filter((account: any) => account.isActive).length;
+    const healthyAccounts = enriched.filter((account: any) => account.isActive && account.healthStatus === "healthy" && !account.isThrottled).length;
+    const throttledAccounts = enriched.filter((account: any) => account.isThrottled).length;
+    const effectiveTotalRps = enriched
+      .filter((account: any) => account.isActive && !account.isThrottled)
+      .reduce((sum: number, account: any) => sum + Number(account.effectiveRps ?? account.targetRatePerSecond ?? 0), 0);
+    const estimatedDailyCapacity = Math.floor(effectiveTotalRps * 86400);
+
+    return NextResponse.json({
+      ok: true,
+      accounts: enriched,
+      metrics: {
+        totalSmtpAccounts: totalAccounts,
+        activeSmtpAccounts: activeAccounts,
+        healthySmtpAccounts: healthyAccounts,
+        throttledSmtpAccounts: throttledAccounts,
+        totalSentToday: Number(sentTodayAgg[0]?.total ?? 0),
+        totalFailedToday: Number(failedTodayAgg[0]?.total ?? 0),
+        effectiveTotalRps: Number(effectiveTotalRps.toFixed(2)),
+        estimatedDailyCapacity
+      },
+      poolSettings: (poolSetting?.value as any) ?? poolSettingsDefaults
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "SMTP accounts could not be loaded";
+    console.error("[api/smtp GET] failed", error);
+    return NextResponse.json({ ok: false, error: "SMTP accounts could not be loaded", reason: message, accounts: [] }, { status: 500 });
+  }
 }
 
 export async function POST(req: Request) {
@@ -202,8 +261,8 @@ export async function POST(req: Request) {
   }
   const normalized = normalizeSmtpInput(parsed.data);
 
-  const account = await prisma.smtpAccount.create({
-    data: {
+  try {
+    const fullData = {
       name: normalized.name,
       host: normalized.host,
       port: normalized.port,
@@ -228,8 +287,40 @@ export async function POST(req: Request) {
       connectionTimeout: normalized.connectionTimeout ?? null,
       socketTimeout: normalized.socketTimeout ?? null,
       healthStatus: "healthy"
+    };
+
+    let account: any;
+    try {
+      account = await prisma.smtpAccount.create({ data: fullData });
+    } catch (error) {
+      if (!isUnknownSmtpFieldError(error)) throw error;
+      console.warn("[api/smtp POST] falling back to legacy smtp create fields");
+      account = await prisma.smtpAccount.create({
+        data: {
+          name: normalized.name,
+          host: normalized.host,
+          port: normalized.port,
+          encryption: normalized.encryption,
+          username: normalized.username,
+          passwordEncrypted: encryptSmtpSecret(normalized.password),
+          fromEmail: normalized.fromEmail,
+          fromName: normalized.fromName ?? null,
+          replyTo: normalized.replyTo ?? null,
+          providerLabel: normalized.providerLabel ?? null,
+          targetRatePerSecond: normalized.targetRatePerSecond ?? 1,
+          maxRatePerSecond: normalized.maxRatePerSecond ?? null,
+          dailyCap: normalized.dailyCap ?? null,
+          hourlyCap: normalized.hourlyCap ?? null,
+          connectionTimeout: normalized.connectionTimeout ?? null,
+          socketTimeout: normalized.socketTimeout ?? null
+        }
+      });
     }
-  });
-  await writeAuditLog(session.userId, "smtp.create", "smtp_account", { smtpAccountId: account.id });
-  return NextResponse.json({ ok: true, account });
+    await writeAuditLog(session.userId, "smtp.create", "smtp_account", { smtpAccountId: account.id });
+    return NextResponse.json({ ok: true, account });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "SMTP account could not be created";
+    console.error("[api/smtp POST] failed", error);
+    return NextResponse.json({ ok: false, error: "SMTP account could not be created", reason: message }, { status: 400 });
+  }
 }

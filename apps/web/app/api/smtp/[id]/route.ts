@@ -64,6 +64,11 @@ function normalizePatchInput(data: z.infer<typeof schema>) {
   return next;
 }
 
+function isUnknownSmtpFieldError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Invalid `prisma.smtpAccount") && message.includes("Unknown argument");
+}
+
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) {
@@ -105,8 +110,46 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       where: { id },
       data
     });
-  } catch {
-    return NextResponse.json({ ok: false, error: "SMTP account not found" }, { status: 404 });
+  } catch (error) {
+    if (isUnknownSmtpFieldError(error)) {
+      const legacyKeys = new Set([
+        "name",
+        "host",
+        "port",
+        "encryption",
+        "username",
+        "passwordEncrypted",
+        "fromEmail",
+        "fromName",
+        "replyTo",
+        "providerLabel",
+        "isActive",
+        "targetRatePerSecond",
+        "maxRatePerSecond",
+        "dailyCap",
+        "hourlyCap",
+        "isThrottled",
+        "throttleReason",
+        "connectionTimeout",
+        "socketTimeout",
+        "isSoftDeleted"
+      ]);
+      const legacyData = Object.fromEntries(Object.entries(data).filter(([key]) => legacyKeys.has(key)));
+      try {
+        account = await prisma.smtpAccount.update({
+          where: { id },
+          data: legacyData
+        });
+      } catch (fallbackError) {
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        console.error("[api/smtp/[id] PATCH] fallback failed", { id, error: fallbackMessage });
+        return NextResponse.json({ ok: false, error: "SMTP account not found" }, { status: 404 });
+      }
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[api/smtp/[id] PATCH] failed", { id, error: message });
+      return NextResponse.json({ ok: false, error: "SMTP update failed", reason: message }, { status: 400 });
+    }
   }
   await writeAuditLog(session.userId, "smtp.update", "smtp_account", { smtpAccountId: id });
   return NextResponse.json({ ok: true, account });
@@ -125,10 +168,18 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   } catch (error: any) {
     const code = error?.code ?? error?.meta?.code;
     if (code === "P2003") {
-      await prisma.smtpAccount.update({
-        where: { id },
-        data: { isSoftDeleted: true, isActive: false, healthStatus: "disabled" }
-      });
+      try {
+        await prisma.smtpAccount.update({
+          where: { id },
+          data: { isSoftDeleted: true, isActive: false, healthStatus: "disabled" }
+        });
+      } catch (fallbackError) {
+        if (!isUnknownSmtpFieldError(fallbackError)) throw fallbackError;
+        await prisma.smtpAccount.update({
+          where: { id },
+          data: { isSoftDeleted: true, isActive: false }
+        });
+      }
       await writeAuditLog(session.userId, "smtp.archive_in_use", "smtp_account", { smtpAccountId: id });
       return NextResponse.json(
         {
@@ -143,6 +194,8 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     if (code === "P2025") {
       return NextResponse.json({ ok: false, error: "SMTP account not found" }, { status: 404 });
     }
-    return NextResponse.json({ ok: false, error: "SMTP delete failed" }, { status: 400 });
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/smtp/[id] DELETE] failed", { id, code, error: message });
+    return NextResponse.json({ ok: false, error: "SMTP delete failed", reason: message }, { status: 400 });
   }
 }
