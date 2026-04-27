@@ -5,16 +5,16 @@ import { startCampaign } from "@/server/campaigns/orchestration.service";
 
 function mapStartError(error: unknown): { status: number; error: string; code: string } {
   const message = error instanceof Error ? error.message : "campaign_start_failed";
-  if (message === "campaign_not_found") return { status: 404, code: message, error: "Campaign bulunamadı." };
-  if (message === "campaign_state_invalid") return { status: 409, code: message, error: "Campaign bu durumda başlatılamaz." };
-  if (message === "campaign_list_required") return { status: 400, code: message, error: "Campaign için bir recipient listesi gerekli." };
+  if (message === "campaign_not_found") return { status: 404, code: message, error: "Campaign was not found." };
+  if (message === "campaign_state_invalid") return { status: 409, code: message, error: "Campaign cannot be started in the current state." };
+  if (message === "campaign_list_required") return { status: 400, code: message, error: "A recipient list is required for this campaign." };
   if (message === "campaign_target_required") return { status: 400, code: message, error: "Campaign hedef kitlesi eksik." };
-  if (message === "segment_query_missing") return { status: 400, code: message, error: "Segment query bulunamadı." };
-  if (message === "smtp_pool_empty") return { status: 400, code: message, error: "Seçili SMTP havuzunda aktif SMTP yok." };
-  if (message === "campaign_import_failed") return { status: 500, code: message, error: "Recipient import sırasında hata oluştu." };
-  if (message === "campaign_queue_failed") return { status: 502, code: message, error: "Campaign queue işlemi başarısız oldu." };
-  if (message === "lock_not_acquired") return { status: 409, code: message, error: "Campaign start işlemi zaten devam ediyor." };
-  return { status: 400, code: "campaign_start_failed", error: "Campaign başlatılamadı. Lütfen logları kontrol edin." };
+  if (message === "segment_query_missing") return { status: 400, code: message, error: "Segment query was not found." };
+  if (message === "smtp_pool_empty") return { status: 400, code: message, error: "No active SMTP account in selected SMTP pool." };
+  if (message === "campaign_import_failed") return { status: 500, code: message, error: "Recipient import failed." };
+  if (message === "campaign_queue_failed") return { status: 502, code: message, error: "Campaign queue operation failed." };
+  if (message === "lock_not_acquired") return { status: 409, code: message, error: "Campaign start process is already running." };
+  return { status: 400, code: "campaign_start_failed", error: "Campaign could not be started. Check logs for details." };
 }
 
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {

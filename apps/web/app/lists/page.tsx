@@ -19,15 +19,15 @@ export default async function ListsPage() {
     <div className="space-y-4">
       <PageHeader
         title="Recipient Lists"
-        description="Liste bazli hacim, uye sayisi ve import/export aksiyonlari."
+        description="List-based audience volume and import/export actions."
         action={<span className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-300">Manage lists</span>}
       />
 
       {lists.length === 0 ? (
         <EmptyState
           icon="folder-plus"
-          title="Liste yok"
-          description="Asagidaki panelden yeni liste olusturabilir veya import yapabilirsin."
+          title="No lists yet"
+          description="Create a new list or import recipients from the panel below."
         />
       ) : null}
       <ListsManager

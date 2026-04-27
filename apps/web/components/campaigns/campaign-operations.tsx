@@ -242,12 +242,12 @@ export function CampaignOperations() {
       const response = await fetch(`/api/campaigns?${params.toString()}`, { cache: "no-store" });
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error ?? "Campaign listesi yüklenemedi");
+        throw new Error(payload.error ?? "Campaign list could not be loaded");
       }
       const payload = (await response.json()) as CampaignListResponse;
       setData(payload);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Campaign listesi yüklenemedi");
+      setError(err instanceof Error ? err.message : "Campaign list could not be loaded");
       setData(null);
     } finally {
       setLoading(false);
@@ -261,13 +261,13 @@ export function CampaignOperations() {
       const response = await fetch(`/api/campaigns/${id}`, { cache: "no-store" });
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error ?? "Campaign detayları alınamadı");
+        throw new Error(payload.error ?? "Campaign details could not be loaded");
       }
       const payload = (await response.json()) as CampaignDetailResponse;
       setDetailData(payload.campaign);
       setDetailOpen(true);
     } catch (err) {
-      toast.error("Campaign detayı açılamadı", err instanceof Error ? err.message : "Beklenmeyen hata");
+      toast.error("Campaign details could not be opened", err instanceof Error ? err.message : "Unexpected error");
     } finally {
       setDetailLoading(false);
     }
@@ -278,16 +278,16 @@ export function CampaignOperations() {
       const response = await fetch(`/api/campaigns/${id}/report?format=summary`, { cache: "no-store" });
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error ?? "Rapor özeti alınamadı");
+        throw new Error(payload.error ?? "Report summary could not be loaded");
       }
       const payload = (await response.json()) as SummaryReport;
       setReportSummary(payload);
-      toast.success("Rapor özeti hazır");
+      toast.success("Report summary ready");
       if (!detailData || detailData.id !== id) {
         await fetchCampaignDetail(id);
       }
     } catch (err) {
-      toast.error("Rapor özeti alınamadı", err instanceof Error ? err.message : "Beklenmeyen hata");
+      toast.error("Report summary could not be loaded", err instanceof Error ? err.message : "Unexpected error");
     }
   }, [detailData, fetchCampaignDetail, toast]);
 
@@ -307,9 +307,9 @@ export function CampaignOperations() {
     if (action === "cancel") {
       const ok = await confirm({
         title: "Campaign iptal edilsin mi?",
-        message: "Kampanya durdurulacak ve bekleyen gönderimler sonlanacak.",
-        confirmLabel: "İptal et",
-        cancelLabel: "Vazgeç",
+        message: "Campaign will be stopped and pending sends will be terminated.",
+        confirmLabel: "Stop campaign",
+        cancelLabel: "Cancel",
         tone: "danger"
       });
       if (!ok) return;
@@ -317,9 +317,9 @@ export function CampaignOperations() {
     if (action === "delete") {
       const ok = await confirm({
         title: "Campaign silinsin mi?",
-        message: "Bu işlem geri alınamaz. Sadece güvenli statülerde silinebilir.",
+        message: "This action is irreversible. It can be deleted only in safe statuses.",
         confirmLabel: "Sil",
-        cancelLabel: "Vazgeç",
+        cancelLabel: "Cancel",
         tone: "danger"
       });
       if (!ok) return;
@@ -332,15 +332,15 @@ export function CampaignOperations() {
       const response = await fetch(endpoint, { method });
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error ?? `${action} başarısız`);
+        throw new Error(payload.error ?? `${action} failed`);
       }
-      toast.success(`Campaign ${action} başarılı`);
+      toast.success(`Campaign ${action} succeeded`);
       await fetchCampaigns();
       if (detailData?.id === campaignId) {
         await fetchCampaignDetail(campaignId);
       }
     } catch (err) {
-      toast.error(`Campaign ${action} başarısız`, err instanceof Error ? err.message : "Beklenmeyen hata");
+      toast.error(`Campaign ${action} failed`, err instanceof Error ? err.message : "Unexpected error");
     } finally {
       setPendingAction(null);
     }
@@ -487,7 +487,7 @@ export function CampaignOperations() {
         </div>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <div className="text-xs text-zinc-400">
-            {data ? `${fmtInt(data.total)} campaigns` : "Campaign listesi"}
+            {data ? `${fmtInt(data.total)} campaigns` : "Campaign list"}
           </div>
           <div className="flex gap-2">
             <button
@@ -525,7 +525,7 @@ export function CampaignOperations() {
         {loading ? (
           <div className="p-6 text-sm text-zinc-300">
             <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-            Campaign verileri yükleniyor...
+            Loading campaign data...
           </div>
         ) : error ? (
           <div className="p-6 text-sm text-rose-300">{error}</div>
@@ -533,8 +533,8 @@ export function CampaignOperations() {
           <div className="p-4">
             <EmptyState
               icon="megaphone"
-              title="Campaign bulunamadı"
-              description="Filtreyi temizleyip tekrar dene veya yeni campaign'i Send ekranından başlat."
+              title="No campaigns found"
+              description="Clear filters and retry, or start a new campaign from Send Control."
             />
             <div className="mt-4 flex justify-center">
               <Link href="/send" className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-900">
@@ -728,7 +728,7 @@ export function CampaignOperations() {
                 Detail loading...
               </p>
             ) : !detailData ? (
-              <p className="text-sm text-zinc-400">Campaign detay verisi bulunamadı.</p>
+              <p className="text-sm text-zinc-400">Campaign detail data not found.</p>
             ) : (
               <div className="space-y-4 text-sm">
                 <div className="grid gap-2 md:grid-cols-2">
@@ -772,7 +772,7 @@ export function CampaignOperations() {
                 <div className="rounded-xl border border-border bg-zinc-900/50 p-3">
                   <p className="mb-2 text-xs uppercase tracking-wide text-zinc-400">Failure Breakdown</p>
                   {detailData.failureBreakdown.length === 0 ? (
-                    <p className="text-xs text-zinc-400">Failure breakdown bulunamadı.</p>
+                    <p className="text-xs text-zinc-400">Failure breakdown not found.</p>
                   ) : (
                     <div className="space-y-1">
                       {detailData.failureBreakdown.map((item) => (
@@ -788,7 +788,7 @@ export function CampaignOperations() {
                 <div className="rounded-xl border border-border bg-zinc-900/50 p-3">
                   <p className="mb-2 text-xs uppercase tracking-wide text-zinc-400">Top Clicked Links</p>
                   {detailData.topLinks.length === 0 ? (
-                    <p className="text-xs text-zinc-400">Click verisi bulunamadı.</p>
+                    <p className="text-xs text-zinc-400">Click data not found.</p>
                   ) : (
                     <div className="space-y-1">
                       {detailData.topLinks.map((item) => (
@@ -841,7 +841,7 @@ export function CampaignOperations() {
                   <p className="mb-2 text-xs uppercase tracking-wide text-zinc-400">Recent Campaign Logs</p>
                   <div className="max-h-64 space-y-1 overflow-y-auto text-xs">
                     {detailData.recentLogs.length === 0 ? (
-                      <p className="text-zinc-500">Log bulunamadı.</p>
+                      <p className="text-zinc-500">No logs found.</p>
                     ) : (
                       detailData.recentLogs.map((log) => (
                         <div key={log.id} className="rounded bg-zinc-950/60 px-2 py-1">

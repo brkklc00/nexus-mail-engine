@@ -59,42 +59,42 @@ function mapTestError(error: unknown): { kind: string; message: string; recommen
     return {
       kind: "auth_failed",
       message: "SMTP authentication failed.",
-      recommendation: "Alibaba DirectMail SMTP username/password kullandığınızdan emin olun."
+      recommendation: "Ensure you are using Alibaba DirectMail SMTP username/password."
     };
   }
   if (/greeting|Greeting/i.test(message)) {
     return {
       kind: "greeting_timeout",
       message: "SMTP greeting timeout.",
-      recommendation: "Port/security eşleşmesini kontrol edin (Alibaba için SSL/465)."
+      recommendation: "Check port/security pairing (SSL/465 for Alibaba)."
     };
   }
   if (/socket|Unexpected socket close|ECONNRESET/i.test(message)) {
     return {
       kind: "socket_closed",
       message: "SMTP socket closed unexpectedly.",
-      recommendation: "Firewall ve TLS ayarlarını kontrol edin."
+      recommendation: "Check firewall and TLS settings."
     };
   }
   if (code === "ENOTFOUND" || /ENOTFOUND|getaddrinfo/i.test(message)) {
     return {
       kind: "dns_host_error",
       message: "SMTP host DNS resolution failed.",
-      recommendation: "Host adını doğrulayın."
+      recommendation: "Verify hostname."
     };
   }
   if (/TLS|SSL|certificate/i.test(message)) {
     return {
       kind: "tls_mismatch",
       message: "TLS/SSL mismatch detected.",
-      recommendation: "465 için secure=true, 587 için requireTLS=true kullanın."
+      recommendation: "Use secure=true for 465, requireTLS=true for 587."
     };
   }
   if (code === "ETIMEDOUT" || /timed out|timeout/i.test(message)) {
     return {
       kind: "timeout",
       message: "SMTP connection timed out.",
-      recommendation: "Network erişimi ve timeout değerlerini kontrol edin."
+      recommendation: "Check network access and timeout values."
     };
   }
   return { kind: "unknown", message };
@@ -163,7 +163,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
         recommendation:
           mapped.recommendation ??
           (resolved.alibaba
-            ? "Alibaba DirectMail için host smtpdm-*.aliyuncs.com, port 465, SSL ve SMTP password kullanın."
+            ? "For Alibaba DirectMail use host smtpdm-*.aliyuncs.com, port 465, SSL, and SMTP password."
             : undefined)
       },
       { status: 400 }

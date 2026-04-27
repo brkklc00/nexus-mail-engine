@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2, Pause, Play, Rocket, StopCircle } from "lucide-react";
 import Link from "next/link";
+import { useI18n } from "@/components/i18n/i18n-provider";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 
@@ -68,6 +69,7 @@ type LiveEvent = {
 export function LiveSendPanel() {
   const toast = useToast();
   const confirm = useConfirm();
+  const { t } = useI18n();
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [campaignId, setCampaignId] = useState("");
   const [live, setLive] = useState<LiveEvent | null>(null);
@@ -145,7 +147,7 @@ export function LiveSendPanel() {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Request failed";
         setBootstrapError(message);
-        toast.error("Send bootstrap yüklenemedi", message);
+        toast.error(t("send.bootstrapFailedTitle"), message || t("send.bootstrapFailedBody"));
       } finally {
         setLoadingBootstrap(false);
       }
@@ -221,27 +223,27 @@ export function LiveSendPanel() {
 
   async function createAndStartCampaign() {
     if (noTemplate) {
-      toast.warning("Template seçilmedi", "Campaign başlatmak için bir template seçin.");
+      toast.warning(t("send.templateRequiredTitle"), t("send.templateRequiredBody"));
       return;
     }
     if (targetEmpty) {
-      toast.warning("Hedef seçilmedi", "Recipient list/segment veya ad-hoc koşulu seçmelisiniz.");
+      toast.warning(t("send.targetRequiredTitle"), t("send.targetRequiredBody"));
       return;
     }
     if (targetZero) {
-      toast.warning("Target count 0", "Seçili hedefte kullanılabilir recipient bulunamadı.");
+      toast.warning(t("send.targetZeroTitle"), t("send.targetZeroBody"));
       return;
     }
     if (noUsableSmtp || healthySmtpOptions.length === 0) {
-      toast.warning("Aktif SMTP havuzu yok", "En az bir aktif/usable SMTP gerekli.");
+      toast.warning(t("send.smtpRequiredTitle"), t("send.smtpRequiredBody"));
       return;
     }
     const selectedSmtpNames = selectedPool.map((smtp) => smtp.name).join(", ");
     const confirmed = await confirm({
-      title: "Campaign başlatılsın mı?",
+      title: "Start this campaign?",
       message: `Target: ${estimatedTarget} recipient | SMTP: ${selectedSmtpNames || "-"} | Rotation: ${form.strategy} / every ${form.rotateEvery} | Estimated throughput: ${estimatedRate.toFixed(2)}/s`,
       confirmLabel: "Create + Start",
-      cancelLabel: "Vazgeç",
+      cancelLabel: t("common.cancel"),
       tone: "warning"
     });
     if (!confirmed) return;
@@ -291,9 +293,9 @@ export function LiveSendPanel() {
       }
       setCampaignId(created.campaign.id);
       setLogs((prev) => [`campaign created + started: ${created.campaign.id}`, ...prev]);
-      toast.success("Campaign başlatıldı");
+      toast.success("Campaign started");
     } catch (error) {
-      toast.error("Campaign başlatılamadı", error instanceof Error ? error.message : "Action failed");
+      toast.error("Campaign could not be started", error instanceof Error ? error.message : "Action failed");
     } finally {
       setActionLoading(null);
     }
@@ -303,10 +305,10 @@ export function LiveSendPanel() {
     if (!campaignId) return;
     if (kind === "cancel") {
       const accepted = await confirm({
-        title: "Campaign iptal edilsin mi?",
-        message: "Bekleyen gönderimler skipped durumuna geçecek.",
-        confirmLabel: "İptal et",
-        cancelLabel: "Vazgeç",
+        title: "Cancel this campaign?",
+        message: "Pending sends will be marked as skipped.",
+        confirmLabel: "Cancel campaign",
+        cancelLabel: t("common.cancel"),
         tone: "danger"
       });
       if (!accepted) return;
@@ -318,9 +320,9 @@ export function LiveSendPanel() {
         const err = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(err.error ?? `${kind} failed`);
       }
-      toast.info(`Campaign ${kind} isteği alındı`);
+      toast.info(`Campaign ${kind} request accepted`);
     } catch (error) {
-      toast.error(`Campaign ${kind} başarısız`, error instanceof Error ? error.message : `${kind} failed`);
+      toast.error(`Campaign ${kind} failed`, error instanceof Error ? error.message : `${kind} failed`);
     } finally {
       setActionLoading(null);
     }
@@ -527,7 +529,7 @@ export function LiveSendPanel() {
           {poolEmpty ? (
             <p className="flex items-center gap-1 text-xs text-amber-300">
               <AlertTriangle className="h-3.5 w-3.5" />
-              SMTP havuzu boş. Campaign başlatılamaz.
+              SMTP pool is empty. Campaign cannot be started.
             </p>
           ) : null}
         </div>
@@ -553,13 +555,13 @@ export function LiveSendPanel() {
       {targetZero ? (
         <p className="flex items-center gap-1 text-xs text-amber-300">
           <AlertTriangle className="h-3.5 w-3.5" />
-          Seçili hedefte recipient sayısı 0 olduğu için campaign başlatılamaz.
+          Campaign cannot start because selected target has 0 recipients.
         </p>
       ) : null}
       {selectedTemplate?.status === "draft" ? (
         <p className="flex items-center gap-1 text-xs text-amber-300">
           <AlertTriangle className="h-3.5 w-3.5" />
-          Draft template seçili. Production gönderim öncesi active template önerilir.
+          A draft template is selected. Use an active template for production sends.
         </p>
       ) : null}
 

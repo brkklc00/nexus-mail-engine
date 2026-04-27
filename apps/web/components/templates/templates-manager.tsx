@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { OverlayPortal } from "@/components/ui/overlay-portal";
+import { useI18n } from "@/components/i18n/i18n-provider";
 
 type TemplateStatus = "draft" | "active" | "archived" | "disabled";
 type SortMode = "updated_desc" | "created_desc" | "name" | "usage_count";
@@ -57,6 +58,7 @@ function buildTrackingSnippet() {
 export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] }) {
   const toast = useToast();
   const confirm = useConfirm();
+  const { t } = useI18n();
 
   const [loading, setLoading] = useState(false);
   const [templates, setTemplates] = useState<TemplateListItem[]>([]);
@@ -109,14 +111,14 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       const response = await fetch(`/api/templates?${params.toString()}`, { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as TemplateListResponse & { error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Template listesi yüklenemedi");
+        throw new Error(payload.error ?? t("templates.listLoadFailed"));
       }
       setTemplates(payload.items ?? []);
       setTotal(payload.total ?? 0);
       setTotalPages(payload.totalPages ?? 1);
       setCategories(payload.categories ?? []);
     } catch (error) {
-      toast.error("Template listesi yüklenemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error(t("templates.listLoadFailed"), error instanceof Error ? error.message : "Unexpected error");
       setTemplates([]);
       setTotal(0);
       setTotalPages(1);
@@ -147,15 +149,15 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
       if (!response.ok || !payload.ok || !payload.template) {
-        throw new Error(payload.error ?? "Template oluşturulamadı");
+        throw new Error(payload.error ?? t("templates.createFailed"));
       }
-      toast.success(statusOverride === "active" ? "Template active olarak kaydedildi" : "Template draft kaydedildi");
+      toast.success(statusOverride === "active" ? "Template saved as active" : "Template draft saved");
       setCreateOpen(false);
       setCreateForm({ title: "", subject: "", htmlBody: "", plainTextBody: "", category: "", status: "draft" });
       setPage(1);
       await loadTemplates();
     } catch (error) {
-      toast.error("Template oluşturulamadı", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error(t("templates.createFailed"), error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setActionLoading(null);
     }
@@ -166,13 +168,13 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
     const nextStatus = statusOverride ?? selected.status;
     if (nextStatus !== selected.status) {
       const confirmed = await confirm({
-        title: "Status değişikliği onayı",
+        title: "Confirm status change",
         message:
           nextStatus === "disabled" && selected.usageCount > 0
-            ? "Template campaignlerde kullanılmış. Disable işlemini onaylıyor musun?"
-            : `Template status "${nextStatus}" olarak güncellenecek.`,
-        confirmLabel: "Onayla",
-        cancelLabel: "Vazgeç",
+            ? "This template is used in campaigns. Do you want to disable it?"
+            : `Template status will be updated to "${nextStatus}".`,
+        confirmLabel: "Confirm",
+        cancelLabel: t("common.cancel"),
         tone: nextStatus === "disabled" ? "warning" : "info"
       });
       if (!confirmed) return;
@@ -193,7 +195,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
       if (!response.ok || !payload.ok || !payload.template) {
-        throw new Error(payload.error ?? "Template kaydedilemedi");
+        throw new Error(payload.error ?? t("templates.saveFailed"));
       }
       const updated = {
         ...payload.template,
@@ -216,10 +218,10 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
             : item
         )
       );
-      toast.success(statusOverride ? `Template ${statusOverride} olarak kaydedildi` : "Template kaydedildi");
+      toast.success(statusOverride ? `Template saved as ${statusOverride}` : "Template saved");
       await loadTemplates();
     } catch (error) {
-      toast.error("Template kaydedilemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error(t("templates.saveFailed"), error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setActionLoading(null);
     }
@@ -228,10 +230,10 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
   async function archiveTemplate() {
     if (!selected) return;
     const approved = await confirm({
-      title: "Template arşivlensin mi?",
-      message: "Template archived duruma alınacak.",
+      title: "Archive template?",
+      message: "Template status will be changed to archived.",
       confirmLabel: "Archive",
-      cancelLabel: "Vazgeç",
+      cancelLabel: t("common.cancel"),
       tone: "warning"
     });
     if (!approved) return;
@@ -241,10 +243,10 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
   async function deleteTemplate() {
     if (!selected) return;
     const approved = await confirm({
-      title: "Template silinsin mi?",
-      message: "Campaign kullanımına bağlı olarak archive önerilebilir.",
-      confirmLabel: "Sil",
-      cancelLabel: "Vazgeç",
+      title: "Delete template?",
+      message: "If this template is in use, archiving will be recommended instead.",
+      confirmLabel: "Delete",
+      cancelLabel: t("common.cancel"),
       tone: "danger"
     });
     if (!approved) return;
@@ -256,10 +258,10 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       if (!response.ok || !payload.ok) {
         if (payload.code === "template_in_use") {
           const archiveApprove = await confirm({
-            title: "Template campaign tarafından kullanılıyor",
-            message: "Hard delete yerine archive edilsin mi?",
-            confirmLabel: "Archive et",
-            cancelLabel: "Vazgeç",
+            title: "Template is used by campaigns",
+            message: "Archive instead of hard delete?",
+            confirmLabel: "Archive",
+            cancelLabel: t("common.cancel"),
             tone: "warning"
           });
           if (archiveApprove) {
@@ -267,14 +269,14 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
           }
           return;
         }
-        throw new Error(payload.error ?? "Template silinemedi");
+        throw new Error(payload.error ?? t("templates.deleteFailed"));
       }
-      toast.success("Template silindi");
+      toast.success("Template deleted");
       setEditorOpen(false);
       setSelected(null);
       await loadTemplates();
     } catch (error) {
-      toast.error("Template silinemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error(t("templates.deleteFailed"), error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setActionLoading(null);
     }
@@ -283,11 +285,11 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
   async function runTestSend() {
     if (!selected) return;
     if (!testSend.toEmail.trim()) {
-      toast.warning("Test alıcı e-posta alanı zorunlu");
+      toast.warning("Recipient email is required for test send");
       return;
     }
     if (!testSend.smtpAccountId) {
-      toast.warning("SMTP seçin");
+      toast.warning("Select an SMTP account");
       return;
     }
     setActionLoading("testSend");
@@ -301,9 +303,9 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       if (!response.ok || !payload.ok) {
         throw new Error(`${payload.error ?? "Test send failed"}${payload.hint ? ` ${payload.hint}` : ""}`);
       }
-      toast.success("Test gönderimi başarılı");
+      toast.success("Test send succeeded");
     } catch (error) {
-      toast.error("Test gönderimi başarısız", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error("Test send failed", error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setActionLoading(null);
     }
@@ -311,7 +313,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
 
   async function testSmtpConnection() {
     if (!testSend.smtpAccountId) {
-      toast.warning("SMTP seçin");
+      toast.warning("Select an SMTP account");
       return;
     }
     setActionLoading("testSmtp");
@@ -319,11 +321,11 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       const response = await fetch(`/api/smtp/${testSend.smtpAccountId}/test-connection`, { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "SMTP test başarısız");
+        throw new Error(payload.error ?? "SMTP test failed");
       }
-      toast.success("SMTP bağlantı testi başarılı");
+      toast.success("SMTP connection test succeeded");
     } catch (error) {
-      toast.error("SMTP test başarısız", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error("SMTP test failed", error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setActionLoading(null);
     }
@@ -335,7 +337,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       const response = await fetch(`/api/templates/${id}`);
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
       if (!response.ok || !payload.ok || !payload.template) {
-        throw new Error(payload.error ?? "Template detayı alınamadı");
+        throw new Error(payload.error ?? t("templates.detailFailed"));
       }
       return payload.template;
     } finally {
@@ -343,7 +345,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
     }
   }
 
-  const listCaption = useMemo(() => `Toplam ${total} template · Sayfa ${page}/${totalPages}`, [page, total, totalPages]);
+  const listCaption = useMemo(() => `Total ${total} templates · Page ${page}/${totalPages}`, [page, total, totalPages]);
 
   return (
     <div className="space-y-4">
@@ -408,11 +410,11 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
         {loading ? (
           <div className="p-6 text-sm text-zinc-400">
             <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-            Templates yükleniyor...
+            Loading templates...
           </div>
         ) : templates.length === 0 ? (
           <div className="p-4">
-            <EmptyState icon="mail-plus" title="Template bulunamadı" description="Filtreyi değiştir veya yeni template oluştur." />
+            <EmptyState icon="mail-plus" title="No templates found" description="Change filters or create a new template." />
           </div>
         ) : (
           <>
@@ -498,9 +500,9 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
 
       <SimpleModal open={trackingOpen} onClose={() => setTrackingOpen(false)} title="Tracking Guide">
         <div className="space-y-2 text-sm text-zinc-300">
-          <p><strong>Open tracking:</strong> <code>{"{{tracking_pixel}}"}</code> placeholder ile open pixel enjekte edilir.</p>
-          <p><strong>Click tracking:</strong> HTML linkleri otomatik `/track/click/[token]` endpointine rewrite edilir.</p>
-          <p><strong>Unsubscribe:</strong> <code>{"{{unsubscribe_url}}"}</code> ile global unsubscribe linki eklenir.</p>
+          <p><strong>Open tracking:</strong> <code>{"{{tracking_pixel}}"}</code> injects the open pixel placeholder.</p>
+          <p><strong>Click tracking:</strong> HTML links are rewritten to the `/track/click/[token]` endpoint.</p>
+          <p><strong>Unsubscribe:</strong> <code>{"{{unsubscribe_url}}"}</code> inserts the global unsubscribe link.</p>
           <p><strong>Supported placeholders:</strong> <code>name</code>, <code>email</code>, <code>first_name</code>, <code>last_name</code>, <code>{"{{tracking_pixel}}"}</code>, <code>{"{{unsubscribe_url}}"}</code>.</p>
           <pre className="rounded border border-border bg-zinc-900/70 p-2 text-xs text-zinc-200">{buildTrackingSnippet()}</pre>
         </div>
@@ -646,9 +648,9 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
 
             {editorTab === "tracking" ? (
               <div className="rounded-lg border border-border bg-zinc-900/50 p-3 text-sm text-zinc-300">
-                <p><strong>Open tracking:</strong> <code>{"{{tracking_pixel}}"}</code> placeholder ile pixel enjekte edilir.</p>
-                <p><strong>Click tracking:</strong> Linkler otomatik click token endpointine rewrite edilir.</p>
-                <p><strong>Unsubscribe:</strong> <code>{"{{unsubscribe_url}}"}</code> ile global unsub linki eklenir.</p>
+                <p><strong>Open tracking:</strong> <code>{"{{tracking_pixel}}"}</code> injects the tracking pixel placeholder.</p>
+                <p><strong>Click tracking:</strong> Links are automatically rewritten to click token endpoints.</p>
+                <p><strong>Unsubscribe:</strong> <code>{"{{unsubscribe_url}}"}</code> inserts the global unsubscribe link.</p>
                 <p className="mt-2 text-xs text-zinc-400">Snippet:</p>
                 <pre className="mt-1 rounded border border-border bg-zinc-950 p-2 text-xs text-zinc-200">{buildTrackingSnippet()}</pre>
               </div>

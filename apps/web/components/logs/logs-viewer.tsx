@@ -102,16 +102,16 @@ export function LogsViewer() {
         const res = await fetch(`/api/logs?${queryString}`);
         const payload = (await res.json().catch(() => ({}))) as Partial<LogsResponse>;
         if (!res.ok || !payload.ok) {
-          throw new Error(payload.error ?? "Log sorgusu başarısız.");
+          throw new Error(payload.error ?? "Log query failed.");
         }
         if (!cancelled) {
           setResponse(payload as LogsResponse);
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Log sorgusu başarısız.";
+        const message = err instanceof Error ? err.message : "Log query failed.";
         if (!cancelled) {
           setError(message);
-          toast.error("Logs yüklenemedi", message);
+          toast.error("Logs could not be loaded", message);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -259,8 +259,8 @@ export function LogsViewer() {
           <div className="p-4">
             <EmptyState
               icon="activity"
-              title="Filtreye uygun log bulunamadı"
-              description="Filtreleri genişletin veya tarih aralığını artırın."
+              title="No logs match this filter"
+              description="Broaden filters or increase date range."
             />
           </div>
         ) : (
@@ -384,7 +384,7 @@ export function LogsViewer() {
                   type="button"
                   onClick={async () => {
                     await navigator.clipboard.writeText(JSON.stringify(selectedLog.metadata ?? {}, null, 2));
-                    toast.success("JSON kopyalandı");
+                    toast.success("JSON copied");
                   }}
                   className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-zinc-200"
                 >

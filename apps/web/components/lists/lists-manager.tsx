@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { OverlayPortal } from "@/components/ui/overlay-portal";
+import { useI18n } from "@/components/i18n/i18n-provider";
 
 type ListSummary = {
   totalRecipients: number;
@@ -145,6 +146,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   const router = useRouter();
   const toast = useToast();
   const confirm = useConfirm();
+  const { t } = useI18n();
 
   const [lists, setLists] = useState(initialLists);
   const [selectedId, setSelectedId] = useState(initialLists[0]?.id ?? "");
@@ -190,7 +192,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       list?: { summary: ListSummary };
     };
     if (!response.ok || !payload.ok || !payload.list) {
-      toast.error("Liste özeti alınamadı", payload.error ?? "İşlem başarısız.");
+      toast.error(t("lists.summaryLoadFailed"), payload.error ?? t("smtp.operationFailed"));
       return null;
     }
     return payload.list.summary;
@@ -228,7 +230,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       list?: { id: string; name: string; notes: string | null; tags: string[]; maxSize: number; createdAt: string };
     };
     if (!response.ok || !payload.ok || !payload.list) {
-      toast.error("Liste oluşturulamadı", payload.error ?? "İşlem başarısız.");
+      toast.error(t("lists.createFailed"), payload.error ?? t("smtp.operationFailed"));
       setActionState(null);
       return;
     }
@@ -245,7 +247,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     setLists((prev) => [nextList, ...prev]);
     setListForm({ name: "", notes: "", tags: "", capacityLimit: "" });
     setCreateOpen(false);
-    toast.success("Liste oluşturuldu");
+    toast.success("List created");
     setActionState(null);
     await selectList(nextList.id);
     router.refresh();
@@ -276,7 +278,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       list?: { name: string; notes: string | null; tags: string[]; maxSize: number };
     };
     if (!response.ok || !payload.ok || !payload.list) {
-      toast.error("Liste güncellenemedi", payload.error ?? "İşlem başarısız.");
+      toast.error(t("lists.updateFailed"), payload.error ?? t("smtp.operationFailed"));
       setActionState(null);
       return;
     }
@@ -294,7 +296,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       )
     );
     setEditOpen(false);
-    toast.success("Liste güncellendi");
+    toast.success("List updated");
     setActionState(null);
     router.refresh();
   }
@@ -302,10 +304,10 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   async function deleteList() {
     if (!selected) return;
     const accepted = await confirm({
-      title: "Liste silinsin mi?",
-      message: `"${selected.name}" listesi ve üyelikleri kaldırılacak.`,
-      confirmLabel: "Sil",
-      cancelLabel: "Vazgeç",
+      title: "Delete this list?",
+      message: `The "${selected.name}" list and its memberships will be removed.`,
+      confirmLabel: "Delete",
+      cancelLabel: t("common.cancel"),
       tone: "danger"
     });
     if (!accepted) return;
@@ -314,7 +316,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     const response = await fetch(`/api/lists/${selected.id}`, { method: "DELETE" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      toast.error("Liste silinemedi", payload.error ?? "İşlem başarısız.");
+      toast.error(t("lists.deleteFailed"), payload.error ?? t("smtp.operationFailed"));
       setActionState(null);
       return;
     }
@@ -324,7 +326,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     setSelectedId(next[0]?.id ?? "");
     setSelectedSummary(next[0]?.summary ?? EMPTY_SUMMARY);
     setActionState(null);
-    toast.success("Liste silindi");
+    toast.success("List deleted");
     router.refresh();
   }
 
@@ -332,7 +334,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     if (!selected || !importForm.text.trim()) return;
     const batches = splitTextIntoBatches(importForm.text, 8000, 220_000);
     if (batches.length === 0) {
-      toast.warning("Import için geçerli giriş bulunamadı");
+      toast.warning("No valid input found for import");
       return;
     }
 
@@ -368,7 +370,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         };
       };
       if (!response.ok || !payload.ok || !payload.result) {
-        toast.error("Bulk import başarısız", payload.error ?? "Veri işlenemedi.");
+        toast.error(t("lists.importFailed"), payload.error ?? "Data could not be processed.");
         setImportProgress((prev) => ({ ...prev, running: false }));
         setActionState(null);
         return;
@@ -390,11 +392,11 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
 
     setImportForm((prev) => ({ ...prev, text: "" }));
     toast.success(
-      "Import tamamlandı",
+      "Import completed",
       `Processed ${aggregate.totalProcessed}, added ${aggregate.added}, duplicate ${aggregate.duplicateSkipped}, invalid ${aggregate.invalidSkipped}, suppressed ${aggregate.alreadySuppressedSkipped}, capacity skipped ${aggregate.capacitySkipped}`
     );
     setResultModal({
-      title: "Import Sonucu",
+      title: "Import result",
       body: `Processed: ${aggregate.totalProcessed}\nAdded: ${aggregate.added}\nInvalid: ${aggregate.invalidSkipped}\nDuplicate: ${aggregate.duplicateSkipped}\nSuppressed: ${aggregate.alreadySuppressedSkipped}\nCapacity skipped: ${aggregate.capacitySkipped}`
     });
     const summary = await fetchListSummary(selected.id);
@@ -410,12 +412,12 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   async function bulkRemove() {
     if (!selected || !removeForm.text.trim()) return;
     const accepted = await confirm({
-      title: "Bulk remove çalıştırılsın mı?",
+      title: "Run bulk remove?",
       message: removeForm.removeFromAllLists
-        ? "E-postalar tüm listelerden kaldırılacak."
-        : "E-postalar yalnızca seçili listeden kaldırılacak.",
-      confirmLabel: "Uygula",
-      cancelLabel: "Vazgeç",
+        ? "Emails will be removed from all lists."
+        : "Emails will be removed only from the selected list.",
+      confirmLabel: "Apply",
+      cancelLabel: t("common.cancel"),
       tone: "warning"
     });
     if (!accepted) return;
@@ -437,17 +439,17 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       };
     };
     if (!response.ok || !payload.ok || !payload.result) {
-      toast.error("Bulk remove başarısız", payload.error ?? "İşlem başarısız.");
+      toast.error(t("lists.removeFailed"), payload.error ?? t("smtp.operationFailed"));
       setActionState(null);
       return;
     }
     setRemoveForm((prev) => ({ ...prev, text: "" }));
     toast.info(
-      "Bulk remove tamamlandı",
+      "Bulk remove completed",
       `Processed ${payload.result.totalProcessed}, removed memberships ${payload.result.removedMemberships}, suppression added ${payload.result.suppressionAdded}`
     );
     setResultModal({
-      title: "Bulk Remove Sonucu",
+      title: "Bulk remove result",
       body: `Processed: ${payload.result.totalProcessed}\nRemoved memberships: ${payload.result.removedMemberships}\nSuppression added: ${payload.result.suppressionAdded}`
     });
     const summary = await fetchListSummary(selected.id);
@@ -470,8 +472,8 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     const accepted = await confirm({
       title,
       message,
-      confirmLabel: "Uygula",
-      cancelLabel: "Vazgeç",
+      confirmLabel: "Apply",
+      cancelLabel: t("common.cancel"),
       tone
     });
     if (!accepted) return;
@@ -488,7 +490,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       result?: ActionResultSummary;
     };
     if (!response.ok || !payload.ok) {
-      toast.error("Liste aksiyonu başarısız", payload.error ?? "İşlem başarısız.");
+      toast.error("List action failed", payload.error ?? t("smtp.operationFailed"));
       setActionState(null);
       return;
     }
@@ -502,9 +504,9 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       removed: 0
     };
     setLastActionSummary(result);
-    toast.success("Liste aksiyonu tamamlandı", formatActionSummary(result));
+    toast.success("List action completed", formatActionSummary(result));
     setResultModal({
-      title: "Validation Tool Sonucu",
+      title: "Validation tool result",
       body: formatActionSummary(result)
     });
     const summary = await fetchListSummary(selected.id);
@@ -521,7 +523,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     setActionState(status === "valid" ? "exportValid" : "exportInvalid");
     const response = await fetch(`/api/lists/${selected.id}/export?status=${status}`);
     if (!response.ok) {
-      toast.error("Export başarısız");
+      toast.error("Export failed");
       setActionState(null);
       return;
     }
@@ -533,14 +535,14 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     a.download = `list-${selected.id}-${status}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    toast.success(`CSV export tamamlandı (${status})`);
+    toast.success(`CSV export completed (${status})`);
     setActionState(null);
   }
 
   async function importCsvFile(file: File) {
     const text = await file.text();
     setImportForm((prev) => ({ ...prev, text: text.slice(0, 2_500_000) }));
-    toast.info("CSV içerik yüklendi", `${file.name} hazır, Import butonuyla çalıştırabilirsiniz.`);
+    toast.info("CSV content loaded", `${file.name} is ready. Run import to process it.`);
   }
 
   async function searchRecipients(page = 1) {
@@ -558,7 +560,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       search?: SearchPayload;
     };
     if (!response.ok || !payload.ok || !payload.search) {
-      toast.error("Arama başarısız", payload.error ?? "Arama sonucu alınamadı.");
+      toast.error(t("lists.searchFailed"), payload.error ?? "Search results could not be loaded.");
       setActionState(null);
       return;
     }
@@ -582,7 +584,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         </div>
         <div className="mt-4 space-y-2">
           {lists.length === 0 ? (
-            <p className="text-xs text-zinc-500">Henüz liste yok.</p>
+            <p className="text-xs text-zinc-500">No lists yet.</p>
           ) : (
             lists.map((list) => (
               <button
@@ -616,7 +618,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                   }
                 />
                 <p className="mt-1 text-xs text-zinc-500">
-                  Last import: {selectedSummary.lastImportDate ? new Date(selectedSummary.lastImportDate).toLocaleString() : "never"}
+                  Last import: {selectedSummary.lastImportDate ? new Date(selectedSummary.lastImportDate).toLocaleString() : "Never"}
                 </p>
               </div>
               <div className="flex gap-2">
@@ -678,7 +680,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
               />
               <label className="mt-2 inline-flex cursor-pointer items-center gap-2 rounded-lg border border-border px-2 py-1 text-xs text-zinc-300">
                 <FileUp className="h-3.5 w-3.5" />
-                CSV yükle
+                Upload CSV
                 <input
                   type="file"
                   accept=".csv,text/csv,text/plain"
@@ -766,23 +768,23 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                 <ActionBtn
                   label="Validate list"
                   loading={actionState === "validate"}
-                  onClick={() => void runListAction("validate", "validate", "Liste validate edilsin mi?", "Geçersiz e-postalar invalid olarak işaretlenecek.")}
+                  onClick={() => void runListAction("validate", "validate", "Validate this list?", "Invalid emails will be marked as invalid.")}
                 />
                 <ActionBtn
                   label="Deduplicate list"
                   loading={actionState === "dedupe"}
-                  onClick={() => void runListAction("dedupe", "dedupe", "Deduplicate çalışsın mı?", "Tekrarlı üyelik satırları kaldırılacak.")}
+                  onClick={() => void runListAction("dedupe", "dedupe", "Run deduplication?", "Duplicate membership rows will be removed.")}
                 />
                 <ActionBtn
                   label="Remove invalid emails"
                   loading={actionState === "removeInvalid"}
-                  onClick={() => void runListAction("remove_invalid", "removeInvalid", "Invalid kayıtlar kaldırılsın mı?", "Invalid status alıcı üyelikleri silinecek.")}
+                  onClick={() => void runListAction("remove_invalid", "removeInvalid", "Remove invalid records?", "Membership rows with invalid status will be removed.")}
                 />
                 <ActionBtn
                   label="Remove suppressed emails"
                   loading={actionState === "removeSuppressed"}
                   onClick={() =>
-                    void runListAction("remove_suppressed", "removeSuppressed", "Suppressed kayıtlar kaldırılsın mı?", "Global/list suppression ile eşleşen üyelikler silinecek.")
+                    void runListAction("remove_suppressed", "removeSuppressed", "Remove suppressed records?", "Memberships matching global/list suppression will be removed.")
                   }
                 />
                 <ActionBtn
@@ -790,7 +792,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                   loading={actionState === "clear"}
                   danger
                   onClick={() =>
-                    void runListAction("clear", "clear", "Liste tamamen temizlensin mi?", "Seçili listedeki tüm üyelikler silinecek.", "danger")
+                    void runListAction("clear", "clear", "Clear this list completely?", "All memberships in the selected list will be removed.", "danger")
                   }
                 />
                 <ActionBtn
@@ -884,7 +886,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
             </div>
           </>
         ) : (
-          <EmptyState icon="folder-plus" title="Liste seçin" description="Soldan bir liste seçerek dashboard ve araçları kullanın." />
+          <EmptyState icon="folder-plus" title="Select a list" description="Pick a list from the left to use dashboard and tools." />
         )}
       </section>
 
@@ -929,7 +931,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         </div>
       </ModalShell>
 
-      <ModalShell open={Boolean(resultModal)} title={resultModal?.title ?? "Sonuç"} onClose={() => setResultModal(null)}>
+      <ModalShell open={Boolean(resultModal)} title={resultModal?.title ?? "Result"} onClose={() => setResultModal(null)}>
         <pre className="whitespace-pre-wrap rounded-lg border border-border bg-zinc-900/60 p-3 text-xs text-zinc-200">
           {resultModal?.body}
         </pre>

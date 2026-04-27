@@ -17,23 +17,26 @@ import {
   ShieldBan,
   SlidersHorizontal
 } from "lucide-react";
+import { LanguageSwitcher } from "@/components/i18n/language-switcher";
+import { useI18n } from "@/components/i18n/i18n-provider";
 import { cn } from "@/lib/utils";
 
-const navItems: Array<{ href: Route; label: string; icon: LucideIcon }> = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/templates", label: "Templates", icon: Mail },
-  { href: "/lists", label: "Lists", icon: ListChecks },
-  { href: "/segments", label: "Segments", icon: SlidersHorizontal },
-  { href: "/send", label: "Send", icon: Send },
-  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
-  { href: "/settings/smtp", label: "SMTP", icon: ServerCog },
-  { href: "/suppression", label: "Suppression", icon: ShieldBan },
-  { href: "/logs", label: "Logs", icon: Activity }
+const navItems: Array<{ href: Route; labelKey: string; icon: LucideIcon }> = [
+  { href: "/dashboard", labelKey: "shell.nav.dashboard", icon: LayoutDashboard },
+  { href: "/templates", labelKey: "shell.nav.templates", icon: Mail },
+  { href: "/lists", labelKey: "shell.nav.lists", icon: ListChecks },
+  { href: "/segments", labelKey: "shell.nav.segments", icon: SlidersHorizontal },
+  { href: "/send", labelKey: "shell.nav.send", icon: Send },
+  { href: "/campaigns", labelKey: "shell.nav.campaigns", icon: Megaphone },
+  { href: "/settings/smtp", labelKey: "shell.nav.smtp", icon: ServerCog },
+  { href: "/suppression", labelKey: "shell.nav.suppression", icon: ShieldBan },
+  { href: "/logs", labelKey: "shell.nav.logs", icon: Activity }
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { t } = useI18n();
 
   if (pathname === "/login") {
     return <main className="p-6">{children}</main>;
@@ -56,7 +59,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Link
               key={item.href}
               href={item.href}
-              title={item.label}
+              title={t(item.labelKey)}
               className={cn(
                 "group/nav relative flex items-center justify-center rounded-xl px-3 py-2.5 text-sm text-zinc-400 transition-all duration-200 hover:bg-zinc-900/90 hover:text-white",
                 pathname === item.href
@@ -66,15 +69,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               <item.icon className="h-4 w-4 shrink-0" />
               <span className="pointer-events-none absolute left-[56px] top-1/2 hidden -translate-y-1/2 rounded-md border border-border bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 shadow-lg group-hover/nav:block">
-                {item.label}
+                {t(item.labelKey)}
               </span>
             </Link>
           ))}
         </nav>
         <div className="mt-auto">
+          <div className="mb-2 px-1">
+            <LanguageSwitcher />
+          </div>
           <button
             type="button"
-            title="Logout"
+            title={t("shell.logout")}
             className="group/nav relative flex w-full items-center justify-center rounded-xl border border-border bg-zinc-900/70 px-3 py-2.5 text-sm text-zinc-300 transition hover:border-rose-400/40 hover:bg-rose-500/10 hover:text-rose-200"
             onClick={async () => {
               await fetch("/api/auth/logout", { method: "POST" });
@@ -84,7 +90,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <LogOut className="h-4 w-4 shrink-0" />
             <span className="pointer-events-none absolute left-[56px] top-1/2 hidden -translate-y-1/2 rounded-md border border-border bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 shadow-lg group-hover/nav:block">
-              Logout
+              {t("shell.logout")}
             </span>
           </button>
         </div>

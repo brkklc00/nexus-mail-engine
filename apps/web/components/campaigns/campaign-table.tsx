@@ -27,9 +27,9 @@ export function CampaignTable({ campaigns }: { campaigns: CampaignRow[] }) {
     if (kind === "cancel") {
       const accepted = await confirm({
         title: "Campaign iptal edilsin mi?",
-        message: "Bu işlem kampanyayı durdurur ve bekleyen gönderimleri sonlandırır.",
-        confirmLabel: "İptal et",
-        cancelLabel: "Vazgeç",
+        message: "This action cancels the campaign and stops pending sends.",
+        confirmLabel: "Cancel campaign",
+        cancelLabel: "Cancel",
         tone: "danger"
       });
       if (!accepted) return;
@@ -41,10 +41,10 @@ export function CampaignTable({ campaigns }: { campaigns: CampaignRow[] }) {
         const data = (await response.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error ?? `${kind} failed`);
       }
-      toast.success(`Campaign ${kind} tamamlandı`);
+      toast.success(`Campaign ${kind} completed`);
       router.refresh();
     } catch (error) {
-      toast.error(`Campaign ${kind} başarısız`, error instanceof Error ? error.message : `${kind} failed`);
+      toast.error(`Campaign ${kind} failed`, error instanceof Error ? error.message : `${kind} failed`);
     } finally {
       setPending(null);
     }

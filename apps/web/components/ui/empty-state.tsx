@@ -13,6 +13,7 @@ import {
   PieChart,
   ServerCog
 } from "lucide-react";
+import { useI18n } from "@/components/i18n/i18n-provider";
 
 type EmptyStateIcon =
   | "activity"
@@ -51,6 +52,7 @@ export function EmptyState({
   ctaLabel?: string;
 }) {
   const Icon = iconMap[icon] ?? FileQuestion;
+  const { t } = useI18n();
 
   return (
     <div className="rounded-2xl border border-dashed border-border bg-gradient-to-b from-zinc-900/70 to-zinc-950/70 p-6 text-center">
@@ -64,7 +66,7 @@ export function EmptyState({
           type="button"
           disabled
           className="mt-4 rounded-lg border border-border px-3 py-2 text-xs text-zinc-400 disabled:cursor-not-allowed"
-          title="Bu eylem için backend endpoint gerekiyor"
+          title={t("empty.backendRequired", "Backend endpoint is required for this action")}
         >
           {ctaLabel}
         </button>

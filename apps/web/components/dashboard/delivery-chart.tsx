@@ -13,7 +13,7 @@ export function DeliveryChart({
       <div className="rounded-lg border border-border bg-card p-4">
         <EmptyState
           icon="chart-bar"
-          title="Delivery grafiği için veri yok"
+          title="No data for delivery chart"
           description="Bugune ait sent/failed event olustugunda saatlik dagilim burada gorunecek."
         />
       </div>

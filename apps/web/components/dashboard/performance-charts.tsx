@@ -27,8 +27,8 @@ export function PerformanceCharts({
         {rateData.length === 0 ? (
           <EmptyState
             icon="chart-pie"
-            title="Rate trend verisi yok"
-            description="Kampanya open/click oranlari olustukca haftalik trend burada listelenir."
+            title="No rate trend data"
+            description="Weekly trend appears here as campaign open/click rates accumulate."
           />
         ) : (
           <ResponsiveContainer width="100%" height="100%">
@@ -48,8 +48,8 @@ export function PerformanceCharts({
         {failureData.length === 0 ? (
           <EmptyState
             icon="chart-pie"
-            title="Failure verisi yok"
-            description="Failed event message'lari biriktikce dagilim burada gosterilir."
+            title="No failure data"
+            description="Distribution appears here as failed event messages accumulate."
           />
         ) : (
           <ResponsiveContainer width="100%" height="100%">

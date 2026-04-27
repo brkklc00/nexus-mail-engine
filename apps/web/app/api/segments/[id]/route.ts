@@ -66,7 +66,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const usage = await prisma.campaign.count({ where: { segmentId: id } });
   if (usage > 0) {
     return NextResponse.json(
-      { ok: false, code: "segment_in_use", error: "Segment kampanyalarda kullanılıyor. Önce arşivleyin.", campaignsUsing: usage },
+      { ok: false, code: "segment_in_use", error: "Segment is used by campaigns. Archive it first.", campaignsUsing: usage },
       { status: 409 }
     );
   }

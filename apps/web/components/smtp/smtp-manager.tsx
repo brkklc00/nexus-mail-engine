@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { OverlayPortal } from "@/components/ui/overlay-portal";
+import { useI18n } from "@/components/i18n/i18n-provider";
 
 type Account = {
   id: string;
@@ -100,6 +101,7 @@ export function SmtpManager({
   const baselineMetrics = _initialMetrics;
   const toast = useToast();
   const confirm = useConfirm();
+  const { t } = useI18n();
   const [accounts, setAccounts] = useState(initialAccounts);
   const [poolSettings, setPoolSettings] = useState<PoolSettings>({ ...defaultPoolSettings, ...(initialPoolSettings ?? {}) });
   const [poolSaving, setPoolSaving] = useState(false);
@@ -169,9 +171,9 @@ export function SmtpManager({
   const plannedDay = Math.floor(plannedRps * 86400);
 
   const warmupHelper = useMemo(() => {
-    if (poolSettings.rotateEvery <= 250) return "Warmup SMTP için 100-250 önerilir.";
-    if (poolSettings.rotateEvery <= 700) return "Normal SMTP dağıtımı için 500 civarı idealdir.";
-    return "High trust SMTP için 1000-2500 uygundur.";
+    if (poolSettings.rotateEvery <= 250) return "100-250 is recommended for warmup SMTP accounts.";
+    if (poolSettings.rotateEvery <= 700) return "Around 500 is ideal for regular SMTP distribution.";
+    return "1000-2500 is suitable for high-trust SMTP accounts.";
   }, [poolSettings.rotateEvery]);
   const metrics = useMemo(() => {
     const totalSmtpAccounts = accounts.length;
@@ -299,11 +301,11 @@ export function SmtpManager({
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Pool settings kaydedilemedi");
+        throw new Error(payload.error ?? "Pool settings could not be saved");
       }
-      toast.success("Pool settings kaydedildi");
+      toast.success("Pool settings saved");
     } catch (error) {
-      toast.error("Pool settings kaydedilemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error("Pool settings could not be saved", error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setPoolSaving(false);
     }
@@ -352,7 +354,7 @@ export function SmtpManager({
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
       if (!response.ok || !payload.ok || !payload.account) {
-        throw new Error(payload.error ?? "SMTP kaydedilemedi");
+        throw new Error(payload.error ?? t("smtp.saveFailed"));
       }
       const saved = payload.account as Account;
       if (editingId) {
@@ -360,7 +362,7 @@ export function SmtpManager({
       } else {
         setAccounts((prev) => [saved, ...prev]);
       }
-      toast.success(editingId ? "SMTP güncellendi" : "SMTP oluşturuldu");
+      toast.success(editingId ? "SMTP updated" : "SMTP created");
       if (withTest) {
         await testConnectionById(saved.id, saved.name);
       } else {
@@ -368,7 +370,7 @@ export function SmtpManager({
         resetForm();
       }
     } catch (error) {
-      toast.error("SMTP kaydedilemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error(t("smtp.saveFailed"), error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setActionLoading(null);
     }
@@ -377,10 +379,10 @@ export function SmtpManager({
   async function toggleAccount(account: Account) {
     if (account.isActive) {
       const accepted = await confirm({
-        title: "SMTP hesabı pasifleştirilsin mi?",
-        message: `"${account.name}" yeni kampanyalarda kullanılmayacak.`,
-        confirmLabel: "Pasifleştir",
-        cancelLabel: "Vazgeç",
+        title: "Disable SMTP account?",
+        message: `"${account.name}" will not be used in new campaigns.`,
+        confirmLabel: "Disable",
+        cancelLabel: t("common.cancel"),
         tone: "warning"
       });
       if (!accepted) return;
@@ -393,7 +395,7 @@ export function SmtpManager({
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
-      toast.error("SMTP güncellenemedi", payload.error ?? "İşlem başarısız.");
+      toast.error("SMTP could not be updated", payload.error ?? t("smtp.operationFailed"));
       setActionLoading(null);
       return;
     }
@@ -417,7 +419,7 @@ export function SmtpManager({
       };
     };
     if (response.ok && payload.ok) {
-      toast.success("SMTP bağlantısı başarılı");
+      toast.success(t("smtp.connectionTestSuccess"));
       setAccounts((prev) =>
         prev.map((item) =>
           item.id === accountId ? { ...item, healthStatus: "healthy", lastError: null, lastTestAt: new Date().toISOString() } : item
@@ -435,7 +437,7 @@ export function SmtpManager({
       setActionLoading(null);
       return;
     }
-    toast.error("SMTP bağlantı testi başarısız", payload.error ?? "Bağlantı kurulamadı.");
+    toast.error(t("smtp.connectionTestFailed"), payload.error ?? "Connection could not be established.");
     setAccounts((prev) =>
       prev.map((item) =>
         item.id === accountId
@@ -499,21 +501,21 @@ export function SmtpManager({
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
-      toast.error("Throttle reset başarısız", payload.error ?? "İşlem başarısız.");
+      toast.error("Throttle reset failed", payload.error ?? t("smtp.operationFailed"));
       setActionLoading(null);
       return;
     }
     setAccounts((prev) => prev.map((item) => (item.id === account.id ? payload.account! : item)));
-    toast.success("Throttle reset uygulandı");
+    toast.success("Throttle reset applied");
     setActionLoading(null);
   }
 
   async function removeAccount(account: Account) {
     const accepted = await confirm({
-      title: "SMTP hesabı silinsin mi?",
-      message: `"${account.name}" kullanımda değilse soft-delete uygulanır. Kullanımda ise disable/archive gerekir.`,
-      confirmLabel: "Sil",
-      cancelLabel: "Vazgeç",
+      title: "Delete SMTP account?",
+      message: `"${account.name}" will be hard-deleted only if not in use. Otherwise it will be archived.`,
+      confirmLabel: "Delete",
+      cancelLabel: t("common.cancel"),
       tone: "danger"
     });
     if (!accepted) return;
@@ -532,22 +534,22 @@ export function SmtpManager({
         toast.warning("SMTP is used in campaigns, archived instead of deleted.");
         setAccounts((prev) => prev.filter((item) => item.id !== account.id));
       } else {
-        toast.error("SMTP silinemedi", payload.error ?? "İşlem başarısız.");
+        toast.error(t("smtp.deleteFailed"), payload.error ?? t("smtp.operationFailed"));
       }
       setActionLoading(null);
       return;
     }
     setAccounts((prev) => prev.filter((item) => item.id !== account.id));
-    toast.success("SMTP silindi");
+    toast.success("SMTP deleted");
     setActionLoading(null);
   }
 
   async function disableAccount(account: Account) {
     const accepted = await confirm({
-      title: "SMTP disable edilsin mi?",
-      message: `"${account.name}" aktif pooldan çıkarılacak.`,
+      title: "Disable SMTP?",
+      message: `"${account.name}" will be removed from active pool.`,
       confirmLabel: "Disable",
-      cancelLabel: "Vazgeç",
+      cancelLabel: t("common.cancel"),
       tone: "warning"
     });
     if (!accepted) return;
@@ -559,7 +561,7 @@ export function SmtpManager({
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
-      toast.error("Disable başarısız", payload.error ?? "İşlem başarısız.");
+      toast.error("Disable failed", payload.error ?? t("smtp.operationFailed"));
       setActionLoading(null);
       return;
     }
@@ -570,10 +572,10 @@ export function SmtpManager({
 
   async function archiveAccount(account: Account) {
     const accepted = await confirm({
-      title: "SMTP archive edilsin mi?",
-      message: `"${account.name}" listeden kaldırılacak ve aktif pooldan çıkacak.`,
+      title: "Archive SMTP?",
+      message: `"${account.name}" will be removed from the list and active pool.`,
       confirmLabel: "Archive",
-      cancelLabel: "Vazgeç",
+      cancelLabel: t("common.cancel"),
       tone: "warning"
     });
     if (!accepted) return;
@@ -585,7 +587,7 @@ export function SmtpManager({
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      toast.error("Archive başarısız", payload.error ?? "İşlem başarısız.");
+      toast.error("Archive failed", payload.error ?? t("smtp.operationFailed"));
       setActionLoading(null);
       return;
     }
@@ -669,7 +671,7 @@ export function SmtpManager({
           </button>
         </div>
         {accounts.length === 0 ? (
-          <EmptyState icon="server" title="SMTP account yok" description="Add SMTP ile ilk hesabı oluştur." />
+          <EmptyState icon="server" title="No SMTP accounts" description="Create your first account with Add SMTP." />
         ) : null}
       </div>
 
@@ -781,11 +783,11 @@ export function SmtpManager({
               <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
                 {modalTab === "connection" ? (
                   <>
-                    <Field label="SMTP Name" helper="Hesabı ayırt etmek için kısa isim"><TextInput value={form.name} onChange={(value) => setForm((s) => ({ ...s, name: value }))} /></Field>
+                    <Field label="SMTP Name" helper="Short internal display name"><TextInput value={form.name} onChange={(value) => setForm((s) => ({ ...s, name: value }))} /></Field>
                     <Field label="Provider Label" helper="alibaba/custom"><TextInput value={form.providerLabel} onChange={(value) => setForm((s) => ({ ...s, providerLabel: value }))} /></Field>
                     <Field label="Host" helper="Alibaba: smtpdm-ap-southeast-1.aliyuncs.com"><TextInput value={form.host} onChange={(value) => setForm((s) => ({ ...s, host: value }))} /></Field>
                     <Field label="Port" helper="SSL 465, TLS 587"><NumberInput value={form.port} onChange={(value) => setForm((s) => ({ ...s, port: value }))} /></Field>
-                    <Field label="Security" helper="Seçime göre port güncellenir">
+                    <Field label="Security" helper="Port updates automatically by selection">
                       <SelectInput
                         value={form.encryption}
                         onChange={(value) => setForm((s) => ({ ...s, encryption: value, port: applySecurityDefaults(value, s.port) }))}
@@ -798,16 +800,16 @@ export function SmtpManager({
                 ) : null}
                 {modalTab === "identity" ? (
                   <>
-                    <Field label="From Email" helper="Verified sender olmalı"><TextInput value={form.fromEmail} onChange={(value) => setForm((s) => ({ ...s, fromEmail: value }))} /></Field>
-                    <Field label="From Name" helper="Gönderici görünen adı"><TextInput value={form.fromName} onChange={(value) => setForm((s) => ({ ...s, fromName: value }))} /></Field>
+                    <Field label="From Email" helper="Must be a verified sender"><TextInput value={form.fromEmail} onChange={(value) => setForm((s) => ({ ...s, fromEmail: value }))} /></Field>
+                    <Field label="From Name" helper="Visible sender name"><TextInput value={form.fromName} onChange={(value) => setForm((s) => ({ ...s, fromName: value }))} /></Field>
                     <Field label="Tags" helper="Comma separated"><TextInput value={form.tags} onChange={(value) => setForm((s) => ({ ...s, tags: value }))} /></Field>
-                    <Field label="Group" helper="Pool gruplama etiketi"><TextInput value={form.groupLabel} onChange={(value) => setForm((s) => ({ ...s, groupLabel: value }))} /></Field>
+                    <Field label="Group" helper="Pool grouping label"><TextInput value={form.groupLabel} onChange={(value) => setForm((s) => ({ ...s, groupLabel: value }))} /></Field>
                   </>
                 ) : null}
                 {modalTab === "rate" ? (
                   <>
-                    <Field label="Planned SMTP Count" helper="Hesaplama için"><NumberInput value={form.plannedSmtpCount} onChange={(value) => setForm((s) => ({ ...s, plannedSmtpCount: Math.max(1, value) }))} /></Field>
-                    <Field label="Target RPS" helper="Global planner hesaplamasıyla"><NumberInput step="0.0001" value={form.targetRatePerSecond} onChange={(value) => setForm((s) => ({ ...s, targetRatePerSecond: value }))} /></Field>
+                    <Field label="Planned SMTP Count" helper="Used for calculation"><NumberInput value={form.plannedSmtpCount} onChange={(value) => setForm((s) => ({ ...s, plannedSmtpCount: Math.max(1, value) }))} /></Field>
+                    <Field label="Target RPS" helper="Calculated from global planner"><NumberInput step="0.0001" value={form.targetRatePerSecond} onChange={(value) => setForm((s) => ({ ...s, targetRatePerSecond: value }))} /></Field>
                     <Field label="Max RPS" helper="Provider cap veya override"><NumberInput step="0.0001" value={form.maxRatePerSecond} onChange={(value) => setForm((s) => ({ ...s, maxRatePerSecond: value }))} /></Field>
                     <Field label="Daily quota" helper="0 = unlimited"><NumberInput value={form.dailyCap} onChange={(value) => setForm((s) => ({ ...s, dailyCap: value }))} /></Field>
                     <Field label="Hourly quota" helper="0 = unlimited"><NumberInput value={form.hourlyCap} onChange={(value) => setForm((s) => ({ ...s, hourlyCap: value }))} /></Field>
@@ -823,20 +825,20 @@ export function SmtpManager({
                       </label>
                     </Field>
                     <Field label="Warmup start RPS" helper="Alibaba default: 1"><NumberInput step="0.01" value={form.warmupStartRps} onChange={(value) => setForm((s) => ({ ...s, warmupStartRps: value }))} /></Field>
-                    <Field label="Warmup increment step" helper="Kademeli artış"><NumberInput step="0.01" value={form.warmupIncrementStep} onChange={(value) => setForm((s) => ({ ...s, warmupIncrementStep: value }))} /></Field>
+                    <Field label="Warmup increment step" helper="Gradual step-up value"><NumberInput step="0.01" value={form.warmupIncrementStep} onChange={(value) => setForm((s) => ({ ...s, warmupIncrementStep: value }))} /></Field>
                     <Field label="Warmup max RPS" helper="Alibaba default: 15"><NumberInput step="0.01" value={form.warmupMaxRps} onChange={(value) => setForm((s) => ({ ...s, warmupMaxRps: value }))} /></Field>
                   </>
                 ) : null}
                 {modalTab === "advanced" ? (
                   <>
-                    <Field label="Connection timeout (ms)" helper="Alibaba öneri: 30000"><NumberInput value={form.connectionTimeout} onChange={(value) => setForm((s) => ({ ...s, connectionTimeout: value }))} /></Field>
-                    <Field label="Socket timeout (ms)" helper="Alibaba öneri: 60000"><NumberInput value={form.socketTimeout} onChange={(value) => setForm((s) => ({ ...s, socketTimeout: value }))} /></Field>
+                    <Field label="Connection timeout (ms)" helper="Alibaba recommendation: 30000"><NumberInput value={form.connectionTimeout} onChange={(value) => setForm((s) => ({ ...s, connectionTimeout: value }))} /></Field>
+                    <Field label="Socket timeout (ms)" helper="Alibaba recommendation: 60000"><NumberInput value={form.socketTimeout} onChange={(value) => setForm((s) => ({ ...s, socketTimeout: value }))} /></Field>
                   </>
                 ) : null}
               </div>
               {isAlibabaPreset ? (
                 <p className="mt-3 rounded-lg border border-indigo-500/40 bg-indigo-500/10 p-2 text-xs text-indigo-200">
-                  Alibaba preset aktif: host/port/security/warmup/timeouts otomatik uygulandı. Username/password/from email alanlarını gerçek verified değerlerle girin.
+                  Alibaba preset is active: host/port/security/warmup/timeouts were auto-applied. Enter real verified username/password/from email values.
                 </p>
               ) : null}
               <div className="mt-4 flex flex-wrap gap-2">

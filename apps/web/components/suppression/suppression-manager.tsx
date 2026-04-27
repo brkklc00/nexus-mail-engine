@@ -153,11 +153,11 @@ export function SuppressionManager() {
         stats?: SuppressionStats;
       };
       if (!response.ok || !payload.ok || !payload.stats) {
-        throw new Error(payload.error ?? "Stats alınamadı");
+        throw new Error(payload.error ?? "Stats could not be loaded");
       }
       setStats(payload.stats);
     } catch (err) {
-      toast.error("Suppression stats alınamadı", err instanceof Error ? err.message : "Request failed");
+      toast.error("Suppression stats could not be loaded", err instanceof Error ? err.message : "Request failed");
     } finally {
       setLoadingStats(false);
     }
@@ -197,7 +197,7 @@ export function SuppressionManager() {
       });
       setHasQueried(true);
     } catch (err) {
-      toast.error("Suppression query başarısız", err instanceof Error ? err.message : "Request failed");
+      toast.error("Suppression query failed", err instanceof Error ? err.message : "Request failed");
     } finally {
       setQueryLoading(false);
     }
@@ -206,10 +206,10 @@ export function SuppressionManager() {
   async function submitBulkAdd() {
     if (!bulkText.trim()) return;
     const accepted = await confirm({
-      title: "Bulk suppression import yapılsın mı?",
-      message: "Girişler batch olarak işlenecek.",
+      title: "Run bulk suppression import?",
+      message: "Entries will be processed in batches.",
       confirmLabel: "Import",
-      cancelLabel: "Vazgeç",
+      cancelLabel: "Cancel",
       tone: "warning"
     });
     if (!accepted) return;
@@ -252,7 +252,7 @@ export function SuppressionManager() {
         };
       };
       if (!response.ok || !payload.ok || !payload.summary) {
-        toast.error("Bulk import başarısız", payload.error ?? "İşlem yarıda kaldı");
+        toast.error("Bulk import failed", payload.error ?? "Operation stopped midway");
         setBulkState("idle");
         return;
       }
@@ -269,7 +269,7 @@ export function SuppressionManager() {
     }
 
     toast.success(
-      "Bulk import tamamlandı",
+      "Bulk import completed",
       `processed ${aggregate.processed}, added ${aggregate.added}, duplicates ${aggregate.duplicates}, invalid ${aggregate.invalidSkipped}, already suppressed ${aggregate.alreadySuppressed}`
     );
     setBulkText("");
@@ -294,10 +294,10 @@ export function SuppressionManager() {
   async function submitBulkRemove() {
     if (!removeText.trim()) return;
     const accepted = await confirm({
-      title: "Suppression bulk remove çalıştırılsın mı?",
-      message: "Global suppression kayıtları girişe göre kaldırılacak.",
+      title: "Run suppression bulk remove?",
+      message: "Global suppression records will be removed based on input.",
       confirmLabel: "Remove",
-      cancelLabel: "Vazgeç",
+      cancelLabel: "Cancel",
       tone: "danger"
     });
     if (!accepted) return;
@@ -328,7 +328,7 @@ export function SuppressionManager() {
         throw new Error(payload.error ?? "Bulk remove failed");
       }
       toast.info(
-        "Bulk remove tamamlandı",
+        "Bulk remove completed",
         `processed ${payload.summary.processed}, removed ${payload.summary.removed}, not found ${payload.summary.notFound}, invalid ${payload.summary.invalidInput}`
       );
       setRemoveText("");
@@ -337,7 +337,7 @@ export function SuppressionManager() {
         await runQuery({ ...filters, page: 1 });
       }
     } catch (err) {
-      toast.error("Bulk remove başarısız", err instanceof Error ? err.message : "Request failed");
+      toast.error("Bulk remove failed", err instanceof Error ? err.message : "Request failed");
     } finally {
       setRemoveLoading(false);
     }
@@ -348,14 +348,14 @@ export function SuppressionManager() {
       .filter(([, checked]) => checked)
       .map(([key]) => key);
     if (categories.length === 0) {
-      toast.warning("En az bir kategori seçin");
+      toast.warning("Select at least one category");
       return;
     }
     const accepted = await confirm({
-      title: "Alibaba DirectMail sync başlatılsın mı?",
-      message: "Temporary failures ignore edilecek, kalıcı kategoriler suppression'a eklenecek.",
+      title: "Start Alibaba DirectMail sync?",
+      message: "Temporary failures are ignored; permanent categories are added to suppression.",
       confirmLabel: "Sync",
-      cancelLabel: "Vazgeç",
+      cancelLabel: "Cancel",
       tone: "warning"
     });
     if (!accepted) return;
@@ -389,13 +389,13 @@ export function SuppressionManager() {
       const text = `scanned ${payload.summary.scanned}, matched ${payload.summary.matched}, added ${payload.summary.added}, alreadySuppressed ${payload.summary.alreadySuppressed}, ignoredTemporary ${payload.summary.ignoredTemporary}, ignoredByCategory ${payload.summary.ignoredByCategory}`;
       setSyncSummary(text);
       setSyncSummaryOpen(true);
-      toast.success("Alibaba sync tamamlandı", text);
+      toast.success("Alibaba sync completed", text);
       await loadStats();
       if (hasQueried || hasFilterInput) {
         await runQuery({ ...filters, page: 1 });
       }
     } catch (err) {
-      toast.error("Alibaba sync başarısız", err instanceof Error ? err.message : "Request failed");
+      toast.error("Alibaba sync failed", err instanceof Error ? err.message : "Request failed");
     } finally {
       setSyncLoading(false);
     }
@@ -403,10 +403,10 @@ export function SuppressionManager() {
 
   async function removeSingle(id: string) {
     const accepted = await confirm({
-      title: "Suppression kaydı kaldırılsın mı?",
-      message: "Kayıt suppression listesinden çıkarılacak.",
-      confirmLabel: "Kaldır",
-      cancelLabel: "Vazgeç",
+      title: "Remove suppression record?",
+      message: "The record will be removed from suppression.",
+      confirmLabel: "Remove",
+      cancelLabel: "Cancel",
       tone: "danger"
     });
     if (!accepted) return;
@@ -414,10 +414,10 @@ export function SuppressionManager() {
     const response = await fetch(`/api/suppressions/${id}`, { method: "DELETE" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      toast.error("Kayıt kaldırılamadı", payload.error ?? "Request failed");
+      toast.error("Record could not be removed", payload.error ?? "Request failed");
       return;
     }
-    toast.info("Suppression kaydı kaldırıldı");
+    toast.info("Suppression record removed");
     await loadStats();
     if (hasQueried) {
       await runQuery(filters);
@@ -689,7 +689,7 @@ export function SuppressionManager() {
             </label>
           ))}
         </div>
-        <p className="mt-2 text-xs text-zinc-500">Temporary failures sync sonucunda ignored olarak raporlanır, suppression'a eklenmez.</p>
+        <p className="mt-2 text-xs text-zinc-500">Temporary failures are reported as ignored during sync and are not added to suppression.</p>
         {syncSummary ? <p className="mt-2 text-xs text-zinc-300">{syncSummary}</p> : null}
       </section>
 
@@ -699,7 +699,7 @@ export function SuppressionManager() {
             <EmptyState
               icon="ban"
               title="Search or import suppression data to view records."
-              description="Varsayılan görünümde tüm suppression kayıtları listelenmez."
+              description="The default view does not list all suppression records."
             />
           </div>
         ) : queryLoading ? (
@@ -713,7 +713,7 @@ export function SuppressionManager() {
             <EmptyState
               icon="ban"
               title="No records found"
-              description="Filtreleri değiştirin veya tarih aralığını genişletin."
+              description="Change filters or expand the date range."
             />
           </div>
         ) : (

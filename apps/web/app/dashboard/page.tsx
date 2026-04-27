@@ -153,7 +153,7 @@ export default async function DashboardPage() {
     <div className="space-y-5">
       <PageHeader
         title="Command Center"
-        description="Canli queue, SMTP sagligi ve kampanya aktivitesi tek bakista."
+        description="Live queue, SMTP health, and campaign activity at a glance."
         action={
           <div className="rounded-xl border border-border bg-zinc-900/70 px-3 py-2 text-xs text-zinc-300">
             Queue: active {queueMetrics?.deliveryCounts?.active ?? 0} · waiting {queueMetrics?.deliveryCounts?.waiting ?? 0}
@@ -194,8 +194,8 @@ export default async function DashboardPage() {
               {smtpStates.length === 0 ? (
                 <EmptyState
                   icon="chart-bar"
-                  title="SMTP account bulunamadi"
-                  description="SMTP hesaplari eklendiginde saglik ve throttle durumu burada gorunecek."
+                  title="No SMTP accounts found"
+                  description="SMTP health and throttle state will appear here after accounts are added."
                 />
               ) : (
                 smtpStates.map((smtp: SmtpSummary) => (
@@ -223,8 +223,8 @@ export default async function DashboardPage() {
         {recentLogs.length === 0 ? (
           <EmptyState
             icon="chart-bar"
-            title="Aktivite kaydi yok"
-            description="Kampanya islemleri basladiginda son event'ler burada listelenecek."
+            title="No activity records"
+            description="Recent events will be listed here when campaign activity starts."
           />
         ) : (
           <div className="space-y-2">

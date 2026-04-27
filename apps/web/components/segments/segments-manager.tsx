@@ -95,7 +95,7 @@ export function SegmentsManager() {
 
   async function loadBootstrap() {
     const response = await fetch("/api/send/bootstrap", { cache: "no-store" });
-    if (!response.ok) throw new Error("Bootstrap yüklenemedi");
+    if (!response.ok) throw new Error("Bootstrap could not be loaded");
     const payload = (await response.json()) as BootstrapData;
     setBootstrap(payload);
   }
@@ -106,11 +106,11 @@ export function SegmentsManager() {
       const response = await fetch("/api/segments?page=1&pageSize=50", { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; items?: SegmentListItem[]; error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Segment listesi yüklenemedi");
+        throw new Error(payload.error ?? "Segment list could not be loaded");
       }
       setSegments(payload.items ?? []);
     } catch (error) {
-      toast.error("Segment listesi yüklenemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error("Segment list could not be loaded", error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setLoadingSegments(false);
     }
@@ -121,7 +121,7 @@ export function SegmentsManager() {
       try {
         await Promise.all([loadBootstrap(), loadSegments()]);
       } catch (error) {
-        toast.error("Segment bootstrap yüklenemedi", error instanceof Error ? error.message : "Request failed");
+        toast.error("Segment bootstrap could not be loaded", error instanceof Error ? error.message : "Request failed");
       }
     })();
   }, []);
@@ -136,11 +136,11 @@ export function SegmentsManager() {
       });
       const payload = (await response.json().catch(() => ({}))) as QueryResponse & { error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Segment query başarısız");
+        throw new Error(payload.error ?? "Segment query failed");
       }
       setQueryResult(payload);
     } catch (error) {
-      toast.error("Segment query başarısız", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error("Segment query failed", error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setLoading(false);
     }
@@ -155,7 +155,7 @@ export function SegmentsManager() {
       });
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error ?? "Export başarısız");
+        throw new Error(payload.error ?? "Export failed");
       }
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -164,15 +164,15 @@ export function SegmentsManager() {
       anchor.download = `segment-${mode}.csv`;
       anchor.click();
       window.URL.revokeObjectURL(url);
-      toast.success("CSV export hazırlandı");
+      toast.success("CSV export prepared");
     } catch (error) {
-      toast.error("CSV export başarısız", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error("CSV export failed", error instanceof Error ? error.message : "Unexpected error");
     }
   }
 
   async function saveSegment() {
     if (!saveName.trim()) {
-      toast.warning("Segment adı gerekli");
+      toast.warning("Segment name is required");
       return;
     }
     try {
@@ -188,14 +188,14 @@ export function SegmentsManager() {
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Segment kaydedilemedi");
+        throw new Error(payload.error ?? "Segment could not be saved");
       }
-      toast.success("Segment kaydedildi");
+      toast.success("Segment saved");
       setSaveName("");
       setSaveDescription("");
       await loadSegments();
     } catch (error) {
-      toast.error("Segment kaydedilemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error("Segment could not be saved", error instanceof Error ? error.message : "Unexpected error");
     }
   }
 
@@ -207,7 +207,7 @@ export function SegmentsManager() {
     });
     const data = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !data.ok) {
-      throw new Error(data.error ?? "İşlem başarısız");
+      throw new Error(data.error ?? "Operation failed");
     }
     toast.success(successTitle);
     await loadSegments();
@@ -215,10 +215,10 @@ export function SegmentsManager() {
 
   async function deleteSegment(id: string) {
     const approved = await confirm({
-      title: "Segment silinsin mi?",
-      message: "Kampanyada kullanılmıyorsa kalıcı olarak silinecek.",
-      confirmLabel: "Sil",
-      cancelLabel: "Vazgeç",
+      title: "Delete segment?",
+      message: "It will be permanently deleted if it is not used by any campaign.",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
       tone: "danger"
     });
     if (!approved) return;
@@ -226,12 +226,12 @@ export function SegmentsManager() {
       const response = await fetch(`/api/segments/${id}`, { method: "DELETE" });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Silme başarısız");
+        throw new Error(payload.error ?? "Delete failed");
       }
-      toast.success("Segment silindi");
+      toast.success("Segment deleted");
       await loadSegments();
     } catch (error) {
-      toast.error("Segment silinemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
+      toast.error("Segment could not be deleted", error instanceof Error ? error.message : "Unexpected error");
     }
   }
 
@@ -240,7 +240,7 @@ export function SegmentsManager() {
       <section className="rounded-2xl border border-border bg-card p-4">
         <p className="text-sm font-semibold text-white">Segments are dynamic audiences built from delivery and engagement behavior.</p>
         <p className="mt-1 text-xs text-zinc-400">
-          Varsayılan olarak recipient listelenmez. Query çalıştırıldığında sadece maksimum 50 örnek sonuç gösterilir.
+          Recipients are not listed by default. Running a query shows at most 50 sample rows.
         </p>
       </section>
 
@@ -414,7 +414,7 @@ export function SegmentsManager() {
                   {item.domain} - {item.count}
                 </p>
               ))}
-              {(queryResult?.stats.topDomains ?? []).length === 0 ? <p className="text-zinc-500">Domain verisi yok.</p> : null}
+              {(queryResult?.stats.topDomains ?? []).length === 0 ? <p className="text-zinc-500">No domain data.</p> : null}
             </div>
           </div>
           <div className="rounded-xl border border-border bg-zinc-900/40 p-3">
@@ -425,12 +425,12 @@ export function SegmentsManager() {
                   {item.clicks} - {item.url}
                 </p>
               ))}
-              {(queryResult?.stats.topClickedLinks ?? []).length === 0 ? <p className="text-zinc-500">Tracking click verisi yok.</p> : null}
+              {(queryResult?.stats.topClickedLinks ?? []).length === 0 ? <p className="text-zinc-500">No click tracking data.</p> : null}
             </div>
           </div>
         </div>
         {!hasTrackingData ? (
-          <p className="mt-2 text-xs text-amber-300">Tracking verisi henüz oluşmamış olabilir. Open/click metrikleri boş dönebilir.</p>
+          <p className="mt-2 text-xs text-amber-300">Tracking data may not be available yet. Open/click metrics can be empty.</p>
         ) : null}
       </section>
 
@@ -477,9 +477,9 @@ export function SegmentsManager() {
           </button>
         </div>
         {loadingSegments ? (
-          <p className="text-sm text-zinc-400">Segmentler yükleniyor...</p>
+          <p className="text-sm text-zinc-400">Loading segments...</p>
         ) : segments.length === 0 ? (
-          <EmptyState icon="filter" title="Saved segment bulunamadı" description="Önce builder ile bir segment sorgusu çalıştırıp kaydet." />
+          <EmptyState icon="filter" title="No saved segments found" description="Run a segment query in builder and save it first." />
         ) : (
           <div className="space-y-2">
             {segments.map((segment) => (
@@ -569,7 +569,7 @@ export function SegmentsManager() {
               {(queryResult?.sample ?? []).length === 0 ? (
                 <tr>
                   <td colSpan={3} className="px-2 py-3 text-center text-zinc-500">
-                    Önizleme için query çalıştır.
+                    Run query to preview.
                   </td>
                 </tr>
               ) : null}

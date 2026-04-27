@@ -54,25 +54,25 @@ export async function POST(req: Request) {
   } catch (error) {
     const message = (error as Error).message;
     if (message === "template_not_found") {
-      return NextResponse.json({ error: "Template bulunamadı veya erişilemiyor." }, { status: 400 });
+      return NextResponse.json({ error: "Template was not found or is not accessible." }, { status: 400 });
     }
     if (message === "list_required") {
-      return NextResponse.json({ error: "List hedefleme modunda liste seçilmelidir." }, { status: 400 });
+      return NextResponse.json({ error: "A list must be selected in list targeting mode." }, { status: 400 });
     }
     if (message === "segment_required") {
-      return NextResponse.json({ error: "Saved segment modunda segment seçilmelidir." }, { status: 400 });
+      return NextResponse.json({ error: "A segment must be selected in saved segment mode." }, { status: 400 });
     }
     if (message === "segment_query_required") {
-      return NextResponse.json({ error: "Ad-hoc segment modunda query tanımı gerekli." }, { status: 400 });
+      return NextResponse.json({ error: "Segment query is required in ad-hoc segment mode." }, { status: 400 });
     }
     if (message === "segment_archived") {
-      return NextResponse.json({ error: "Arşivlenmiş segment campaign hedefi olamaz." }, { status: 400 });
+      return NextResponse.json({ error: "Archived segment cannot be used as campaign target." }, { status: 400 });
     }
     if (message === "smtp_pool_empty") {
-      return NextResponse.json({ error: "Aktif SMTP havuzu bulunamadı veya pool exhausted." }, { status: 400 });
+      return NextResponse.json({ error: "No active SMTP pool was found or pool is exhausted." }, { status: 400 });
     }
     if (message === "campaign_target_required") {
-      return NextResponse.json({ error: "Campaign hedefi gerekli. Liste/segment seçin." }, { status: 400 });
+      return NextResponse.json({ error: "Campaign target is required. Select a list or segment." }, { status: 400 });
     }
     return NextResponse.json({ error: message }, { status: 400 });
   }
