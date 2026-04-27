@@ -27,22 +27,6 @@ type BootstrapData = {
     healthStatus?: string | null;
     warning?: string | null;
   }>;
-  smtps: Array<{
-    id: string;
-    name: string;
-    host: string;
-    port: number;
-    encryption: string;
-    username: string;
-    fromEmail: string;
-    providerLabel: string | null;
-    isActive: boolean;
-    targetRatePerSecond: number;
-    maxRatePerSecond: number | null;
-    isThrottled: boolean;
-    healthStatus?: string | null;
-    warning?: string | null;
-  }>;
   campaigns: Array<{ id: string; name: string; status: string }>;
   segments: Array<{ id: string; name: string; lastMatchedCount: number; updatedAt: string }>;
   poolSettings?: {
@@ -113,7 +97,7 @@ export function LiveSendPanel() {
   useEffect(() => {
     void (async () => {
       try {
-        const response = await fetch("/api/send/bootstrap");
+        const response = await fetch("/api/send/bootstrap", { cache: "no-store" });
         const rawBody = await response.text();
         let parsed: any = {};
         try {
@@ -130,11 +114,11 @@ export function LiveSendPanel() {
           throw new Error(`HTTP ${response.status}: ${reason}`);
         }
         const data = parsed as BootstrapData;
-        const smtpAccounts = data.smtpAccounts ?? data.smtps ?? [];
+        const smtpAccounts = Array.isArray(data.smtpAccounts) ? data.smtpAccounts : [];
         const safeTemplates = Array.isArray(data.templates) ? data.templates : [];
         const safeLists = Array.isArray(data.lists) ? data.lists : [];
         const safeSegments = Array.isArray(data.segments) ? data.segments : [];
-        const safeSmtps = Array.isArray(smtpAccounts) ? smtpAccounts : [];
+        const safeSmtps = smtpAccounts;
 
         const firstTemplate = safeTemplates.find((item) => item.status === "active")?.id ?? safeTemplates[0]?.id ?? "";
         const firstList = safeLists.find((item) => item.estimatedRecipients > 0)?.id ?? safeLists[0]?.id ?? "";
@@ -195,8 +179,8 @@ export function LiveSendPanel() {
   const templateOptions = bootstrap?.templates ?? [];
   const listOptions = bootstrap?.lists ?? [];
   const segmentOptions = bootstrap?.segments ?? [];
-  const smtpOptions = bootstrap?.smtpAccounts ?? bootstrap?.smtps ?? [];
-  const activeSmtpOptions = smtpOptions.filter((smtp) => smtp.isActive !== false);
+  const smtpAccounts = bootstrap?.smtpAccounts ?? [];
+  const activeSmtpOptions = smtpAccounts.filter((smtp) => smtp.isActive !== false);
   const selectedList = bootstrap?.lists.find((list) => list.id === form.listId) ?? null;
   const selectedSegment = bootstrap?.segments.find((segment) => segment.id === form.segmentId) ?? null;
   const selectedTemplate = templateOptions.find((item) => item.id === form.templateId) ?? null;
@@ -222,6 +206,7 @@ export function LiveSendPanel() {
         : false;
   const noTemplate = !form.templateId;
   const noUsableSmtp = activeSmtpOptions.length === 0 || selectedSmtpCount === 0;
+  const showPoolEmptyWarning = poolEmpty && activeSmtpOptions.length === 0;
 
   function toggleSmtpInPool(smtpId: string) {
     setForm((prev) => {
@@ -540,7 +525,7 @@ export function LiveSendPanel() {
               );
             })}
           </div>
-          {poolEmpty ? (
+          {showPoolEmptyWarning ? (
             <p className="flex items-center gap-1 text-xs text-amber-300">
               <AlertTriangle className="h-3.5 w-3.5" />
               SMTP pool is empty. Campaign cannot be started.

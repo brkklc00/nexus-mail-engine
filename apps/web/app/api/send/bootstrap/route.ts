@@ -3,6 +3,9 @@ import { prisma } from "@nexus/db";
 import { getSession } from "@/server/auth/session";
 import { getQueueObservability } from "@/server/observability/queue-observability.service";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const defaultPoolSettings = {
   sendingMode: "pool",
   useAllActiveByDefault: true,
@@ -183,7 +186,7 @@ export async function GET() {
             ? "SMTP is throttled"
             : null
     }));
-    console.info(`[send.bootstrap] smtpAccounts loaded: ${smtpAccounts.length}`);
+    console.log("[send.bootstrap] smtpAccounts loaded:", smtpAccounts.length);
 
     const poolSettings = ((poolSettingsRaw?.value as any) ?? defaultPoolSettings) as {
       sendingMode?: "single" | "pool";
@@ -205,7 +208,6 @@ export async function GET() {
       lists,
       segments,
       smtpAccounts,
-      smtps: smtpAccounts,
       campaigns: campaignsRaw,
       poolSettings: {
         ...defaultPoolSettings,
