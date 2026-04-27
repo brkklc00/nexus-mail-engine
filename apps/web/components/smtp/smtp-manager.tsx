@@ -6,6 +6,7 @@ import Link from "next/link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
+import { OverlayPortal } from "@/components/ui/overlay-portal";
 
 type Account = {
   id: string;
@@ -99,6 +100,20 @@ export function SmtpManager({
   const [poolSaving, setPoolSaving] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [testResultModal, setTestResultModal] = useState<{
+    open: boolean;
+    accountName: string;
+    connected: boolean;
+    kind: string;
+    message: string;
+    recommendation?: string;
+  }>({
+    open: false,
+    accountName: "",
+    connected: false,
+    kind: "",
+    message: ""
+  });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [rateTargetDaily, setRateTargetDaily] = useState(100000);
   const [rateMode, setRateMode] = useState<"automatic" | "manual">("automatic");
@@ -125,6 +140,18 @@ export function SmtpManager({
     tags: "",
     groupLabel: ""
   });
+
+  function isAlibabaCandidate(host: string, providerLabel: string) {
+    const h = host.toLowerCase();
+    const p = providerLabel.toLowerCase();
+    return h.includes("smtpdm") || p.includes("alibaba") || p.includes("aliyun");
+  }
+
+  function applySecurityDefaults(nextEncryption: string, currentPort: number) {
+    if (nextEncryption === "ssl") return 465;
+    if (nextEncryption === "tls" || nextEncryption === "starttls") return 587;
+    return currentPort;
+  }
 
   const plannedRps = rateMode === "automatic" ? Number((rateTargetDaily / 86400).toFixed(4)) : manualRps;
   const plannedMinute = Number((plannedRps * 60).toFixed(2));
@@ -216,12 +243,21 @@ export function SmtpManager({
   async function saveAccount() {
     setActionLoading("save_account");
     try {
+      const isAlibaba = isAlibabaCandidate(form.host, form.providerLabel);
+      const normalizedEncryption = isAlibaba
+        ? "ssl"
+        : form.encryption === "ssl"
+          ? "ssl"
+          : form.encryption === "tls" || form.encryption === "starttls"
+            ? "tls"
+            : "none";
+      const normalizedPort = isAlibaba ? 465 : applySecurityDefaults(normalizedEncryption, Number(form.port));
       const body = {
         name: form.name,
         providerLabel: form.providerLabel || null,
         host: form.host,
-        port: Number(form.port),
-        encryption: form.encryption,
+        port: normalizedPort,
+        encryption: normalizedEncryption,
         username: form.username,
         ...(form.password ? { password: form.password } : {}),
         fromEmail: form.fromEmail,
@@ -293,7 +329,17 @@ export function SmtpManager({
   async function testConnection(account: Account) {
     setActionLoading(`test:${account.id}`);
     const response = await fetch(`/api/smtp/${account.id}/test-connection`, { method: "POST" });
-    const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    const payload = (await response.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      errorKind?: string;
+      recommendation?: string;
+      result?: {
+        connected?: boolean;
+        kind?: string;
+        message?: string;
+      };
+    };
     if (response.ok && payload.ok) {
       toast.success("SMTP bağlantısı başarılı");
       setAccounts((prev) =>
@@ -301,6 +347,13 @@ export function SmtpManager({
           item.id === account.id ? { ...item, healthStatus: "healthy", lastError: null, lastTestAt: new Date().toISOString() } : item
         )
       );
+      setTestResultModal({
+        open: true,
+        accountName: account.name,
+        connected: true,
+        kind: payload.result?.kind ?? "connected",
+        message: payload.result?.message ?? "SMTP connection successful."
+      });
       setActionLoading(null);
       return;
     }
@@ -312,6 +365,14 @@ export function SmtpManager({
           : item
       )
     );
+    setTestResultModal({
+      open: true,
+      accountName: account.name,
+      connected: false,
+      kind: payload.errorKind ?? "unknown",
+      message: payload.error ?? "Connection failed",
+      recommendation: payload.recommendation
+    });
     setActionLoading(null);
   }
 
@@ -363,7 +424,7 @@ export function SmtpManager({
   async function removeAccount(account: Account) {
     const accepted = await confirm({
       title: "SMTP hesabı silinsin mi?",
-      message: `"${account.name}" soft-delete olarak pasiflenecek.`,
+      message: `"${account.name}" kullanımda değilse soft-delete uygulanır. Kullanımda ise disable/archive gerekir.`,
       confirmLabel: "Sil",
       cancelLabel: "Vazgeç",
       tone: "danger"
@@ -371,9 +432,30 @@ export function SmtpManager({
     if (!accepted) return;
     setActionLoading(`delete:${account.id}`);
     const response = await fetch(`/api/smtp/${account.id}`, { method: "DELETE" });
-    const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    const payload = (await response.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      code?: string;
+      actionTaken?: string;
+      campaignUsage?: number;
+      campaignRecipientUsage?: number;
+    };
     if (!response.ok || !payload.ok) {
-      toast.error("SMTP silinemedi", payload.error ?? "İşlem başarısız.");
+      if (payload.code === "smtp_in_use") {
+        toast.warning(
+          "This SMTP is used by campaigns. Disable/archive instead.",
+          `campaign: ${payload.campaignUsage ?? 0}, campaignRecipient: ${payload.campaignRecipientUsage ?? 0}`
+        );
+        if (payload.actionTaken === "disabled") {
+          setAccounts((prev) =>
+            prev.map((item) =>
+              item.id === account.id ? { ...item, isActive: false, healthStatus: "disabled", isThrottled: false } : item
+            )
+          );
+        }
+      } else {
+        toast.error("SMTP silinemedi", payload.error ?? "İşlem başarısız.");
+      }
       setActionLoading(null);
       return;
     }
@@ -517,15 +599,35 @@ export function SmtpManager({
       </div>
 
       {showModal ? (
-        <div className="fixed inset-0 z-[130] bg-black/55 p-4 backdrop-blur-sm" onClick={() => setShowModal(false)}>
-          <div className="mx-auto max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
+        <OverlayPortal active={showModal} lockScroll>
+          <div className="fixed inset-0 z-40 bg-black/55 p-4 backdrop-blur-sm" onClick={() => setShowModal(false)}>
+            <div className="mx-auto max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
             <p className="text-sm font-semibold text-white">{editingId ? "Edit SMTP" : "Add SMTP"}</p>
             <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
               <Field label="Name"><input value={form.name} onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))} className="input" /></Field>
               <Field label="Provider label"><input value={form.providerLabel} onChange={(e) => setForm((s) => ({ ...s, providerLabel: e.target.value }))} className="input" /></Field>
               <Field label="Host"><input value={form.host} onChange={(e) => setForm((s) => ({ ...s, host: e.target.value }))} className="input" /></Field>
               <Field label="Port"><input type="number" value={form.port} onChange={(e) => setForm((s) => ({ ...s, port: Number(e.target.value || 0) }))} className="input" /></Field>
-              <Field label="Security"><select value={form.encryption} onChange={(e) => setForm((s) => ({ ...s, encryption: e.target.value }))} className="input"><option value="ssl">SSL (465)</option><option value="tls">TLS (587)</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></Field>
+              <Field label="Security">
+                <select
+                  value={form.encryption}
+                  onChange={(e) =>
+                    setForm((s) => {
+                      const nextEncryption = e.target.value;
+                      return {
+                        ...s,
+                        encryption: nextEncryption,
+                        port: applySecurityDefaults(nextEncryption, s.port)
+                      };
+                    })
+                  }
+                  className="input"
+                >
+                  <option value="ssl">SSL (465)</option>
+                  <option value="tls">TLS/STARTTLS (587)</option>
+                  <option value="none">None</option>
+                </select>
+              </Field>
               <Field label="Username"><input value={form.username} onChange={(e) => setForm((s) => ({ ...s, username: e.target.value }))} className="input" /></Field>
               <Field label="Password"><input type="password" value={form.password} onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))} className="input" /></Field>
               <Field label="From email"><input value={form.fromEmail} onChange={(e) => setForm((s) => ({ ...s, fromEmail: e.target.value }))} className="input" /></Field>
@@ -550,8 +652,36 @@ export function SmtpManager({
                 Cancel
               </button>
             </div>
+            {isAlibabaCandidate(form.host, form.providerLabel) ? (
+              <p className="mt-3 rounded-lg border border-indigo-500/40 bg-indigo-500/10 p-2 text-xs text-indigo-200">
+                Alibaba DirectMail önerisi: host `smtpdm-ap-southeast-1.aliyuncs.com`, SSL/465, SMTP username/password, verified from email.
+              </p>
+            ) : null}
           </div>
-        </div>
+          </div>
+        </OverlayPortal>
+      ) : null}
+
+      {testResultModal.open ? (
+        <OverlayPortal active={testResultModal.open} lockScroll>
+          <div className="fixed inset-0 z-50 bg-black/60 p-4 backdrop-blur-sm" onClick={() => setTestResultModal((s) => ({ ...s, open: false }))}>
+            <div className="relative z-[60] mx-auto w-full max-w-lg rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-sm font-semibold text-white">Test Connection Result · {testResultModal.accountName}</p>
+                <StatusBadge label={testResultModal.connected ? "connected" : testResultModal.kind} tone={testResultModal.connected ? "success" : "danger"} />
+              </div>
+              <p className="text-sm text-zinc-200">{testResultModal.message}</p>
+              {testResultModal.recommendation ? (
+                <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-200">{testResultModal.recommendation}</p>
+              ) : null}
+              <div className="mt-3 flex justify-end">
+                <button type="button" onClick={() => setTestResultModal((s) => ({ ...s, open: false }))} className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200">
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </OverlayPortal>
       ) : null}
     </div>
   );

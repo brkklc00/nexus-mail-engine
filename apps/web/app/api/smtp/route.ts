@@ -43,6 +43,33 @@ const schema = z.object({
   groupLabel: z.string().optional().nullable()
 });
 
+function isAlibabaProvider(providerLabel?: string | null, host?: string | null): boolean {
+  const provider = (providerLabel ?? "").toLowerCase();
+  const smtpHost = (host ?? "").toLowerCase();
+  return provider.includes("alibaba") || provider.includes("aliyun") || smtpHost.includes("smtpdm");
+}
+
+function normalizeSmtpInput(input: z.infer<typeof schema>) {
+  const alibaba = isAlibabaProvider(input.providerLabel, input.host);
+  const normalizedEncryption =
+    input.encryption === "ssl"
+      ? "ssl"
+      : input.encryption === "tls" || input.encryption === "starttls"
+        ? "tls"
+        : "none";
+  const normalizedPort =
+    normalizedEncryption === "ssl"
+      ? 465
+      : normalizedEncryption === "tls"
+        ? 587
+        : input.port;
+  return {
+    ...input,
+    encryption: alibaba ? "ssl" : normalizedEncryption,
+    port: alibaba ? 465 : normalizedPort
+  };
+}
+
 function startOfToday() {
   const now = new Date();
   now.setHours(0, 0, 0, 0);
@@ -169,30 +196,31 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ ok: false, error: "Invalid payload" }, { status: 400 });
   }
+  const normalized = normalizeSmtpInput(parsed.data);
 
   const account = await prisma.smtpAccount.create({
     data: {
-      name: parsed.data.name,
-      host: parsed.data.host,
-      port: parsed.data.port,
-      encryption: parsed.data.encryption,
-      username: parsed.data.username,
-      passwordEncrypted: encryptSmtpSecret(parsed.data.password),
-      fromEmail: parsed.data.fromEmail,
-      fromName: parsed.data.fromName ?? null,
-      replyTo: parsed.data.replyTo ?? null,
-      providerLabel: parsed.data.providerLabel ?? null,
-      targetRatePerSecond: parsed.data.targetRatePerSecond ?? 1,
-      maxRatePerSecond: parsed.data.maxRatePerSecond ?? null,
-      dailyCap: parsed.data.dailyCap ?? null,
-      hourlyCap: parsed.data.hourlyCap ?? null,
-      minuteCap: parsed.data.minuteCap ?? null,
-      warmupEnabled: parsed.data.warmupEnabled ?? true,
-      warmupStartRps: parsed.data.warmupStartRps ?? 1,
-      warmupIncrementStep: parsed.data.warmupIncrementStep ?? 1,
-      warmupMaxRps: parsed.data.warmupMaxRps ?? null,
-      tags: parsed.data.tags ?? [],
-      groupLabel: parsed.data.groupLabel ?? null,
+      name: normalized.name,
+      host: normalized.host,
+      port: normalized.port,
+      encryption: normalized.encryption,
+      username: normalized.username,
+      passwordEncrypted: encryptSmtpSecret(normalized.password),
+      fromEmail: normalized.fromEmail,
+      fromName: normalized.fromName ?? null,
+      replyTo: normalized.replyTo ?? null,
+      providerLabel: normalized.providerLabel ?? null,
+      targetRatePerSecond: normalized.targetRatePerSecond ?? 1,
+      maxRatePerSecond: normalized.maxRatePerSecond ?? null,
+      dailyCap: normalized.dailyCap ?? null,
+      hourlyCap: normalized.hourlyCap ?? null,
+      minuteCap: normalized.minuteCap ?? null,
+      warmupEnabled: normalized.warmupEnabled ?? true,
+      warmupStartRps: normalized.warmupStartRps ?? 1,
+      warmupIncrementStep: normalized.warmupIncrementStep ?? 1,
+      warmupMaxRps: normalized.warmupMaxRps ?? null,
+      tags: normalized.tags ?? [],
+      groupLabel: normalized.groupLabel ?? null,
       healthStatus: "healthy"
     }
   });

@@ -32,6 +32,36 @@ const schema = z.object({
   healthStatus: z.enum(["healthy", "error", "disabled"]).optional()
 });
 
+function isAlibabaProvider(providerLabel?: string | null, host?: string | null): boolean {
+  const provider = (providerLabel ?? "").toLowerCase();
+  const smtpHost = (host ?? "").toLowerCase();
+  return provider.includes("alibaba") || provider.includes("aliyun") || smtpHost.includes("smtpdm");
+}
+
+function normalizePatchInput(data: z.infer<typeof schema>) {
+  const next = { ...data } as Record<string, unknown>;
+  const host = typeof data.host === "string" ? data.host : null;
+  const providerLabel = typeof data.providerLabel === "string" ? data.providerLabel : null;
+  const alibaba = isAlibabaProvider(providerLabel, host);
+  const encryption = typeof data.encryption === "string" ? data.encryption : null;
+  if (encryption) {
+    if (encryption === "ssl") {
+      next.encryption = "ssl";
+      next.port = 465;
+    } else if (encryption === "tls" || encryption === "starttls") {
+      next.encryption = "tls";
+      next.port = 587;
+    } else {
+      next.encryption = "none";
+    }
+  }
+  if (alibaba) {
+    next.encryption = "ssl";
+    next.port = 465;
+  }
+  return next;
+}
+
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) {
@@ -43,7 +73,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     return NextResponse.json({ ok: false, error: "Invalid payload" }, { status: 400 });
   }
 
-  const data: Record<string, unknown> = { ...parsed.data };
+  const data: Record<string, unknown> = normalizePatchInput(parsed.data);
   if (parsed.data.action === "reset_throttle") {
     data.isThrottled = false;
     data.throttleReason = null;
@@ -56,10 +86,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     delete data.password;
   }
 
-  const account = await prisma.smtpAccount.update({
-    where: { id },
-    data
-  });
+  let account;
+  try {
+    account = await prisma.smtpAccount.update({
+      where: { id },
+      data
+    });
+  } catch {
+    return NextResponse.json({ ok: false, error: "SMTP account not found" }, { status: 404 });
+  }
   await writeAuditLog(session.userId, "smtp.update", "smtp_account", { smtpAccountId: id });
   return NextResponse.json({ ok: true, account });
 }
@@ -70,10 +105,47 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
   const { id } = await params;
-  await prisma.smtpAccount.update({
-    where: { id },
-    data: { isSoftDeleted: true, isActive: false, healthStatus: "disabled" }
-  });
+  const [campaignUsage, recipientUsage] = await Promise.all([
+    prisma.campaign.count({ where: { smtpAccountId: id } }),
+    prisma.campaignRecipient.count({ where: { smtpAccountId: id } })
+  ]);
+
+  const totalUsage = campaignUsage + recipientUsage;
+  if (totalUsage > 0) {
+    try {
+      await prisma.smtpAccount.update({
+        where: { id },
+        data: { isActive: false, healthStatus: "disabled" }
+      });
+    } catch {
+      return NextResponse.json({ ok: false, error: "SMTP account not found" }, { status: 404 });
+    }
+    await writeAuditLog(session.userId, "smtp.disable_in_use", "smtp_account", {
+      smtpAccountId: id,
+      campaignUsage,
+      campaignRecipientUsage: recipientUsage
+    });
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "smtp_in_use",
+        error: "This SMTP is used by campaigns. Disable/archive instead.",
+        campaignUsage,
+        campaignRecipientUsage: recipientUsage,
+        actionTaken: "disabled"
+      },
+      { status: 409 }
+    );
+  }
+
+  try {
+    await prisma.smtpAccount.update({
+      where: { id },
+      data: { isSoftDeleted: true, isActive: false, healthStatus: "disabled" }
+    });
+  } catch {
+    return NextResponse.json({ ok: false, error: "SMTP account not found" }, { status: 404 });
+  }
   await writeAuditLog(session.userId, "smtp.soft_delete", "smtp_account", { smtpAccountId: id });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, actionTaken: "soft_deleted" });
 }
