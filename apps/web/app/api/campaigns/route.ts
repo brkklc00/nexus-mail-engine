@@ -53,6 +53,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ campaign });
   } catch (error) {
     const message = (error as Error).message;
+    if (message === "template_not_found") {
+      return NextResponse.json({ error: "Template bulunamadı veya erişilemiyor." }, { status: 400 });
+    }
     if (message === "list_required") {
       return NextResponse.json({ error: "List hedefleme modunda liste seçilmelidir." }, { status: 400 });
     }
@@ -64,6 +67,12 @@ export async function POST(req: Request) {
     }
     if (message === "segment_archived") {
       return NextResponse.json({ error: "Arşivlenmiş segment campaign hedefi olamaz." }, { status: 400 });
+    }
+    if (message === "smtp_pool_empty") {
+      return NextResponse.json({ error: "Aktif SMTP havuzu bulunamadı veya pool exhausted." }, { status: 400 });
+    }
+    if (message === "campaign_target_required") {
+      return NextResponse.json({ error: "Campaign hedefi gerekli. Liste/segment seçin." }, { status: 400 });
     }
     return NextResponse.json({ error: message }, { status: 400 });
   }

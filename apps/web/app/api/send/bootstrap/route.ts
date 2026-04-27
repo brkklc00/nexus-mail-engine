@@ -1,60 +1,155 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@nexus/db";
 import { getSession } from "@/server/auth/session";
+import { getQueueObservability } from "@/server/observability/queue-observability.service";
+
+const defaultPoolSettings = {
+  sendingMode: "pool",
+  useAllActiveByDefault: true,
+  rotateEvery: 500,
+  parallelSmtpLanes: 1,
+  perSmtpConcurrency: 1,
+  skipThrottled: true,
+  skipUnhealthy: true,
+  fallbackToNextOnError: true,
+  retryCount: 3,
+  retryDelayMs: 2000,
+  cooldownAfterErrorSec: 60
+} as const;
 
 export async function GET() {
   const session = await getSession();
   if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const [templates, lists, smtps, campaigns, segments, poolSettings] = await Promise.all([
-    prisma.mailTemplate.findMany({ orderBy: { createdAt: "desc" }, take: 50 }),
-    prisma.recipientList.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 50,
-      include: {
-        _count: {
-          select: { memberships: true }
+  try {
+    const [templatesRaw, listsRaw, smtpRaw, campaignsRaw, segmentsRaw, poolSettingsRaw, queueObs] = await Promise.all([
+      prisma.mailTemplate.findMany({
+        where: { status: { in: ["active", "draft"] } },
+        select: { id: true, title: true, status: true, updatedAt: true },
+        orderBy: [{ status: "asc" }, { updatedAt: "desc" }],
+        take: 200
+      }),
+      prisma.recipientList.findMany({
+        orderBy: { updatedAt: "desc" },
+        take: 200,
+        include: {
+          _count: {
+            select: { memberships: true }
+          }
         }
-      }
-    }),
-    prisma.smtpAccount.findMany({
-      where: { isActive: true, isSoftDeleted: false },
-      orderBy: { createdAt: "desc" },
-      take: 50
-    }),
-    prisma.campaign.findMany({ orderBy: { createdAt: "desc" }, take: 30 }),
-    prisma.segment.findMany({
-      where: { isArchived: false },
-      select: { id: true, name: true, lastMatchedCount: true, updatedAt: true },
-      orderBy: { updatedAt: "desc" },
-      take: 100
-    }),
-    prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } })
-  ]);
+      }),
+      prisma.smtpAccount.findMany({
+        where: { isActive: true, isSoftDeleted: false },
+        orderBy: { createdAt: "desc" },
+        take: 200,
+        select: {
+          id: true,
+          name: true,
+          healthStatus: true,
+          isThrottled: true,
+          targetRatePerSecond: true,
+          maxRatePerSecond: true
+        }
+      }),
+      prisma.campaign.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 30,
+        select: { id: true, name: true, status: true }
+      }),
+      prisma.segment.findMany({
+        where: { isArchived: false, lastMatchedCount: { gt: 0 } },
+        select: { id: true, name: true, lastMatchedCount: true, updatedAt: true },
+        orderBy: { updatedAt: "desc" },
+        take: 200
+      }),
+      prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }),
+      getQueueObservability()
+    ]);
 
-  return NextResponse.json({
-    templates,
-    lists: lists.map((list: any) => ({
-      id: list.id,
-      name: list.name,
-      estimatedRecipients: list._count?.memberships ?? 0
-    })),
-    smtps: smtps.map((smtp: any) => ({
-      id: smtp.id,
-      name: smtp.name,
-      targetRatePerSecond: smtp.targetRatePerSecond ?? 0,
-      maxRatePerSecond: smtp.maxRatePerSecond ?? null,
-      isThrottled: smtp.isThrottled
-    })),
-    campaigns,
-    segments: segments.map((segment: any) => ({
+    const templates = templatesRaw.map((item: any) => ({
+      id: item.id,
+      title: item.title,
+      status: item.status,
+      warning: item.status === "draft" ? "Draft template selected" : null
+    }));
+    const lists = listsRaw
+      .map((list: any) => ({
+        id: list.id,
+        name: list.name,
+        estimatedRecipients: Number(list._count?.memberships ?? 0)
+      }))
+      .filter((list: any) => list.estimatedRecipients > 0);
+    const segments = segmentsRaw.map((segment: any) => ({
       id: segment.id,
       name: segment.name,
-      lastMatchedCount: segment.lastMatchedCount ?? 0,
+      lastMatchedCount: Number(segment.lastMatchedCount ?? 0),
       updatedAt: segment.updatedAt.toISOString()
-    })),
-    poolSettings: (poolSettings?.value as any) ?? null
-  });
+    }));
+    const smtpAccounts = smtpRaw.map((smtp: any) => ({
+      id: smtp.id,
+      name: smtp.name,
+      targetRatePerSecond: Number(smtp.targetRatePerSecond ?? 0),
+      maxRatePerSecond: smtp.maxRatePerSecond ? Number(smtp.maxRatePerSecond) : null,
+      isThrottled: Boolean(smtp.isThrottled),
+      healthStatus: smtp.healthStatus,
+      warning:
+        smtp.healthStatus !== "healthy"
+          ? `SMTP health: ${smtp.healthStatus}`
+          : smtp.isThrottled
+            ? "SMTP is throttled"
+            : null
+    }));
+
+    const poolSettings = ((poolSettingsRaw?.value as any) ?? defaultPoolSettings) as {
+      sendingMode?: "single" | "pool";
+      rotateEvery?: number;
+      parallelSmtpLanes?: number;
+      useAllActiveByDefault?: boolean;
+    };
+    const defaults = {
+      targetType: "list" as const,
+      smtpMode: (poolSettings.sendingMode ?? "pool") as "single" | "pool",
+      strategy: "round_robin" as const,
+      rotateEvery: Math.max(1, Number(poolSettings.rotateEvery ?? 500)),
+      parallelSmtpCount: Math.max(1, Math.min(Number(poolSettings.parallelSmtpLanes ?? 1), Math.max(1, smtpAccounts.length)))
+    };
+
+    return NextResponse.json({
+      ok: true,
+      templates,
+      lists,
+      segments,
+      smtpAccounts,
+      smtps: smtpAccounts,
+      campaigns: campaignsRaw,
+      poolSettings: {
+        ...defaultPoolSettings,
+        ...(poolSettingsRaw?.value as any)
+      },
+      defaults,
+      queue: {
+        waiting: Number(queueObs.deliveryCounts?.waiting ?? queueObs.deliveryCounts?.wait ?? 0),
+        active: Number(queueObs.deliveryCounts?.active ?? 0),
+        failed: Number(queueObs.deliveryCounts?.failed ?? 0)
+      }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown bootstrap error";
+    console.error("[send.bootstrap] failed", error);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Bootstrap failed",
+        reason: message,
+        templates: [],
+        lists: [],
+        segments: [],
+        smtpAccounts: [],
+        poolSettings: defaultPoolSettings
+      },
+      { status: 500 }
+    );
+  }
 }
