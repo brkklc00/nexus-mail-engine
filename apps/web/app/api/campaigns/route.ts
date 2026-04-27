@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { prisma } from "@nexus/db";
 import { getSession } from "@/server/auth/session";
 import { writeAuditLog } from "@/server/auth/guard";
 import { createCampaign } from "@/server/campaigns/orchestration.service";
+import { getQueueObservability } from "@/server/observability/queue-observability.service";
 
 const createSchema = z.object({
   name: z.string().min(2),
@@ -36,4 +38,222 @@ export async function POST(req: Request) {
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 400 });
   }
+}
+
+function clampPage(value: string | null): number {
+  const parsed = Number(value ?? "1");
+  if (!Number.isFinite(parsed) || parsed < 1) return 1;
+  return Math.floor(parsed);
+}
+
+function normalizePageSize(value: string | null): number {
+  const parsed = Number(value ?? "25");
+  if (!Number.isFinite(parsed)) return 25;
+  return [25, 50, 100].includes(parsed) ? parsed : 25;
+}
+
+function resolveDateRange(range: string | null, from: string | null, to: string | null): { gte?: Date; lte?: Date } {
+  const normalized = (range ?? "all").trim().toLowerCase();
+  if (normalized === "all") return {};
+  if (normalized === "24h") return { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) };
+  if (normalized === "7d") return { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) };
+  if (normalized === "30d") return { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) };
+  if (normalized === "custom" && from) {
+    const gte = new Date(from);
+    const lte = to ? new Date(to) : new Date();
+    if (!Number.isNaN(gte.getTime()) && !Number.isNaN(lte.getTime())) {
+      return { gte, lte };
+    }
+  }
+  return {};
+}
+
+export async function GET(req: Request) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const url = new URL(req.url);
+  const page = clampPage(url.searchParams.get("page"));
+  const pageSize = normalizePageSize(url.searchParams.get("pageSize"));
+  const offset = (page - 1) * pageSize;
+  const search = (url.searchParams.get("search") ?? "").trim();
+  const status = (url.searchParams.get("status") ?? "all").trim();
+  const templateId = (url.searchParams.get("templateId") ?? "").trim();
+  const listSegmentId = (url.searchParams.get("listSegmentId") ?? "").trim();
+  const smtpAccountId = (url.searchParams.get("smtpAccountId") ?? "").trim();
+  const dateWindow = resolveDateRange(
+    url.searchParams.get("range"),
+    url.searchParams.get("from"),
+    url.searchParams.get("to")
+  );
+
+  const where: any = {
+    ...(search
+      ? {
+          OR: [{ name: { contains: search, mode: "insensitive" } }, { subject: { contains: search, mode: "insensitive" } }]
+        }
+      : {}),
+    ...(status !== "all" ? { status } : {}),
+    ...(templateId ? { templateId } : {}),
+    ...(smtpAccountId ? { smtpAccountId } : {}),
+    ...(listSegmentId ? { OR: [{ listId: listSegmentId }, { segmentId: listSegmentId }] } : {}),
+    ...(dateWindow.gte || dateWindow.lte
+      ? {
+          createdAt: {
+            ...(dateWindow.gte ? { gte: dateWindow.gte } : {}),
+            ...(dateWindow.lte ? { lte: dateWindow.lte } : {})
+          }
+        }
+      : {})
+  };
+
+  const [campaigns, total, allCampaignsForStats, templates, lists, segments, smtps, queueObs] = await Promise.all([
+    prisma.campaign.findMany({
+      where,
+      include: {
+        template: { select: { id: true, title: true } },
+        list: { select: { id: true, name: true } },
+        segment: { select: { id: true, name: true } },
+        smtpAccount: { select: { id: true, name: true } }
+      },
+      orderBy: { createdAt: "desc" },
+      skip: offset,
+      take: pageSize
+    }),
+    prisma.campaign.count({ where }),
+    prisma.campaign.findMany({
+      select: {
+        id: true,
+        status: true,
+        totalTargeted: true,
+        totalSent: true,
+        totalFailed: true,
+        totalSkipped: true,
+        totalOpened: true,
+        totalClicked: true,
+        effectiveRate: true
+      }
+    }),
+    prisma.mailTemplate.findMany({ select: { id: true, title: true }, orderBy: { title: "asc" } }),
+    prisma.recipientList.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.segment.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.smtpAccount.findMany({ where: { isSoftDeleted: false }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    getQueueObservability()
+  ]);
+
+  const campaignIds = campaigns.map((campaign: any) => campaign.id);
+  const [recipientCounts, lastActivityRows] = await Promise.all([
+    campaignIds.length
+      ? prisma.campaignRecipient.groupBy({
+          by: ["campaignId", "sendStatus"],
+          where: { campaignId: { in: campaignIds } },
+          _count: { _all: true }
+        })
+      : Promise.resolve([] as any[]),
+    campaignIds.length
+      ? prisma.campaignLog.groupBy({
+          by: ["campaignId"],
+          where: { campaignId: { in: campaignIds } },
+          _max: { createdAt: true }
+        })
+      : Promise.resolve([] as any[])
+  ]);
+
+  const queueCount = (obj: Record<string, any>, keys: string[]) =>
+    keys.reduce((sum, key) => sum + Number(obj[key] ?? 0), 0);
+
+  const queueStats = {
+    waiting: queueCount(queueObs.deliveryCounts ?? {}, ["waiting", "wait"]),
+    active: queueCount(queueObs.deliveryCounts ?? {}, ["active"]),
+    failed: queueCount(queueObs.deliveryCounts ?? {}, ["failed"]),
+    delayed: queueCount(queueObs.deliveryCounts ?? {}, ["delayed"]),
+    retryWaiting: queueCount(queueObs.retryCounts ?? {}, ["waiting", "wait"]),
+    deadWaiting: queueCount(queueObs.deadCounts ?? {}, ["waiting", "wait"])
+  };
+
+  const recipientCountMap = new Map<string, { queued: number; sent: number; failed: number; skipped: number }>();
+  for (const row of recipientCounts as any[]) {
+    const existing = recipientCountMap.get(row.campaignId) ?? { queued: 0, sent: 0, failed: 0, skipped: 0 };
+    const count = Number(row._count?._all ?? 0);
+    if (row.sendStatus === "queued" || row.sendStatus === "pending") existing.queued += count;
+    if (row.sendStatus === "sent") existing.sent += count;
+    if (row.sendStatus === "failed") existing.failed += count;
+    if (row.sendStatus === "skipped") existing.skipped += count;
+    recipientCountMap.set(row.campaignId, existing);
+  }
+  const activityMap = new Map<string, Date | null>(
+    (lastActivityRows as any[]).map((row) => [row.campaignId as string, row._max?.createdAt ?? null])
+  );
+
+  const statusCounts = {
+    totalCampaigns: allCampaignsForStats.length,
+    runningCampaigns: allCampaignsForStats.filter((c: any) => c.status === "running").length,
+    pausedCampaigns: allCampaignsForStats.filter((c: any) => c.status === "paused").length,
+    completedCampaigns: allCampaignsForStats.filter((c: any) => c.status === "completed").length,
+    canceledCampaigns: allCampaignsForStats.filter((c: any) => c.status === "canceled").length
+  };
+
+  const totalTargeted = allCampaignsForStats.reduce((sum: number, c: any) => sum + (c.totalTargeted ?? 0), 0);
+  const totalSent = allCampaignsForStats.reduce((sum: number, c: any) => sum + (c.totalSent ?? 0), 0);
+  const totalFailed = allCampaignsForStats.reduce((sum: number, c: any) => sum + (c.totalFailed ?? 0), 0);
+  const totalSkipped = allCampaignsForStats.reduce((sum: number, c: any) => sum + (c.totalSkipped ?? 0), 0);
+  const totalOpened = allCampaignsForStats.reduce((sum: number, c: any) => sum + (c.totalOpened ?? 0), 0);
+  const totalClicked = allCampaignsForStats.reduce((sum: number, c: any) => sum + (c.totalClicked ?? 0), 0);
+  const effectiveRates = allCampaignsForStats.map((c: any) => c.effectiveRate).filter((v: any) => typeof v === "number");
+  const averageDeliveryRate = effectiveRates.length
+    ? Number((effectiveRates.reduce((sum: number, v: number) => sum + v, 0) / effectiveRates.length).toFixed(2))
+    : 0;
+
+  const items = campaigns.map((campaign: any) => {
+    const counts = recipientCountMap.get(campaign.id) ?? { queued: 0, sent: campaign.totalSent, failed: campaign.totalFailed, skipped: campaign.totalSkipped };
+    const completed = counts.sent + counts.failed + counts.skipped;
+    const progress = campaign.totalTargeted > 0 ? Math.min(100, Number(((completed / campaign.totalTargeted) * 100).toFixed(2))) : 0;
+
+    return {
+      id: campaign.id,
+      name: campaign.name,
+      status: campaign.status,
+      template: campaign.template ? { id: campaign.template.id, title: campaign.template.title } : null,
+      list: campaign.list ? { id: campaign.list.id, name: campaign.list.name } : null,
+      segment: campaign.segment ? { id: campaign.segment.id, name: campaign.segment.name } : null,
+      smtp: campaign.smtpAccount ? { id: campaign.smtpAccount.id, name: campaign.smtpAccount.name } : null,
+      targetedCount: campaign.totalTargeted,
+      queuedCount: counts.queued,
+      sentCount: counts.sent,
+      failedCount: counts.failed,
+      skippedCount: counts.skipped,
+      openCount: campaign.totalOpened,
+      clickCount: campaign.totalClicked,
+      progress,
+      createdAt: campaign.createdAt.toISOString(),
+      lastActivity: activityMap.get(campaign.id)?.toISOString() ?? null
+    };
+  });
+
+  return NextResponse.json({
+    items,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    stats: {
+      ...statusCounts,
+      totalTargeted,
+      totalSent,
+      totalFailed,
+      totalSkipped,
+      totalOpened,
+      totalClicked,
+      averageDeliveryRate,
+      queue: queueStats
+    },
+    filters: {
+      templates,
+      lists,
+      segments,
+      smtpAccounts: smtps
+    }
+  });
 }
