@@ -10,6 +10,7 @@ type BootstrapData = {
   lists: Array<{ id: string; name: string; estimatedRecipients: number }>;
   smtps: Array<{ id: string; name: string; targetRatePerSecond: number; maxRatePerSecond: number | null; isThrottled: boolean }>;
   campaigns: Array<{ id: string; name: string; status: string }>;
+  segments: Array<{ id: string; name: string; lastMatchedCount: number; updatedAt: string }>;
 };
 
 type LiveEvent = {
@@ -45,6 +46,13 @@ export function LiveSendPanel() {
     name: "Nexus Test Campaign",
     templateId: "",
     listId: "",
+    targetMode: "list" as "list" | "saved_segment" | "ad_hoc_segment",
+    segmentId: "",
+    adHocDomain: "",
+    adHocOpened: false,
+    adHocClicked: false,
+    adHocFailed: false,
+    adHocSuppressed: false,
     smtpAccountId: "",
     smtpMode: "single" as "single" | "pool",
     smtpIds: [] as string[],
@@ -66,6 +74,7 @@ export function LiveSendPanel() {
           ...prev,
           templateId: data.templates[0]?.id ?? "",
           listId: data.lists[0]?.id ?? "",
+          segmentId: data.segments?.[0]?.id ?? "",
           smtpAccountId: data.smtps[0]?.id ?? "",
           smtpIds: data.smtps[0]?.id ? [data.smtps[0].id] : []
         }));
@@ -102,11 +111,20 @@ export function LiveSendPanel() {
   const canResume = campaignStatus === "paused";
   const canCancel = ["running", "paused", "queued", "pending"].includes(campaignStatus);
   const selectedList = bootstrap?.lists.find((list) => list.id === form.listId) ?? null;
+  const selectedSegment = bootstrap?.segments.find((segment) => segment.id === form.segmentId) ?? null;
   const selectedPool = (bootstrap?.smtps ?? []).filter((smtp) =>
     form.smtpMode === "single" ? smtp.id === form.smtpAccountId : form.smtpIds.includes(smtp.id)
   );
   const estimatedRate = selectedPool.reduce((sum, smtp) => sum + (smtp.maxRatePerSecond ?? smtp.targetRatePerSecond ?? 0), 0);
   const poolEmpty = form.smtpMode === "pool" ? form.smtpIds.length === 0 : !form.smtpAccountId;
+  const targetEmpty =
+    form.targetMode === "list"
+      ? !form.listId
+      : form.targetMode === "saved_segment"
+        ? !form.segmentId
+        : !form.adHocDomain && !form.adHocOpened && !form.adHocClicked && !form.adHocFailed && !form.adHocSuppressed;
+  const estimatedTarget =
+    form.targetMode === "list" ? selectedList?.estimatedRecipients ?? 0 : selectedSegment?.lastMatchedCount ?? 0;
 
   function toggleSmtpInPool(smtpId: string) {
     setForm((prev) => {
@@ -124,7 +142,7 @@ export function LiveSendPanel() {
     const selectedSmtpNames = selectedPool.map((smtp) => smtp.name).join(", ");
     const confirmed = await confirm({
       title: "Campaign başlatılsın mı?",
-      message: `Target: ${selectedList?.estimatedRecipients ?? 0} recipient | SMTP: ${selectedSmtpNames || "-"} | Rotation: ${form.strategy} / every ${form.rotateEvery} | Estimated throughput: ${estimatedRate.toFixed(2)}/s`,
+      message: `Target: ${estimatedTarget} recipient | SMTP: ${selectedSmtpNames || "-"} | Rotation: ${form.strategy} / every ${form.rotateEvery} | Estimated throughput: ${estimatedRate.toFixed(2)}/s`,
       confirmLabel: "Create + Start",
       cancelLabel: "Vazgeç",
       tone: "warning"
@@ -139,7 +157,23 @@ export function LiveSendPanel() {
         body: JSON.stringify({
           name: form.name,
           templateId: form.templateId,
-          listId: form.listId,
+          targetMode: form.targetMode,
+          listId: form.targetMode === "list" ? form.listId : undefined,
+          segmentId: form.targetMode === "saved_segment" ? form.segmentId : undefined,
+          segmentQueryConfig:
+            form.targetMode === "ad_hoc_segment"
+              ? {
+                  emailDomain: form.adHocDomain || null,
+                  engagement: {
+                    opened: form.adHocOpened || undefined,
+                    clicked: form.adHocClicked || undefined
+                  },
+                  delivery: [
+                    ...(form.adHocFailed ? (["failed"] as const) : []),
+                    ...(form.adHocSuppressed ? (["suppressed"] as const) : [])
+                  ]
+                }
+              : undefined,
           smtpAccountId: form.smtpMode === "single" ? form.smtpAccountId : form.smtpIds[0],
           smtpMode: form.smtpMode,
           smtpIds: form.smtpMode === "single" ? [form.smtpAccountId] : form.smtpIds,
@@ -227,15 +261,65 @@ export function LiveSendPanel() {
         </select>
         <select
           className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
-          value={form.listId}
-          onChange={(e) => setForm((s) => ({ ...s, listId: e.target.value }))}
+          value={form.targetMode}
+          onChange={(e) => setForm((s) => ({ ...s, targetMode: e.target.value as "list" | "saved_segment" | "ad_hoc_segment" }))}
         >
-          {(bootstrap?.lists ?? []).map((l) => (
-            <option key={l.id} value={l.id}>
-              {l.name}
-            </option>
-          ))}
+          <option value="list">Target: Recipient list</option>
+          <option value="saved_segment">Target: Saved segment</option>
+          <option value="ad_hoc_segment">Target: Ad-hoc segment query</option>
         </select>
+        {form.targetMode === "list" ? (
+          <select
+            className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+            value={form.listId}
+            onChange={(e) => setForm((s) => ({ ...s, listId: e.target.value }))}
+          >
+            {(bootstrap?.lists ?? []).map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        {form.targetMode === "saved_segment" ? (
+          <select
+            className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+            value={form.segmentId}
+            onChange={(e) => setForm((s) => ({ ...s, segmentId: e.target.value }))}
+          >
+            {(bootstrap?.segments ?? []).map((segment) => (
+              <option key={segment.id} value={segment.id}>
+                {segment.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        {form.targetMode === "ad_hoc_segment" ? (
+          <>
+            <input
+              className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+              value={form.adHocDomain}
+              onChange={(e) => setForm((s) => ({ ...s, adHocDomain: e.target.value }))}
+              placeholder="Ad-hoc domain (example: gmail.com)"
+            />
+            <label className="flex items-center gap-2 rounded-md border border-border bg-zinc-900 px-3 py-2 text-xs">
+              <input type="checkbox" checked={form.adHocOpened} onChange={(e) => setForm((s) => ({ ...s, adHocOpened: e.target.checked }))} />
+              Opened recipients
+            </label>
+            <label className="flex items-center gap-2 rounded-md border border-border bg-zinc-900 px-3 py-2 text-xs">
+              <input type="checkbox" checked={form.adHocClicked} onChange={(e) => setForm((s) => ({ ...s, adHocClicked: e.target.checked }))} />
+              Clicked recipients
+            </label>
+            <label className="flex items-center gap-2 rounded-md border border-border bg-zinc-900 px-3 py-2 text-xs">
+              <input type="checkbox" checked={form.adHocFailed} onChange={(e) => setForm((s) => ({ ...s, adHocFailed: e.target.checked }))} />
+              Failed deliveries
+            </label>
+            <label className="flex items-center gap-2 rounded-md border border-border bg-zinc-900 px-3 py-2 text-xs">
+              <input type="checkbox" checked={form.adHocSuppressed} onChange={(e) => setForm((s) => ({ ...s, adHocSuppressed: e.target.checked }))} />
+              Suppressed recipients
+            </label>
+          </>
+        ) : null}
         <select
           className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
           value={form.smtpAccountId}
@@ -329,8 +413,15 @@ export function LiveSendPanel() {
       ) : null}
 
       <div className="grid grid-cols-1 gap-3 rounded-md border border-border bg-zinc-900/40 p-3 text-xs text-zinc-300 md:grid-cols-3">
-        <p>Target list: {selectedList?.name ?? "-"}</p>
-        <p>Estimated target count: {selectedList?.estimatedRecipients ?? 0}</p>
+        <p>
+          Target:{" "}
+          {form.targetMode === "list"
+            ? selectedList?.name ?? "-"
+            : form.targetMode === "saved_segment"
+              ? selectedSegment?.name ?? "-"
+              : "Ad-hoc segment"}
+        </p>
+        <p>Estimated target count: {estimatedTarget}</p>
         <p>Estimated throughput: {estimatedRate.toFixed(2)}/s</p>
       </div>
 
@@ -338,7 +429,7 @@ export function LiveSendPanel() {
         <button
           className="inline-flex items-center gap-2 rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-60"
           onClick={createAndStartCampaign}
-          disabled={actionLoading !== null || !form.templateId || !form.listId || poolEmpty}
+          disabled={actionLoading !== null || !form.templateId || poolEmpty || targetEmpty}
         >
           {actionLoading === "create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
           Create + Start

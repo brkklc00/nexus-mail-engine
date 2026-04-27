@@ -8,6 +8,8 @@ function mapStartError(error: unknown): { status: number; error: string; code: s
   if (message === "campaign_not_found") return { status: 404, code: message, error: "Campaign bulunamadı." };
   if (message === "campaign_state_invalid") return { status: 409, code: message, error: "Campaign bu durumda başlatılamaz." };
   if (message === "campaign_list_required") return { status: 400, code: message, error: "Campaign için bir recipient listesi gerekli." };
+  if (message === "campaign_target_required") return { status: 400, code: message, error: "Campaign hedef kitlesi eksik." };
+  if (message === "segment_query_missing") return { status: 400, code: message, error: "Segment query bulunamadı." };
   if (message === "smtp_pool_empty") return { status: 400, code: message, error: "Seçili SMTP havuzunda aktif SMTP yok." };
   if (message === "campaign_import_failed") return { status: 500, code: message, error: "Recipient import sırasında hata oluştu." };
   if (message === "campaign_queue_failed") return { status: 502, code: message, error: "Campaign queue işlemi başarısız oldu." };

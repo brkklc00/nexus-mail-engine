@@ -10,6 +10,9 @@ const createSchema = z.object({
   name: z.string().min(2),
   templateId: z.string().uuid(),
   listId: z.string().uuid().optional(),
+  segmentId: z.string().uuid().optional(),
+  segmentQueryConfig: z.any().optional(),
+  targetMode: z.enum(["list", "saved_segment", "ad_hoc_segment"]).optional(),
   smtpAccountId: z.string().uuid().optional(),
   smtpMode: z.enum(["single", "pool"]).default("single"),
   smtpIds: z.array(z.string().uuid()).optional(),
@@ -35,6 +38,9 @@ export async function POST(req: Request) {
       name: payload.data.name,
       templateId: payload.data.templateId,
       listId: payload.data.listId,
+      segmentId: payload.data.segmentId,
+      segmentQueryConfig: payload.data.segmentQueryConfig,
+      targetMode: payload.data.targetMode,
       smtpAccountId: payload.data.smtpAccountId,
       smtpMode: payload.data.smtpMode,
       smtpIds: payload.data.smtpIds,
@@ -46,7 +52,20 @@ export async function POST(req: Request) {
     await writeAuditLog(session.userId, "campaign.create", "campaign", { campaignId: campaign.id });
     return NextResponse.json({ campaign });
   } catch (error) {
-    return NextResponse.json({ error: (error as Error).message }, { status: 400 });
+    const message = (error as Error).message;
+    if (message === "list_required") {
+      return NextResponse.json({ error: "List hedefleme modunda liste seçilmelidir." }, { status: 400 });
+    }
+    if (message === "segment_required") {
+      return NextResponse.json({ error: "Saved segment modunda segment seçilmelidir." }, { status: 400 });
+    }
+    if (message === "segment_query_required") {
+      return NextResponse.json({ error: "Ad-hoc segment modunda query tanımı gerekli." }, { status: 400 });
+    }
+    if (message === "segment_archived") {
+      return NextResponse.json({ error: "Arşivlenmiş segment campaign hedefi olamaz." }, { status: 400 });
+    }
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }
 

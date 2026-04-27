@@ -1,5 +1,6 @@
 import { prisma } from "@nexus/db";
 import { campaignQueue, withDistributedLock } from "@nexus/queue";
+import { listSegmentRecipientIds, type SegmentQueryInput } from "@/server/segments/segment-query.service";
 
 const CAMPAIGN_LOCK_TTL_MS = 30_000;
 const DEFAULT_ROTATE_EVERY = 500;
@@ -13,6 +14,7 @@ async function withCampaignLock<T>(campaignId: string, action: string, callback:
 
 type SmtpMode = "single" | "pool";
 type RotationStrategy = "round_robin" | "rotate_every_n" | "weighted_warmup";
+type TargetMode = "list" | "saved_segment" | "ad_hoc_segment";
 
 type SmtpPoolConfig = {
   smtpMode: SmtpMode;
@@ -86,6 +88,9 @@ export async function createCampaign(input: {
   name: string;
   templateId: string;
   listId?: string | null;
+  segmentId?: string | null;
+  segmentQueryConfig?: SegmentQueryInput | null;
+  targetMode?: TargetMode;
   smtpAccountId?: string | null;
   smtpMode?: SmtpMode;
   smtpIds?: string[];
@@ -102,9 +107,11 @@ export async function createCampaign(input: {
     rotateEvery: input.rotateEvery,
     strategy: input.strategy
   });
-  const [template, list, smtps] = await Promise.all([
+  const targetMode: TargetMode = input.targetMode ?? (input.segmentId ? "saved_segment" : input.segmentQueryConfig ? "ad_hoc_segment" : "list");
+  const [template, list, segment, smtps] = await Promise.all([
     prisma.mailTemplate.findUnique({ where: { id: input.templateId } }),
     input.listId ? prisma.recipientList.findUnique({ where: { id: input.listId } }) : null,
+    input.segmentId ? prisma.segment.findUnique({ where: { id: input.segmentId } }) : null,
     prisma.smtpAccount.findMany({
       where: {
         id: { in: normalizedConfig.smtpIds },
@@ -121,6 +128,21 @@ export async function createCampaign(input: {
   if (input.listId && !list) {
     throw new Error("list_not_found");
   }
+  if (targetMode === "list" && !input.listId) {
+    throw new Error("list_required");
+  }
+  if (input.segmentId && !segment) {
+    throw new Error("segment_not_found");
+  }
+  if (segment?.isArchived) {
+    throw new Error("segment_archived");
+  }
+  if (targetMode === "saved_segment" && !input.segmentId) {
+    throw new Error("segment_required");
+  }
+  if (targetMode === "ad_hoc_segment" && !input.segmentQueryConfig) {
+    throw new Error("segment_query_required");
+  }
   if (smtps.length === 0) {
     throw new Error("smtp_pool_empty");
   }
@@ -132,7 +154,14 @@ export async function createCampaign(input: {
       name: input.name,
       subject: template.subject,
       templateId: template.id,
-      listId: input.listId ?? null,
+      listId: targetMode === "list" ? input.listId ?? null : null,
+      segmentId: targetMode === "saved_segment" ? input.segmentId ?? null : null,
+      segmentQueryConfig:
+        targetMode === "saved_segment"
+          ? ((segment?.queryConfig as any) ?? { baseListId: segment?.listId ?? null })
+          : targetMode === "ad_hoc_segment"
+            ? (input.segmentQueryConfig as any)
+            : null,
       smtpAccountId: primarySmtp.id,
       smtpPoolConfig: {
         smtpMode: normalizedConfig.smtpMode,
@@ -156,6 +185,8 @@ export async function startCampaign(campaignId: string) {
         id: true,
         status: true,
         listId: true,
+        segmentId: true,
+        segmentQueryConfig: true,
         templateId: true,
         startedAt: true,
         smtpAccountId: true,
@@ -168,8 +199,8 @@ export async function startCampaign(campaignId: string) {
     if (!["pending", "queued", "paused"].includes(campaign.status)) {
       throw new Error("campaign_state_invalid");
     }
-    if (!campaign.listId) {
-      throw new Error("campaign_list_required");
+    if (!campaign.listId && !campaign.segmentId && !(campaign as any).segmentQueryConfig) {
+      throw new Error("campaign_target_required");
     }
 
     const poolConfig = normalizeSmtpConfig({
@@ -232,33 +263,10 @@ export async function startCampaign(campaignId: string) {
     let chunkIndex = 0;
 
     try {
-      while (true) {
-        const memberships: Array<{
-          id: string;
-          recipient: { id: string; status: string; emailNormalized: string };
-        }> = (await prisma.recipientListMembership.findMany({
-          where: { listId: campaign.listId },
-          orderBy: { id: "asc" },
-          take: fetchChunkSize,
-          ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-          include: {
-            recipient: {
-              select: { id: true, status: true, emailNormalized: true }
-            }
-          }
-        })) as any;
-        if (memberships.length === 0) {
-          break;
-        }
-        cursor = memberships[memberships.length - 1].id;
-        scanned += memberships.length;
-        chunkIndex += 1;
-
-        const activeRecipients = memberships
-          .map((item: any) => item.recipient)
-          .filter((recipient: any) => recipient?.status === "active");
-        activeCandidates += activeRecipients.length;
-        const emails = Array.from(new Set(activeRecipients.map((recipient: any) => recipient.emailNormalized)));
+      const importChunkRows = async (rows: Array<{ id: string; emailNormalized: string; status: string }>) => {
+        const activeRows = rows.filter((row) => row.status === "active");
+        activeCandidates += activeRows.length;
+        const emails = Array.from(new Set(activeRows.map((row) => row.emailNormalized)));
         const suppressedRows = emails.length
           ? await prisma.suppressionEntry.findMany({
               where: { scope: "global", emailNormalized: { in: emails } },
@@ -266,10 +274,10 @@ export async function startCampaign(campaignId: string) {
             })
           : [];
         const suppressed = new Set(suppressedRows.map((row: any) => row.emailNormalized));
-        const candidates = activeRecipients.filter((recipient: any) => !suppressed.has(recipient.emailNormalized));
-        suppressedSkipped += activeRecipients.length - candidates.length;
+        const candidates = activeRows.filter((row) => !suppressed.has(row.emailNormalized));
+        suppressedSkipped += activeRows.length - candidates.length;
 
-        const dataRows = candidates.map((recipient: any, idx: number) => {
+        const dataRows = candidates.map((recipient, idx) => {
           const smtpAccountId = chooseSmtpForRecipient(inserted + idx, poolConfig, activeSmtpIds, weightedPool);
           return {
             campaignId: campaign.id,
@@ -288,16 +296,68 @@ export async function startCampaign(campaignId: string) {
           });
           inserted += result.count;
         }
+      };
 
-        if (chunkIndex % 5 === 0) {
-          await prisma.campaignLog.create({
-            data: {
-              campaignId: campaign.id,
-              eventType: "campaign_start_progress",
-              status: "success",
-              message: `scan=${scanned} inserted=${inserted} suppressed=${suppressedSkipped}`
+      if (campaign.listId) {
+        while (true) {
+          const memberships: Array<{
+            id: string;
+            recipient: { id: string; status: string; emailNormalized: string };
+          }> = (await prisma.recipientListMembership.findMany({
+            where: { listId: campaign.listId },
+            orderBy: { id: "asc" },
+            take: fetchChunkSize,
+            ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+            include: {
+              recipient: {
+                select: { id: true, status: true, emailNormalized: true }
+              }
             }
+          })) as any;
+          if (memberships.length === 0) break;
+          cursor = memberships[memberships.length - 1].id;
+          scanned += memberships.length;
+          chunkIndex += 1;
+
+          await importChunkRows(memberships.map((item: any) => item.recipient));
+          if (chunkIndex % 5 === 0) {
+            await prisma.campaignLog.create({
+              data: {
+                campaignId: campaign.id,
+                eventType: "campaign_start_progress",
+                status: "success",
+                message: `scan=${scanned} inserted=${inserted} suppressed=${suppressedSkipped}`
+              }
+            });
+          }
+        }
+      } else {
+        const segmentConfig = (campaign as any).segmentQueryConfig as SegmentQueryInput | null;
+        if (!segmentConfig) {
+          throw new Error("segment_query_missing");
+        }
+        let segmentCursor: string | null = null;
+        while (true) {
+          const rows = await listSegmentRecipientIds({
+            query: segmentConfig,
+            take: fetchChunkSize,
+            cursor: segmentCursor
           });
+          if (rows.length === 0) break;
+          scanned += rows.length;
+          chunkIndex += 1;
+          segmentCursor = rows[rows.length - 1].id;
+          await importChunkRows(rows);
+          if (chunkIndex % 5 === 0) {
+            await prisma.campaignLog.create({
+              data: {
+                campaignId: campaign.id,
+                eventType: "campaign_start_progress",
+                status: "success",
+                message: `segment scan=${scanned} inserted=${inserted} suppressed=${suppressedSkipped}`
+              }
+            });
+          }
         }
       }
     } catch (error) {

@@ -153,6 +153,10 @@ model Segment {
   name        String
   description String?
   listId      String?
+  queryConfig Json?
+  isArchived  Boolean  @default(false)
+  lastCalculatedAt DateTime?
+  lastMatchedCount Int @default(0)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -187,6 +191,7 @@ model Campaign {
   segmentId           String?
   smtpAccountId       String
   smtpPoolConfig      Json?
+  segmentQueryConfig  Json?
   provider            String
   scheduledAt         DateTime?
   startedAt           DateTime?

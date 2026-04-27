@@ -8,7 +8,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const [templates, lists, smtps, campaigns] = await Promise.all([
+  const [templates, lists, smtps, campaigns, segments] = await Promise.all([
     prisma.mailTemplate.findMany({ orderBy: { createdAt: "desc" }, take: 50 }),
     prisma.recipientList.findMany({
       orderBy: { createdAt: "desc" },
@@ -24,7 +24,13 @@ export async function GET() {
       orderBy: { createdAt: "desc" },
       take: 50
     }),
-    prisma.campaign.findMany({ orderBy: { createdAt: "desc" }, take: 30 })
+    prisma.campaign.findMany({ orderBy: { createdAt: "desc" }, take: 30 }),
+    prisma.segment.findMany({
+      where: { isArchived: false },
+      select: { id: true, name: true, lastMatchedCount: true, updatedAt: true },
+      orderBy: { updatedAt: "desc" },
+      take: 100
+    })
   ]);
 
   return NextResponse.json({
@@ -41,6 +47,12 @@ export async function GET() {
       maxRatePerSecond: smtp.maxRatePerSecond ?? null,
       isThrottled: smtp.isThrottled
     })),
-    campaigns
+    campaigns,
+    segments: segments.map((segment: any) => ({
+      id: segment.id,
+      name: segment.name,
+      lastMatchedCount: segment.lastMatchedCount ?? 0,
+      updatedAt: segment.updatedAt.toISOString()
+    }))
   });
 }
