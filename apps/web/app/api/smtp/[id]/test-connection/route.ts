@@ -100,6 +100,59 @@ function mapTestError(error: unknown): { kind: string; message: string; recommen
   return { kind: "unknown", message };
 }
 
+function isUnknownSmtpFieldError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Invalid `prisma.smtpAccount.update() invocation") && message.includes("Unknown argument");
+}
+
+async function updateSmtpHealthSafe(
+  id: string,
+  data: {
+    healthStatus?: string;
+    lastError?: string | null;
+    lastTestAt?: Date;
+  }
+) {
+  try {
+    await prisma.smtpAccount.update({
+      where: { id },
+      data
+    });
+    return;
+  } catch (error) {
+    if (!isUnknownSmtpFieldError(error)) {
+      console.error("[api/smtp/[id]/test-connection] health update failed", { id, error });
+      return;
+    }
+  }
+
+  // Legacy-safe fallback: progressively drop optional fields if runtime schema/client is stale.
+  try {
+    const { healthStatus: _ignored, ...withoutHealthStatus } = data;
+    if (Object.keys(withoutHealthStatus).length > 0) {
+      await prisma.smtpAccount.update({
+        where: { id },
+        data: withoutHealthStatus
+      });
+    }
+  } catch (error) {
+    try {
+      if (data.lastTestAt) {
+        await prisma.smtpAccount.update({
+          where: { id },
+          data: { lastTestAt: data.lastTestAt }
+        });
+      }
+    } catch (finalError) {
+      console.error("[api/smtp/[id]/test-connection] health fallback update failed", {
+        id,
+        error,
+        finalError
+      });
+    }
+  }
+}
+
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) {
@@ -117,13 +170,11 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     transporter = nodemailer.createTransport(resolved.config as any);
     await transporter.verify();
     transporter.close();
-    await prisma.smtpAccount.update({
-      where: { id },
-      data: {
-        healthStatus: "healthy",
-        lastError: null,
-        lastTestAt: new Date()
-      }
+    const testedAt = new Date();
+    await updateSmtpHealthSafe(id, {
+      healthStatus: "healthy",
+      lastError: null,
+      lastTestAt: testedAt
     });
     await writeAuditLog(session.userId, "smtp.test_connection", "smtp_account", {
       smtpAccountId: id,
@@ -142,13 +193,11 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     });
   } catch (error) {
     const mapped = mapTestError(error);
-    await prisma.smtpAccount.update({
-      where: { id },
-      data: {
-        healthStatus: "error",
-        lastError: mapped.message.slice(0, 500),
-        lastTestAt: new Date()
-      }
+    const testedAt = new Date();
+    await updateSmtpHealthSafe(id, {
+      healthStatus: "error",
+      lastError: mapped.message.slice(0, 500),
+      lastTestAt: testedAt
     });
     await writeAuditLog(session.userId, "smtp.test_connection", "smtp_account", {
       smtpAccountId: id,
