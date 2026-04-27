@@ -11,6 +11,12 @@ type BootstrapData = {
   smtps: Array<{ id: string; name: string; targetRatePerSecond: number; maxRatePerSecond: number | null; isThrottled: boolean }>;
   campaigns: Array<{ id: string; name: string; status: string }>;
   segments: Array<{ id: string; name: string; lastMatchedCount: number; updatedAt: string }>;
+  poolSettings?: {
+    rotateEvery?: number;
+    parallelSmtpLanes?: number;
+    sendingMode?: "single" | "pool";
+    useAllActiveByDefault?: boolean;
+  } | null;
 };
 
 type LiveEvent = {
@@ -58,7 +64,7 @@ export function LiveSendPanel() {
     smtpIds: [] as string[],
     parallelSmtpCount: 1,
     rotateEvery: 500,
-    strategy: "rotate_every_n" as "round_robin" | "rotate_every_n" | "weighted_warmup"
+    strategy: "rotate_every_n" as "round_robin" | "rotate_every_n" | "weighted_warmup" | "least_used" | "health_based"
   });
 
   useEffect(() => {
@@ -76,7 +82,10 @@ export function LiveSendPanel() {
           listId: data.lists[0]?.id ?? "",
           segmentId: data.segments?.[0]?.id ?? "",
           smtpAccountId: data.smtps[0]?.id ?? "",
-          smtpIds: data.smtps[0]?.id ? [data.smtps[0].id] : []
+          smtpIds: data.smtps[0]?.id ? [data.smtps[0].id] : [],
+          rotateEvery: Number(data.poolSettings?.rotateEvery ?? prev.rotateEvery),
+          parallelSmtpCount: Number(data.poolSettings?.parallelSmtpLanes ?? prev.parallelSmtpCount),
+          smtpMode: data.poolSettings?.sendingMode ?? prev.smtpMode
         }));
       } catch (error) {
         toast.error("Send bootstrap yüklenemedi", error instanceof Error ? error.message : "Request failed");
@@ -345,13 +354,15 @@ export function LiveSendPanel() {
           onChange={(e) =>
             setForm((s) => ({
               ...s,
-              strategy: e.target.value as "round_robin" | "rotate_every_n" | "weighted_warmup"
+              strategy: e.target.value as "round_robin" | "rotate_every_n" | "weighted_warmup" | "least_used" | "health_based"
             }))
           }
         >
           <option value="rotate_every_n">Strategy: rotate every N emails</option>
           <option value="round_robin">Strategy: round robin</option>
           <option value="weighted_warmup">Strategy: weighted by warmup/rate</option>
+          <option value="least_used">Strategy: least used SMTP first</option>
+          <option value="health_based">Strategy: health-based priority</option>
         </select>
         <input
           className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"

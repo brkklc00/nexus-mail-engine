@@ -8,7 +8,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const [templates, lists, smtps, campaigns, segments] = await Promise.all([
+  const [templates, lists, smtps, campaigns, segments, poolSettings] = await Promise.all([
     prisma.mailTemplate.findMany({ orderBy: { createdAt: "desc" }, take: 50 }),
     prisma.recipientList.findMany({
       orderBy: { createdAt: "desc" },
@@ -30,7 +30,8 @@ export async function GET() {
       select: { id: true, name: true, lastMatchedCount: true, updatedAt: true },
       orderBy: { updatedAt: "desc" },
       take: 100
-    })
+    }),
+    prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } })
   ]);
 
   return NextResponse.json({
@@ -53,6 +54,7 @@ export async function GET() {
       name: segment.name,
       lastMatchedCount: segment.lastMatchedCount ?? 0,
       updatedAt: segment.updatedAt.toISOString()
-    }))
+    })),
+    poolSettings: (poolSettings?.value as any) ?? null
   });
 }

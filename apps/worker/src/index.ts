@@ -172,11 +172,16 @@ deliveryWorker.on("failed", async (job, error) => {
   if (!job) {
     return;
   }
+  const poolSetting = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } });
+  const retryCount = Number((poolSetting?.value as any)?.retryCount ?? 5);
+  const retryDelayMs = Number((poolSetting?.value as any)?.retryDelayMs ?? 2000);
   const nextAttempt = Number(job.data.attempt ?? 1) + 1;
-  if (nextAttempt <= 5) {
+  if (nextAttempt <= retryCount) {
     await retryQueue.add("delivery_retry", {
       ...job.data,
       attempt: nextAttempt
+    }, {
+      delay: retryDelayMs
     });
   } else {
     await deadLetterQueue.add("delivery_dead", job.data);

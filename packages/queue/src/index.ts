@@ -109,7 +109,7 @@ export function getRedisConnection() {
 }
 
 type MinimalQueue<T> = {
-  add: (name: string, data: T, options?: { jobId?: string }) => Promise<unknown>;
+  add: (name: string, data: T, options?: { jobId?: string; delay?: number }) => Promise<unknown>;
   getJobCounts: () => Promise<Record<string, number>>;
   getJobs: (
     types?: any,

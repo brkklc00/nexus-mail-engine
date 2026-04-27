@@ -339,12 +339,24 @@ model SmtpAccount {
   connectionTimeout                Int?
   dailyCap                         Int?
   hourlyCap                        Int?
+  minuteCap                        Int?
   targetRatePerSecond              Float    @default(1)
   alibabaRateCap                   Float?
   maxRatePerSecond                 Float?
   alibabaWarmupMaxRatePerSecond    Float?
+  warmupEnabled                    Boolean  @default(true)
+  warmupStartRps                   Float    @default(1)
+  warmupIncrementStep              Float    @default(1)
+  warmupMaxRps                     Float?
   isThrottled                      Boolean  @default(false)
   throttleReason                   String?
+  healthStatus                     String   @default("healthy")
+  lastError                        String?
+  lastTestAt                       DateTime?
+  lastSuccessAt                    DateTime?
+  cooldownUntil                    DateTime?
+  tags                             String[]
+  groupLabel                       String?
   notes                            String?
   createdAt                        DateTime @default(now())
   updatedAt                        DateTime @updatedAt

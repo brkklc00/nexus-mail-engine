@@ -27,9 +27,25 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       }
     });
     await transporter.verify();
+    await prisma.smtpAccount.update({
+      where: { id },
+      data: {
+        healthStatus: "healthy",
+        lastError: null,
+        lastTestAt: new Date()
+      }
+    });
     await writeAuditLog(session.userId, "smtp.test_connection", "smtp_account", { smtpAccountId: id, ok: true });
     return NextResponse.json({ ok: true });
   } catch (error) {
+    await prisma.smtpAccount.update({
+      where: { id },
+      data: {
+        healthStatus: "error",
+        lastError: error instanceof Error ? error.message.slice(0, 500) : "Connection test failed",
+        lastTestAt: new Date()
+      }
+    });
     await writeAuditLog(session.userId, "smtp.test_connection", "smtp_account", { smtpAccountId: id, ok: false });
     return NextResponse.json(
       { ok: false, error: error instanceof Error ? error.message : "Connection test failed" },

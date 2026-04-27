@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { PlusCircle, PlugZap, Trash2 } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
+import { AlertTriangle, BarChart3, CheckCircle2, Loader2, MailX, PlayCircle, PlugZap, RefreshCw, Save, ShieldAlert, Trash2 } from "lucide-react";
+import Link from "next/link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
+import { EmptyState } from "@/components/ui/empty-state";
 
 type Account = {
   id: string;
@@ -18,57 +19,247 @@ type Account = {
   providerLabel: string | null;
   isActive: boolean;
   isThrottled: boolean;
+  throttleReason: string | null;
+  targetRatePerSecond: number;
+  maxRatePerSecond: number | null;
+  dailyCap: number | null;
+  hourlyCap: number | null;
+  minuteCap: number | null;
+  warmupEnabled: boolean;
+  warmupStartRps: number;
+  warmupIncrementStep: number;
+  warmupMaxRps: number | null;
+  healthStatus: string;
+  lastError: string | null;
+  lastTestAt: string | null;
+  cooldownUntil: string | null;
+  tags: string[];
+  groupLabel: string | null;
+  sentToday: number;
+  failedToday: number;
+  warmupTier: string | null;
+  effectiveRps: number;
 };
 
-export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] }) {
-  const router = useRouter();
+type Metrics = {
+  totalSmtpAccounts: number;
+  activeSmtpAccounts: number;
+  healthySmtpAccounts: number;
+  throttledSmtpAccounts: number;
+  totalSentToday: number;
+  totalFailedToday: number;
+  effectiveTotalRps: number;
+  estimatedDailyCapacity: number;
+};
+
+type PoolSettings = {
+  sendingMode: "single" | "pool";
+  useAllActiveByDefault: boolean;
+  rotateEvery: number;
+  parallelSmtpLanes: number;
+  perSmtpConcurrency: number;
+  skipThrottled: boolean;
+  skipUnhealthy: boolean;
+  fallbackToNextOnError: boolean;
+  retryCount: number;
+  retryDelayMs: number;
+  cooldownAfterErrorSec: number;
+};
+
+const defaultPoolSettings: PoolSettings = {
+  sendingMode: "pool",
+  useAllActiveByDefault: true,
+  rotateEvery: 500,
+  parallelSmtpLanes: 2,
+  perSmtpConcurrency: 1,
+  skipThrottled: true,
+  skipUnhealthy: true,
+  fallbackToNextOnError: true,
+  retryCount: 5,
+  retryDelayMs: 2000,
+  cooldownAfterErrorSec: 60
+};
+
+const dailyPresets = [5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000, 2000000, 5000000, 10000000, 25000000, 50000000];
+
+export function SmtpManager({
+  initialAccounts,
+  initialMetrics: _initialMetrics,
+  initialPoolSettings
+}: {
+  initialAccounts: Account[];
+  initialMetrics: Metrics;
+  initialPoolSettings: Partial<PoolSettings> | null;
+}) {
+  const baselineMetrics = _initialMetrics;
   const toast = useToast();
   const confirm = useConfirm();
   const [accounts, setAccounts] = useState(initialAccounts);
+  const [poolSettings, setPoolSettings] = useState<PoolSettings>({ ...defaultPoolSettings, ...(initialPoolSettings ?? {}) });
+  const [poolSaving, setPoolSaving] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [rateTargetDaily, setRateTargetDaily] = useState(100000);
+  const [rateMode, setRateMode] = useState<"automatic" | "manual">("automatic");
+  const [manualRps, setManualRps] = useState(1);
   const [form, setForm] = useState({
     name: "",
+    providerLabel: "",
     host: "",
-    port: 587,
+    port: 465,
     encryption: "tls",
     username: "",
     password: "",
     fromEmail: "",
     fromName: "",
-    providerLabel: ""
+    dailyCap: 0,
+    hourlyCap: 0,
+    minuteCap: 0,
+    targetRatePerSecond: 1,
+    maxRatePerSecond: 1,
+    warmupEnabled: true,
+    warmupStartRps: 1,
+    warmupIncrementStep: 1,
+    warmupMaxRps: 15,
+    tags: "",
+    groupLabel: ""
   });
-  const [editing, setEditing] = useState<null | {
-    id: string;
-    name: string;
-    host: string;
-    port: number;
-    fromEmail: string;
-  }>(null);
 
-  async function createAccount() {
-    const response = await fetch("/api/smtp", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form)
-    });
-    const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
-    if (!response.ok || !payload.ok || !payload.account) {
-      toast.error("SMTP oluşturulamadı", payload.error ?? "Alanları kontrol edin.");
-      return;
-    }
-    setAccounts((prev) => [payload.account!, ...prev]);
-    toast.success("SMTP hesabı oluşturuldu");
+  const plannedRps = rateMode === "automatic" ? Number((rateTargetDaily / 86400).toFixed(4)) : manualRps;
+  const plannedMinute = Number((plannedRps * 60).toFixed(2));
+  const plannedHour = Number((plannedRps * 3600).toFixed(2));
+  const plannedDay = Math.floor(plannedRps * 86400);
+
+  const warmupHelper = useMemo(() => {
+    if (poolSettings.rotateEvery <= 250) return "Warmup SMTP için 100-250 önerilir.";
+    if (poolSettings.rotateEvery <= 700) return "Normal SMTP dağıtımı için 500 civarı idealdir.";
+    return "High trust SMTP için 1000-2500 uygundur.";
+  }, [poolSettings.rotateEvery]);
+  const metrics = useMemo(() => {
+    const totalSmtpAccounts = accounts.length;
+    const activeSmtpAccounts = accounts.filter((item) => item.isActive).length;
+    const healthySmtpAccounts = accounts.filter((item) => item.isActive && item.healthStatus === "healthy" && !item.isThrottled).length;
+    const throttledSmtpAccounts = accounts.filter((item) => item.isThrottled).length;
+    const totalSentToday = Math.max(
+      baselineMetrics.totalSentToday,
+      accounts.reduce((sum, item) => sum + Number(item.sentToday ?? 0), 0)
+    );
+    const totalFailedToday = Math.max(
+      baselineMetrics.totalFailedToday,
+      accounts.reduce((sum, item) => sum + Number(item.failedToday ?? 0), 0)
+    );
+    const effectiveTotalRps = Number(
+      accounts
+        .filter((item) => item.isActive && !item.isThrottled)
+        .reduce((sum, item) => sum + Number(item.effectiveRps ?? item.targetRatePerSecond ?? 0), 0)
+        .toFixed(2)
+    );
+    return {
+      totalSmtpAccounts,
+      activeSmtpAccounts,
+      healthySmtpAccounts,
+      throttledSmtpAccounts,
+      totalSentToday,
+      totalFailedToday,
+      effectiveTotalRps,
+      estimatedDailyCapacity: Math.floor(effectiveTotalRps * 86400)
+    };
+  }, [accounts, baselineMetrics.totalFailedToday, baselineMetrics.totalSentToday]);
+
+  function resetForm() {
     setForm({
       name: "",
+      providerLabel: "",
       host: "",
-      port: 587,
+      port: 465,
       encryption: "tls",
       username: "",
       password: "",
       fromEmail: "",
       fromName: "",
-      providerLabel: ""
+      dailyCap: 0,
+      hourlyCap: 0,
+      minuteCap: 0,
+      targetRatePerSecond: 1,
+      maxRatePerSecond: 1,
+      warmupEnabled: true,
+      warmupStartRps: 1,
+      warmupIncrementStep: 1,
+      warmupMaxRps: 15,
+      tags: "",
+      groupLabel: ""
     });
-    router.refresh();
+    setEditingId(null);
+  }
+
+  async function savePoolSettings() {
+    setPoolSaving(true);
+    try {
+      const response = await fetch("/api/smtp/pool-settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(poolSettings)
+      });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Pool settings kaydedilemedi");
+      }
+      toast.success("Pool settings kaydedildi");
+    } catch (error) {
+      toast.error("Pool settings kaydedilemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
+    } finally {
+      setPoolSaving(false);
+    }
+  }
+
+  async function saveAccount() {
+    setActionLoading("save_account");
+    try {
+      const body = {
+        name: form.name,
+        providerLabel: form.providerLabel || null,
+        host: form.host,
+        port: Number(form.port),
+        encryption: form.encryption,
+        username: form.username,
+        ...(form.password ? { password: form.password } : {}),
+        fromEmail: form.fromEmail,
+        fromName: form.fromName || null,
+        dailyCap: form.dailyCap > 0 ? Number(form.dailyCap) : null,
+        hourlyCap: form.hourlyCap > 0 ? Number(form.hourlyCap) : null,
+        minuteCap: form.minuteCap > 0 ? Number(form.minuteCap) : null,
+        targetRatePerSecond: Number(form.targetRatePerSecond),
+        maxRatePerSecond: form.maxRatePerSecond > 0 ? Number(form.maxRatePerSecond) : null,
+        warmupEnabled: form.warmupEnabled,
+        warmupStartRps: Number(form.warmupStartRps),
+        warmupIncrementStep: Number(form.warmupIncrementStep),
+        warmupMaxRps: form.warmupMaxRps > 0 ? Number(form.warmupMaxRps) : null,
+        tags: form.tags.split(",").map((item) => item.trim()).filter(Boolean),
+        groupLabel: form.groupLabel || null
+      };
+      const response = await fetch(editingId ? `/api/smtp/${editingId}` : "/api/smtp", {
+        method: editingId ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
+      if (!response.ok || !payload.ok || !payload.account) {
+        throw new Error(payload.error ?? "SMTP kaydedilemedi");
+      }
+      if (editingId) {
+        setAccounts((prev) => prev.map((item) => (item.id === editingId ? ({ ...item, ...payload.account } as Account) : item)));
+      } else {
+        setAccounts((prev) => [payload.account as Account, ...prev]);
+      }
+      toast.success(editingId ? "SMTP güncellendi" : "SMTP oluşturuldu");
+      setShowModal(false);
+      resetForm();
+    } catch (error) {
+      toast.error("SMTP kaydedilemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
+    } finally {
+      setActionLoading(null);
+    }
   }
 
   async function toggleAccount(account: Account) {
@@ -82,6 +273,7 @@ export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] })
       });
       if (!accepted) return;
     }
+    setActionLoading(`toggle:${account.id}`);
     const response = await fetch(`/api/smtp/${account.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -90,54 +282,82 @@ export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] })
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
       toast.error("SMTP güncellenemedi", payload.error ?? "İşlem başarısız.");
+      setActionLoading(null);
       return;
     }
     setAccounts((prev) => prev.map((item) => (item.id === account.id ? payload.account! : item)));
     toast.info(payload.account.isActive ? "SMTP aktif edildi" : "SMTP pasif edildi");
-    router.refresh();
+    setActionLoading(null);
   }
 
   async function testConnection(account: Account) {
+    setActionLoading(`test:${account.id}`);
     const response = await fetch(`/api/smtp/${account.id}/test-connection`, { method: "POST" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (response.ok && payload.ok) {
       toast.success("SMTP bağlantısı başarılı");
+      setAccounts((prev) =>
+        prev.map((item) =>
+          item.id === account.id ? { ...item, healthStatus: "healthy", lastError: null, lastTestAt: new Date().toISOString() } : item
+        )
+      );
+      setActionLoading(null);
       return;
     }
     toast.error("SMTP bağlantı testi başarısız", payload.error ?? "Bağlantı kurulamadı.");
+    setAccounts((prev) =>
+      prev.map((item) =>
+        item.id === account.id
+          ? { ...item, healthStatus: "error", lastError: payload.error ?? "Connection failed", lastTestAt: new Date().toISOString() }
+          : item
+      )
+    );
+    setActionLoading(null);
   }
 
-  async function editAccount(account: Account) {
-    setEditing({
-      id: account.id,
+  function editAccount(account: Account) {
+    setEditingId(account.id);
+    setShowModal(true);
+    setForm({
       name: account.name,
+      providerLabel: account.providerLabel ?? "",
       host: account.host,
       port: account.port,
-      fromEmail: account.fromEmail
+      encryption: account.encryption,
+      username: account.username,
+      password: "",
+      fromEmail: account.fromEmail,
+      fromName: account.fromName ?? "",
+      dailyCap: account.dailyCap ?? 0,
+      hourlyCap: account.hourlyCap ?? 0,
+      minuteCap: account.minuteCap ?? 0,
+      targetRatePerSecond: account.targetRatePerSecond ?? 1,
+      maxRatePerSecond: account.maxRatePerSecond ?? 0,
+      warmupEnabled: account.warmupEnabled,
+      warmupStartRps: account.warmupStartRps ?? 1,
+      warmupIncrementStep: account.warmupIncrementStep ?? 1,
+      warmupMaxRps: account.warmupMaxRps ?? 0,
+      tags: (account.tags ?? []).join(","),
+      groupLabel: account.groupLabel ?? ""
     });
   }
 
-  async function submitEdit() {
-    if (!editing) return;
-    const response = await fetch(`/api/smtp/${editing.id}`, {
+  async function resetThrottle(account: Account) {
+    setActionLoading(`reset:${account.id}`);
+    const response = await fetch(`/api/smtp/${account.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: editing.name,
-        host: editing.host,
-        port: editing.port,
-        fromEmail: editing.fromEmail
-      })
+      body: JSON.stringify({ action: "reset_throttle" })
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
-      toast.error("SMTP düzenleme başarısız", payload.error ?? "İşlem başarısız.");
+      toast.error("Throttle reset başarısız", payload.error ?? "İşlem başarısız.");
+      setActionLoading(null);
       return;
     }
-    setAccounts((prev) => prev.map((item) => (item.id === editing.id ? payload.account! : item)));
-    setEditing(null);
-    toast.success("SMTP güncellendi");
-    router.refresh();
+    setAccounts((prev) => prev.map((item) => (item.id === account.id ? payload.account! : item)));
+    toast.success("Throttle reset uygulandı");
+    setActionLoading(null);
   }
 
   async function removeAccount(account: Account) {
@@ -149,79 +369,97 @@ export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] })
       tone: "danger"
     });
     if (!accepted) return;
+    setActionLoading(`delete:${account.id}`);
     const response = await fetch(`/api/smtp/${account.id}`, { method: "DELETE" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
       toast.error("SMTP silinemedi", payload.error ?? "İşlem başarısız.");
+      setActionLoading(null);
       return;
     }
     setAccounts((prev) => prev.filter((item) => item.id !== account.id));
     toast.success("SMTP silindi");
-    router.refresh();
+    setActionLoading(null);
   }
 
   return (
     <div className="space-y-4">
-      <div className="rounded-2xl border border-border bg-card p-4">
-        <h3 className="text-sm font-medium text-zinc-200">Add SMTP</h3>
-        <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-          <input className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm" placeholder="Name" value={form.name} onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))} />
-          <input className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm" placeholder="Host" value={form.host} onChange={(e) => setForm((s) => ({ ...s, host: e.target.value }))} />
-          <input className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm" placeholder="Port" type="number" value={form.port} onChange={(e) => setForm((s) => ({ ...s, port: Number(e.target.value) || 587 }))} />
-          <select className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm" value={form.encryption} onChange={(e) => setForm((s) => ({ ...s, encryption: e.target.value }))}>
-            <option value="tls">TLS</option>
-            <option value="ssl">SSL</option>
-            <option value="none">None</option>
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard title="Total SMTP" value={metrics.totalSmtpAccounts} icon={BarChart3} />
+        <MetricCard title="Active SMTP" value={metrics.activeSmtpAccounts} icon={CheckCircle2} tone="success" />
+        <MetricCard title="Healthy SMTP" value={metrics.healthySmtpAccounts} icon={PlayCircle} tone="success" />
+        <MetricCard title="Throttled SMTP" value={metrics.throttledSmtpAccounts} icon={ShieldAlert} tone="warning" />
+        <MetricCard title="Sent Today" value={metrics.totalSentToday} icon={CheckCircle2} />
+        <MetricCard title="Failed Today" value={metrics.totalFailedToday} icon={MailX} tone="danger" />
+        <MetricCard title="Effective Total RPS" value={metrics.effectiveTotalRps} icon={RefreshCw} />
+        <MetricCard title="Estimated Daily Capacity" value={metrics.estimatedDailyCapacity} icon={BarChart3} />
+      </section>
+
+      <section className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <p className="text-sm font-semibold text-white">SMTP Pool Settings</p>
+          <button type="button" onClick={() => void savePoolSettings()} disabled={poolSaving} className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200">
+            {poolSaving ? <Loader2 className="inline h-3.5 w-3.5 animate-spin" /> : <Save className="inline h-3.5 w-3.5" />} Save Pool Settings
+          </button>
+        </div>
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+          <select value={poolSettings.sendingMode} onChange={(e) => setPoolSettings((s) => ({ ...s, sendingMode: e.target.value as "single" | "pool" }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100">
+            <option value="single">Sending mode: single SMTP</option>
+            <option value="pool">Sending mode: SMTP pool</option>
           </select>
-          <input className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm" placeholder="Username" value={form.username} onChange={(e) => setForm((s) => ({ ...s, username: e.target.value }))} />
-          <input className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm" placeholder="Password" type="password" value={form.password} onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))} />
-          <input className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm" placeholder="From email" value={form.fromEmail} onChange={(e) => setForm((s) => ({ ...s, fromEmail: e.target.value }))} />
-          <input className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm" placeholder="From name" value={form.fromName} onChange={(e) => setForm((s) => ({ ...s, fromName: e.target.value }))} />
-          <input className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm md:col-span-2" placeholder="Provider label (optional)" value={form.providerLabel} onChange={(e) => setForm((s) => ({ ...s, providerLabel: e.target.value }))} />
+          <input type="number" value={poolSettings.rotateEvery} onChange={(e) => setPoolSettings((s) => ({ ...s, rotateEvery: Number(e.target.value || 500) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          <input type="number" value={poolSettings.parallelSmtpLanes} onChange={(e) => setPoolSettings((s) => ({ ...s, parallelSmtpLanes: Number(e.target.value || 1) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          <input type="number" value={poolSettings.perSmtpConcurrency} onChange={(e) => setPoolSettings((s) => ({ ...s, perSmtpConcurrency: Number(e.target.value || 1) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs"><input type="checkbox" checked={poolSettings.useAllActiveByDefault} onChange={(e) => setPoolSettings((s) => ({ ...s, useAllActiveByDefault: e.target.checked }))} />Use all active SMTPs</label>
+          <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs"><input type="checkbox" checked={poolSettings.skipThrottled} onChange={(e) => setPoolSettings((s) => ({ ...s, skipThrottled: e.target.checked }))} />Skip throttled SMTPs</label>
+          <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs"><input type="checkbox" checked={poolSettings.skipUnhealthy} onChange={(e) => setPoolSettings((s) => ({ ...s, skipUnhealthy: e.target.checked }))} />Skip unhealthy SMTPs</label>
+          <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs"><input type="checkbox" checked={poolSettings.fallbackToNextOnError} onChange={(e) => setPoolSettings((s) => ({ ...s, fallbackToNextOnError: e.target.checked }))} />Fallback to next SMTP on error</label>
+          <input type="number" value={poolSettings.retryCount} onChange={(e) => setPoolSettings((s) => ({ ...s, retryCount: Number(e.target.value || 0) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          <input type="number" value={poolSettings.retryDelayMs} onChange={(e) => setPoolSettings((s) => ({ ...s, retryDelayMs: Number(e.target.value || 0) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          <input type="number" value={poolSettings.cooldownAfterErrorSec} onChange={(e) => setPoolSettings((s) => ({ ...s, cooldownAfterErrorSec: Number(e.target.value || 0) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
         </div>
-        <button type="button" onClick={() => void createAccount()} className="mt-3 inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm text-white">
-          <PlusCircle className="h-4 w-4" />
-          Save SMTP
-        </button>
+        <p className="mt-2 text-xs text-zinc-400">Rotate every N recipients per SMTP. Lower = better distribution, higher = less switching. {warmupHelper}</p>
+      </section>
+
+      <section className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <p className="text-sm font-semibold text-white">Global Rate Planner</p>
+          <select value={rateMode} onChange={(e) => setRateMode(e.target.value as "automatic" | "manual")} className="rounded border border-border bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100">
+            <option value="automatic">Automatic (daily / 86400)</option>
+            <option value="manual">Manual RPS</option>
+          </select>
+        </div>
+        <div className="grid gap-2 md:grid-cols-4">
+          {rateMode === "automatic" ? (
+            <input type="number" value={rateTargetDaily} onChange={(e) => setRateTargetDaily(Number(e.target.value || 0))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          ) : (
+            <input type="number" step="0.01" value={manualRps} onChange={(e) => setManualRps(Number(e.target.value || 0))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          )}
+          <RateStat label="Per second" value={plannedRps} />
+          <RateStat label="Per minute" value={plannedMinute} />
+          <RateStat label="Per hour" value={plannedHour} />
+        </div>
+        <div className="mt-2 text-xs text-zinc-300">Per day: {plannedDay.toLocaleString()}</div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {dailyPresets.map((preset) => (
+            <button key={preset} type="button" onClick={() => { setRateMode("automatic"); setRateTargetDaily(preset); }} className="rounded border border-border px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-900">
+              {preset >= 1000000 ? `${preset / 1000000}M/day` : `${Math.floor(preset / 1000)}k/day`}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <p className="text-sm font-semibold text-white">SMTP Accounts</p>
+          <button type="button" onClick={() => { resetForm(); setShowModal(true); }} className="rounded-lg bg-accent px-3 py-2 text-xs text-white">
+            Add SMTP
+          </button>
+        </div>
+        {accounts.length === 0 ? (
+          <EmptyState icon="server" title="SMTP account yok" description="Add SMTP ile ilk hesabı oluştur." />
+        ) : null}
       </div>
-      {editing ? (
-        <div className="rounded-2xl border border-border bg-card p-4">
-          <h3 className="text-sm font-medium text-zinc-200">Edit SMTP</h3>
-          <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-            <input
-              className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-              value={editing.name}
-              onChange={(e) => setEditing((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
-            />
-            <input
-              className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-              value={editing.host}
-              onChange={(e) => setEditing((prev) => (prev ? { ...prev, host: e.target.value } : prev))}
-            />
-            <input
-              className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-              type="number"
-              value={editing.port}
-              onChange={(e) =>
-                setEditing((prev) => (prev ? { ...prev, port: Number(e.target.value) || prev.port } : prev))
-              }
-            />
-            <input
-              className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-              value={editing.fromEmail}
-              onChange={(e) => setEditing((prev) => (prev ? { ...prev, fromEmail: e.target.value } : prev))}
-            />
-          </div>
-          <div className="mt-3 flex gap-2">
-            <button type="button" onClick={() => void submitEdit()} className="rounded-lg bg-accent px-3 py-2 text-sm text-white">
-              Save Changes
-            </button>
-            <button type="button" onClick={() => setEditing(null)} className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-200">
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : null}
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
         {accounts.map((account) => (
@@ -230,30 +468,139 @@ export function SmtpManager({ initialAccounts }: { initialAccounts: Account[] })
               <div>
                 <p className="text-sm font-medium text-white">{account.name}</p>
                 <p className="text-xs text-zinc-400">
-                  {account.host}:{account.port} · {account.encryption.toUpperCase()} · {account.providerLabel ?? "custom"}
+                  {account.fromEmail} · {account.providerLabel ?? "custom"} · {account.host}:{account.port} · {account.encryption.toUpperCase()}
                 </p>
               </div>
-              <StatusBadge label={account.isThrottled ? "throttled" : "healthy"} tone={account.isThrottled ? "warning" : "success"} />
+              <StatusBadge
+                label={!account.isActive ? "disabled" : account.isThrottled ? "throttled" : account.healthStatus === "error" ? "error" : "healthy"}
+                tone={!account.isActive ? "muted" : account.isThrottled ? "warning" : account.healthStatus === "error" ? "danger" : "success"}
+              />
             </div>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-300">
+              <p>Target/Max RPS: {account.targetRatePerSecond}/{account.maxRatePerSecond ?? "-"}</p>
+              <p>Warmup tier: {account.warmupTier ?? "-"}</p>
+              <p>Sent/Failed today: {account.sentToday}/{account.failedToday}</p>
+              <p>Last test: {account.lastTestAt ? new Date(account.lastTestAt).toLocaleString() : "-"}</p>
+            </div>
+            <p className="mt-2 text-xs text-zinc-500">Last error: {account.lastError ?? "-"}</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" onClick={() => void toggleAccount(account)} className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200">
+              <button type="button" onClick={() => void toggleAccount(account)} disabled={actionLoading === `toggle:${account.id}`} className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 disabled:opacity-50">
                 {account.isActive ? "Disable" : "Enable"}
               </button>
               <button type="button" onClick={() => void editAccount(account)} className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200">
                 Edit
               </button>
-              <button type="button" onClick={() => void testConnection(account)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200">
-                <PlugZap className="h-3.5 w-3.5" />
+              <button type="button" onClick={() => void testConnection(account)} disabled={actionLoading === `test:${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 disabled:opacity-50">
+                {actionLoading === `test:${account.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlugZap className="h-3.5 w-3.5" />}
                 Test Connection
               </button>
-              <button type="button" onClick={() => void removeAccount(account)} className="inline-flex items-center gap-1 rounded-lg border border-rose-400/40 px-3 py-1.5 text-xs text-rose-300">
+              <button type="button" onClick={() => void resetThrottle(account)} disabled={actionLoading === `reset:${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-amber-400/40 px-3 py-1.5 text-xs text-amber-200 disabled:opacity-50">
+                <RefreshCw className="h-3.5 w-3.5" />
+                Reset Throttle
+              </button>
+              <Link href={`/logs?q=${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200">
+                View Logs
+              </Link>
+              <button type="button" onClick={() => void removeAccount(account)} disabled={actionLoading === `delete:${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-rose-400/40 px-3 py-1.5 text-xs text-rose-300 disabled:opacity-50">
                 <Trash2 className="h-3.5 w-3.5" />
                 Delete
               </button>
             </div>
+            {account.cooldownUntil ? (
+              <p className="mt-2 flex items-center gap-1 text-xs text-amber-300">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Cooldown until {new Date(account.cooldownUntil).toLocaleTimeString()}
+              </p>
+            ) : null}
           </article>
         ))}
       </div>
+
+      {showModal ? (
+        <div className="fixed inset-0 z-[130] bg-black/55 p-4 backdrop-blur-sm" onClick={() => setShowModal(false)}>
+          <div className="mx-auto max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm font-semibold text-white">{editingId ? "Edit SMTP" : "Add SMTP"}</p>
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+              <Field label="Name"><input value={form.name} onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))} className="input" /></Field>
+              <Field label="Provider label"><input value={form.providerLabel} onChange={(e) => setForm((s) => ({ ...s, providerLabel: e.target.value }))} className="input" /></Field>
+              <Field label="Host"><input value={form.host} onChange={(e) => setForm((s) => ({ ...s, host: e.target.value }))} className="input" /></Field>
+              <Field label="Port"><input type="number" value={form.port} onChange={(e) => setForm((s) => ({ ...s, port: Number(e.target.value || 0) }))} className="input" /></Field>
+              <Field label="Security"><select value={form.encryption} onChange={(e) => setForm((s) => ({ ...s, encryption: e.target.value }))} className="input"><option value="ssl">SSL (465)</option><option value="tls">TLS (587)</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></Field>
+              <Field label="Username"><input value={form.username} onChange={(e) => setForm((s) => ({ ...s, username: e.target.value }))} className="input" /></Field>
+              <Field label="Password"><input type="password" value={form.password} onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))} className="input" /></Field>
+              <Field label="From email"><input value={form.fromEmail} onChange={(e) => setForm((s) => ({ ...s, fromEmail: e.target.value }))} className="input" /></Field>
+              <Field label="From name"><input value={form.fromName} onChange={(e) => setForm((s) => ({ ...s, fromName: e.target.value }))} className="input" /></Field>
+              <Field label="Daily quota"><input type="number" value={form.dailyCap} onChange={(e) => setForm((s) => ({ ...s, dailyCap: Number(e.target.value || 0) }))} className="input" /></Field>
+              <Field label="Hourly quota"><input type="number" value={form.hourlyCap} onChange={(e) => setForm((s) => ({ ...s, hourlyCap: Number(e.target.value || 0) }))} className="input" /></Field>
+              <Field label="Minute quota"><input type="number" value={form.minuteCap} onChange={(e) => setForm((s) => ({ ...s, minuteCap: Number(e.target.value || 0) }))} className="input" /></Field>
+              <Field label="Target RPS"><input type="number" step="0.01" value={form.targetRatePerSecond} onChange={(e) => setForm((s) => ({ ...s, targetRatePerSecond: Number(e.target.value || 0) }))} className="input" /></Field>
+              <Field label="Max RPS"><input type="number" step="0.01" value={form.maxRatePerSecond} onChange={(e) => setForm((s) => ({ ...s, maxRatePerSecond: Number(e.target.value || 0) }))} className="input" /></Field>
+              <Field label="Warmup enabled"><label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-900 px-3 py-2 text-xs"><input type="checkbox" checked={form.warmupEnabled} onChange={(e) => setForm((s) => ({ ...s, warmupEnabled: e.target.checked }))} />Enable warmup</label></Field>
+              <Field label="Warmup start RPS"><input type="number" step="0.01" value={form.warmupStartRps} onChange={(e) => setForm((s) => ({ ...s, warmupStartRps: Number(e.target.value || 0) }))} className="input" /></Field>
+              <Field label="Warmup increment step"><input type="number" step="0.01" value={form.warmupIncrementStep} onChange={(e) => setForm((s) => ({ ...s, warmupIncrementStep: Number(e.target.value || 0) }))} className="input" /></Field>
+              <Field label="Warmup max RPS"><input type="number" step="0.01" value={form.warmupMaxRps} onChange={(e) => setForm((s) => ({ ...s, warmupMaxRps: Number(e.target.value || 0) }))} className="input" /></Field>
+              <Field label="Tags (comma separated)"><input value={form.tags} onChange={(e) => setForm((s) => ({ ...s, tags: e.target.value }))} className="input" /></Field>
+              <Field label="Group"><input value={form.groupLabel} onChange={(e) => setForm((s) => ({ ...s, groupLabel: e.target.value }))} className="input" /></Field>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button type="button" onClick={() => void saveAccount()} disabled={actionLoading === "save_account"} className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">
+                {actionLoading === "save_account" ? <Loader2 className="inline h-4 w-4 animate-spin" /> : null} Save SMTP
+              </button>
+              <button type="button" onClick={() => { setShowModal(false); resetForm(); }} className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-200">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="mb-1 text-[11px] text-zinc-500">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+function MetricCard({
+  title,
+  value,
+  icon: Icon,
+  tone = "default"
+}: {
+  title: string;
+  value: number;
+  icon: React.ComponentType<{ className?: string }>;
+  tone?: "default" | "success" | "warning" | "danger";
+}) {
+  const toneClass =
+    tone === "success"
+      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+      : tone === "warning"
+        ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
+        : tone === "danger"
+          ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
+          : "border-border bg-gradient-to-br from-zinc-900/90 to-zinc-950 text-zinc-100";
+  return (
+    <div className={`rounded-xl border p-3 ${toneClass}`}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] uppercase tracking-wide">{title}</p>
+        <Icon className="h-4 w-4" />
+      </div>
+      <p className="mt-2 text-xl font-semibold">{Number.isFinite(value) ? value.toLocaleString() : "-"}</p>
+    </div>
+  );
+}
+
+function RateStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100">
+      <p className="text-[11px] text-zinc-500">{label}</p>
+      <p className="font-semibold">{Number.isFinite(value) ? value.toLocaleString() : "-"}</p>
     </div>
   );
 }

@@ -13,7 +13,7 @@ async function withCampaignLock<T>(campaignId: string, action: string, callback:
 }
 
 type SmtpMode = "single" | "pool";
-type RotationStrategy = "round_robin" | "rotate_every_n" | "weighted_warmup";
+type RotationStrategy = "round_robin" | "rotate_every_n" | "weighted_warmup" | "warmup_weighted" | "least_used" | "health_based";
 type TargetMode = "list" | "saved_segment" | "ad_hoc_segment";
 
 type SmtpPoolConfig = {
@@ -42,7 +42,13 @@ function normalizeSmtpConfig(input: {
   const rotateEvery = Math.max(1, Math.floor(input.rotateEvery ?? DEFAULT_ROTATE_EVERY));
   const parallelSmtpCount = Math.max(1, Math.floor(input.parallelSmtpCount ?? DEFAULT_PARALLEL_SMTP));
   const strategy: RotationStrategy =
-    input.strategy === "weighted_warmup" || input.strategy === "round_robin" ? input.strategy : "rotate_every_n";
+    input.strategy === "weighted_warmup" ||
+    input.strategy === "warmup_weighted" ||
+    input.strategy === "round_robin" ||
+    input.strategy === "least_used" ||
+    input.strategy === "health_based"
+      ? input.strategy
+      : "rotate_every_n";
   return {
     smtpMode,
     smtpIds,
@@ -99,12 +105,26 @@ export async function createCampaign(input: {
   strategy?: RotationStrategy;
   scheduledAt?: Date | null;
 }) {
+  const poolSetting = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } });
+  const globalPool = ((poolSetting?.value as any) ?? {}) as {
+    useAllActiveByDefault?: boolean;
+    rotateEvery?: number;
+    parallelSmtpLanes?: number;
+    sendingMode?: "single" | "pool";
+  };
+  const smtpIdsFromAll = globalPool.useAllActiveByDefault
+    ? (await prisma.smtpAccount.findMany({
+        where: { isActive: true, isSoftDeleted: false },
+        select: { id: true },
+        orderBy: { createdAt: "asc" }
+      })).map((item: { id: string }) => item.id)
+    : [];
   const normalizedConfig = normalizeSmtpConfig({
-    smtpMode: input.smtpMode,
-    smtpIds: input.smtpIds,
+    smtpMode: input.smtpMode ?? globalPool.sendingMode ?? "pool",
+    smtpIds: input.smtpIds?.length ? input.smtpIds : smtpIdsFromAll,
     smtpAccountId: input.smtpAccountId,
-    parallelSmtpCount: input.parallelSmtpCount,
-    rotateEvery: input.rotateEvery,
+    parallelSmtpCount: input.parallelSmtpCount ?? globalPool.parallelSmtpLanes ?? 1,
+    rotateEvery: input.rotateEvery ?? globalPool.rotateEvery ?? 500,
     strategy: input.strategy
   });
   const targetMode: TargetMode = input.targetMode ?? (input.segmentId ? "saved_segment" : input.segmentQueryConfig ? "ad_hoc_segment" : "list");

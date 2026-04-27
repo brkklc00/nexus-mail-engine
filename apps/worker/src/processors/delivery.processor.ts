@@ -234,6 +234,7 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     host: selectedSmtp.host,
     port: selectedSmtp.port,
     secure: selectedSmtp.encryption === "ssl",
+    requireTLS: selectedSmtp.encryption === "tls" || selectedSmtp.encryption === "starttls",
     auth: {
       user: selectedSmtp.username,
       pass: decryptSmtpSecret(selectedSmtp.passwordEncrypted)
@@ -307,6 +308,15 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
       })
     ]);
     await recordDeliveryOutcome(selectedSmtp.id, false);
+    await prisma.smtpAccount.update({
+      where: { id: selectedSmtp.id },
+      data: {
+        healthStatus: "healthy",
+        lastError: null,
+        lastSuccessAt: new Date(),
+        cooldownUntil: null
+      }
+    });
     await finalizeCampaignIfDone(campaign.id);
   } catch (error) {
     const failed = await transitionCampaignRecipientStatus({
@@ -339,6 +349,17 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
       ]);
     }
     await recordDeliveryOutcome(selectedSmtp.id, true);
+    const poolSetting = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } });
+    const cooldownSec = Number((poolSetting?.value as any)?.cooldownAfterErrorSec ?? 0);
+    const cooldownUntil = cooldownSec > 0 ? new Date(Date.now() + cooldownSec * 1000) : null;
+    await prisma.smtpAccount.update({
+      where: { id: selectedSmtp.id },
+      data: {
+        healthStatus: "error",
+        lastError: error instanceof Error ? error.message.slice(0, 500) : "delivery_failed",
+        cooldownUntil
+      }
+    });
     await finalizeCampaignIfDone(campaign.id);
     throw error;
   }

@@ -2,24 +2,13 @@ import { prisma } from "@nexus/db";
 import { calculateEffectiveRate, type WarmupTier } from "@nexus/rate-control";
 
 const DEFAULT_ALIBABA_LADDER: WarmupTier[] = [
-  { name: "5k/day", minDelivered: 5000, ratePerSecond: 0.06 },
-  { name: "10k/day", minDelivered: 10000, ratePerSecond: 0.12 },
-  { name: "25k/day", minDelivered: 25000, ratePerSecond: 0.29 },
-  { name: "50k/day", minDelivered: 50000, ratePerSecond: 0.58 },
-  { name: "100k/day", minDelivered: 100000, ratePerSecond: 1.16 },
-  { name: "250k/day", minDelivered: 250000, ratePerSecond: 2.89 },
-  { name: "500k/day", minDelivered: 500000, ratePerSecond: 5.79 },
-  { name: "750k/day", minDelivered: 750000, ratePerSecond: 8.68 },
-  { name: "1m/day", minDelivered: 1000000, ratePerSecond: 11.57 },
-  { name: "1.5m/day", minDelivered: 1500000, ratePerSecond: 17.36 },
-  { name: "2m/day", minDelivered: 2000000, ratePerSecond: 23.15 },
-  { name: "3m/day", minDelivered: 3000000, ratePerSecond: 34.72 },
-  { name: "5m/day", minDelivered: 5000000, ratePerSecond: 57.87 },
-  { name: "10m/day", minDelivered: 10000000, ratePerSecond: 115.74 },
-  { name: "15m/day", minDelivered: 15000000, ratePerSecond: 173.61 },
-  { name: "20m/day", minDelivered: 20000000, ratePerSecond: 231.48 },
-  { name: "25m/day", minDelivered: 25000000, ratePerSecond: 289.35 },
-  { name: "50m/day", minDelivered: 50000000, ratePerSecond: 578.7 }
+  { name: "0-500", minDelivered: 0, ratePerSecond: 1 },
+  { name: "501-2k", minDelivered: 501, ratePerSecond: 2 },
+  { name: "2k-5k", minDelivered: 2001, ratePerSecond: 3 },
+  { name: "5k-10k", minDelivered: 5001, ratePerSecond: 5 },
+  { name: "10k-25k", minDelivered: 10001, ratePerSecond: 8 },
+  { name: "25k-50k", minDelivered: 25001, ratePerSecond: 10 },
+  { name: "50k+", minDelivered: 50001, ratePerSecond: 15 }
 ];
 
 export async function getEffectiveRateForSmtp(smtpAccountId: string) {
@@ -49,6 +38,18 @@ export async function getEffectiveRateForSmtp(smtpAccountId: string) {
       ...decision,
       effectiveRatePerSecond: Math.max(0.01, Number((decision.effectiveRatePerSecond * 0.5).toFixed(4))),
       reasons: [...decision.reasons, "safety_mode_throttle"]
+    };
+  }
+
+  if (smtp.warmupEnabled) {
+    const customWarmupRate = Math.min(
+      smtp.warmupMaxRps ?? Number.MAX_SAFE_INTEGER,
+      smtp.warmupStartRps + Math.floor(deliveredSuccessCount / 1000) * smtp.warmupIncrementStep
+    );
+    return {
+      ...decision,
+      effectiveRatePerSecond: Math.max(0.01, Number(Math.min(decision.effectiveRatePerSecond, customWarmupRate).toFixed(4))),
+      reasons: [...decision.reasons, "custom_warmup"]
     };
   }
 

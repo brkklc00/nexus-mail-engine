@@ -18,7 +18,7 @@ const createSchema = z.object({
   smtpIds: z.array(z.string().uuid()).optional(),
   parallelSmtpCount: z.number().int().min(1).max(50).optional(),
   rotateEvery: z.number().int().min(1).max(50000).optional(),
-  strategy: z.enum(["round_robin", "rotate_every_n", "weighted_warmup"]).optional(),
+  strategy: z.enum(["round_robin", "rotate_every_n", "weighted_warmup", "warmup_weighted", "least_used", "health_based"]).optional(),
   scheduledAt: z.string().datetime().optional()
 });
 
