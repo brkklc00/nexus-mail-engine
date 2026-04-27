@@ -1,10 +1,12 @@
 "use client";
 
 import { type ReactNode, useMemo, useState } from "react";
-import { Download, Loader2, PlusCircle, Search, ShieldMinus, Sparkles, Trash2, Upload } from "lucide-react";
+import { Download, FileUp, Loader2, PlusCircle, Search, ShieldMinus, Trash2, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
+import { EmptyState } from "@/components/ui/empty-state";
+import { OverlayPortal } from "@/components/ui/overlay-portal";
 
 type ListSummary = {
   totalRecipients: number;
@@ -13,6 +15,7 @@ type ListSummary = {
   duplicateSkippedCount: number;
   suppressedCount: number;
   lastImportDate: string | null;
+  addedToday?: number;
 };
 
 type ListItem = {
@@ -156,6 +159,9 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   const [actionState, setActionState] = useState<ActionState>(null);
   const [importProgress, setImportProgress] = useState<ImportProgress>(EMPTY_IMPORT_PROGRESS);
   const [lastActionSummary, setLastActionSummary] = useState<ActionResultSummary | null>(null);
+  const [resultModal, setResultModal] = useState<{ title: string; body: string } | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const [listForm, setListForm] = useState({
     name: "",
@@ -238,23 +244,30 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     };
     setLists((prev) => [nextList, ...prev]);
     setListForm({ name: "", notes: "", tags: "", capacityLimit: "" });
+    setCreateOpen(false);
     toast.success("Liste oluşturuldu");
     setActionState(null);
     await selectList(nextList.id);
     router.refresh();
   }
 
-  async function updateList() {
+  async function updateList(override?: { name?: string; notes?: string | null; tags?: string[]; maxSize?: number }) {
     if (!selected) return;
+    const requestBody = {
+      name: override?.name ?? selected.name,
+      notes: override?.notes ?? selected.notes,
+      tags: override?.tags ?? selected.tags,
+      maxSize: override?.maxSize ?? selected.maxSize
+    };
     setActionState("update");
     const response = await fetch(`/api/lists/${selected.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: selected.name,
-        notes: selected.notes,
-        tags: selected.tags,
-        maxSize: selected.maxSize
+        name: requestBody.name,
+        notes: requestBody.notes,
+        tags: requestBody.tags,
+        maxSize: requestBody.maxSize
       })
     });
     const payload = (await response.json().catch(() => ({}))) as {
@@ -280,6 +293,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
           : item
       )
     );
+    setEditOpen(false);
     toast.success("Liste güncellendi");
     setActionState(null);
     router.refresh();
@@ -379,6 +393,10 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       "Import tamamlandı",
       `Processed ${aggregate.totalProcessed}, added ${aggregate.added}, duplicate ${aggregate.duplicateSkipped}, invalid ${aggregate.invalidSkipped}, suppressed ${aggregate.alreadySuppressedSkipped}, capacity skipped ${aggregate.capacitySkipped}`
     );
+    setResultModal({
+      title: "Import Sonucu",
+      body: `Processed: ${aggregate.totalProcessed}\nAdded: ${aggregate.added}\nInvalid: ${aggregate.invalidSkipped}\nDuplicate: ${aggregate.duplicateSkipped}\nSuppressed: ${aggregate.alreadySuppressedSkipped}\nCapacity skipped: ${aggregate.capacitySkipped}`
+    });
     const summary = await fetchListSummary(selected.id);
     if (summary) {
       setSelectedSummary(summary);
@@ -428,6 +446,10 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       "Bulk remove tamamlandı",
       `Processed ${payload.result.totalProcessed}, removed memberships ${payload.result.removedMemberships}, suppression added ${payload.result.suppressionAdded}`
     );
+    setResultModal({
+      title: "Bulk Remove Sonucu",
+      body: `Processed: ${payload.result.totalProcessed}\nRemoved memberships: ${payload.result.removedMemberships}\nSuppression added: ${payload.result.suppressionAdded}`
+    });
     const summary = await fetchListSummary(selected.id);
     if (summary) {
       setSelectedSummary(summary);
@@ -481,6 +503,10 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     };
     setLastActionSummary(result);
     toast.success("Liste aksiyonu tamamlandı", formatActionSummary(result));
+    setResultModal({
+      title: "Validation Tool Sonucu",
+      body: formatActionSummary(result)
+    });
     const summary = await fetchListSummary(selected.id);
     if (summary) {
       setSelectedSummary(summary);
@@ -511,6 +537,12 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     setActionState(null);
   }
 
+  async function importCsvFile(file: File) {
+    const text = await file.text();
+    setImportForm((prev) => ({ ...prev, text: text.slice(0, 2_500_000) }));
+    toast.info("CSV içerik yüklendi", `${file.name} hazır, Import butonuyla çalıştırabilirsiniz.`);
+  }
+
   async function searchRecipients(page = 1) {
     if (!selected) return;
     const query = searchQuery.trim().toLowerCase();
@@ -537,59 +569,37 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px_1fr]">
       <section className="rounded-2xl border border-border bg-card p-4">
-        <h3 className="text-sm font-medium text-zinc-200">Create List</h3>
-        <div className="mt-3 space-y-2">
-          <input
-            className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-            placeholder="List name"
-            value={listForm.name}
-            onChange={(e) => setListForm((s) => ({ ...s, name: e.target.value }))}
-          />
-          <textarea
-            className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-            placeholder="Description (optional)"
-            rows={3}
-            value={listForm.notes}
-            onChange={(e) => setListForm((s) => ({ ...s, notes: e.target.value }))}
-          />
-          <input
-            className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-            placeholder="Tags (comma separated, optional)"
-            value={listForm.tags}
-            onChange={(e) => setListForm((s) => ({ ...s, tags: e.target.value }))}
-          />
-          <input
-            className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-            placeholder="Capacity limit (optional, max recipients)"
-            type="number"
-            value={listForm.capacityLimit}
-            onChange={(e) => setListForm((s) => ({ ...s, capacityLimit: e.target.value }))}
-          />
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium text-zinc-200">List Library</h3>
           <button
             type="button"
-            onClick={() => void createList()}
-            disabled={actionState !== null}
-            className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-60"
+            onClick={() => setCreateOpen(true)}
+            className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs text-zinc-200"
           >
-            {actionState === "create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="h-4 w-4" />}
-            Add list
+            <PlusCircle className="h-3.5 w-3.5" />
+            New
           </button>
         </div>
-
-        <div className="mt-6 space-y-2">
-          {lists.map((list) => (
-            <button
-              key={list.id}
-              type="button"
-              onClick={() => void selectList(list.id)}
-              className={`w-full rounded-lg border px-3 py-2 text-left ${
-                selectedId === list.id ? "border-indigo-400/40 bg-indigo-500/10" : "border-border bg-zinc-900/40"
-              }`}
-            >
-              <p className="text-sm font-medium text-white">{list.name}</p>
-              <p className="text-xs text-zinc-400">{list.summary.totalRecipients.toLocaleString()} recipients</p>
-            </button>
-          ))}
+        <div className="mt-4 space-y-2">
+          {lists.length === 0 ? (
+            <p className="text-xs text-zinc-500">Henüz liste yok.</p>
+          ) : (
+            lists.map((list) => (
+              <button
+                key={list.id}
+                type="button"
+                onClick={() => void selectList(list.id)}
+                className={`w-full rounded-lg border px-3 py-2 text-left ${
+                  selectedId === list.id ? "border-indigo-400/40 bg-indigo-500/10" : "border-border bg-zinc-900/40"
+                }`}
+              >
+                <p className="text-sm font-medium text-white">{list.name}</p>
+                <p className="text-xs text-zinc-400">
+                  {list.summary.totalRecipients.toLocaleString()} recipients · cap {list.maxSize.toLocaleString()}
+                </p>
+              </button>
+            ))
+          )}
         </div>
       </section>
 
@@ -610,6 +620,21 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                 </p>
               </div>
               <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setListForm({
+                      name: selected.name,
+                      notes: selected.notes ?? "",
+                      tags: selected.tags.join(", "),
+                      capacityLimit: `${selected.maxSize}`
+                    });
+                    setEditOpen(true);
+                  }}
+                  className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200"
+                >
+                  Edit list
+                </button>
                 <button
                   type="button"
                   onClick={() => void updateList()}
@@ -635,7 +660,8 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
               <Stat label="Invalid" value={selectedSummary.invalidCount} />
               <Stat label="Suppressed" value={selectedSummary.suppressedCount} />
               <Stat label="Dup skipped" value={selectedSummary.duplicateSkippedCount} />
-              <Stat label="Capacity" value={selected.maxSize} />
+              <Stat label="Added today" value={selectedSummary.addedToday ?? 0} />
+              <Stat label="Capacity limit" value={selected.maxSize} />
             </div>
 
             <div className="rounded-xl border border-border bg-zinc-900/60 p-3">
@@ -650,6 +676,20 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                 className="mt-2 w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
                 placeholder={"john@acme.com\nJane Doe <jane@acme.com>\nfoo@bar.com; bar@foo.com"}
               />
+              <label className="mt-2 inline-flex cursor-pointer items-center gap-2 rounded-lg border border-border px-2 py-1 text-xs text-zinc-300">
+                <FileUp className="h-3.5 w-3.5" />
+                CSV yükle
+                <input
+                  type="file"
+                  accept=".csv,text/csv,text/plain"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    void importCsvFile(file);
+                  }}
+                />
+              </label>
               <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
                 <input
                   type="checkbox"
@@ -844,14 +884,56 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
             </div>
           </>
         ) : (
-          <div className="rounded-xl border border-border bg-zinc-900/60 p-4 text-sm text-zinc-400">
-            <div className="mb-2 flex items-center gap-2">
-              <Sparkles className="h-4 w-4" />
-              Select a list to manage bulk operations.
-            </div>
-          </div>
+          <EmptyState icon="folder-plus" title="Liste seçin" description="Soldan bir liste seçerek dashboard ve araçları kullanın." />
         )}
       </section>
+
+      <ModalShell open={createOpen} title="Create List" onClose={() => setCreateOpen(false)}>
+        <ListForm listForm={listForm} setListForm={setListForm} />
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={() => void createList()}
+            disabled={actionState !== null}
+            className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-60"
+          >
+            {actionState === "create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="h-4 w-4" />}
+            Add list
+          </button>
+        </div>
+      </ModalShell>
+
+      <ModalShell open={editOpen} title="Edit List" onClose={() => setEditOpen(false)}>
+        <ListForm listForm={listForm} setListForm={setListForm} />
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={async () => {
+              if (!selected) return;
+              const tags = listForm.tags
+                .split(",")
+                .map((tag) => tag.trim())
+                .filter(Boolean);
+              await updateList({
+                name: listForm.name,
+                notes: listForm.notes || null,
+                tags,
+                maxSize: listForm.capacityLimit ? Number(listForm.capacityLimit) : selected.maxSize
+              });
+            }}
+            disabled={actionState !== null}
+            className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-60"
+          >
+            Save
+          </button>
+        </div>
+      </ModalShell>
+
+      <ModalShell open={Boolean(resultModal)} title={resultModal?.title ?? "Sonuç"} onClose={() => setResultModal(null)}>
+        <pre className="whitespace-pre-wrap rounded-lg border border-border bg-zinc-900/60 p-3 text-xs text-zinc-200">
+          {resultModal?.body}
+        </pre>
+      </ModalShell>
     </div>
   );
 }
@@ -890,5 +972,73 @@ function ActionBtn({
       {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : icon}
       {label}
     </button>
+  );
+}
+
+function ListForm({
+  listForm,
+  setListForm
+}: {
+  listForm: { name: string; notes: string; tags: string; capacityLimit: string };
+  setListForm: (updater: (prev: { name: string; notes: string; tags: string; capacityLimit: string }) => { name: string; notes: string; tags: string; capacityLimit: string }) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <input
+        className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100"
+        placeholder="List name"
+        value={listForm.name}
+        onChange={(e) => setListForm((s) => ({ ...s, name: e.target.value }))}
+      />
+      <textarea
+        className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100"
+        placeholder="Description (optional)"
+        rows={3}
+        value={listForm.notes}
+        onChange={(e) => setListForm((s) => ({ ...s, notes: e.target.value }))}
+      />
+      <input
+        className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100"
+        placeholder="Tags (comma separated)"
+        value={listForm.tags}
+        onChange={(e) => setListForm((s) => ({ ...s, tags: e.target.value }))}
+      />
+      <input
+        className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100"
+        placeholder="Capacity limit (max recipients)"
+        type="number"
+        value={listForm.capacityLimit}
+        onChange={(e) => setListForm((s) => ({ ...s, capacityLimit: e.target.value }))}
+      />
+    </div>
+  );
+}
+
+function ModalShell({
+  open,
+  onClose,
+  title,
+  children
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: React.ReactNode;
+}) {
+  if (!open) return null;
+  return (
+    <OverlayPortal active={open} lockScroll>
+      <div className="fixed inset-0 z-50 bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className="relative z-[60] mx-auto max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-sm font-semibold text-white">{title}</p>
+            <button type="button" onClick={onClose} className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
+              Close
+            </button>
+          </div>
+          {children}
+        </div>
+      </div>
+    </OverlayPortal>
   );
 }

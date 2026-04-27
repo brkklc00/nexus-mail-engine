@@ -15,6 +15,41 @@ const updateSchema = z.object({
   status: templateStatusSchema.optional()
 });
 
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+  const { id } = await params;
+  const template = await prisma.mailTemplate.findUnique({
+    where: { id },
+    include: {
+      _count: {
+        select: { campaigns: true }
+      }
+    }
+  });
+  if (!template) {
+    return NextResponse.json({ ok: false, error: "Template not found" }, { status: 404 });
+  }
+  return NextResponse.json({
+    ok: true,
+    template: {
+      id: template.id,
+      title: template.title,
+      subject: template.subject,
+      htmlBody: template.htmlBody,
+      plainTextBody: template.plainTextBody,
+      category: template.category,
+      version: template.version,
+      status: template.status,
+      usageCount: template._count.campaigns,
+      createdAt: template.createdAt.toISOString(),
+      updatedAt: template.updatedAt.toISOString()
+    }
+  });
+}
+
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) {

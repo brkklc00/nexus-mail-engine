@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import { CircleAlert, CircleCheck, CircleX, Info, X } from "lucide-react";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
+import { OverlayPortal } from "@/components/ui/overlay-portal";
 
 type ToastType = "success" | "error" | "warning" | "info";
 
@@ -113,33 +114,35 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   return (
     <NotificationContext.Provider value={value}>
       {children}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-[110] flex w-[360px] max-w-[calc(100vw-1rem)] flex-col gap-2">
-        {toasts.map((toast) => {
-          const visual = toastVisual(toast.type);
-          const Icon = visual.icon;
-          return (
-            <div
-              key={toast.id}
-              className={`pointer-events-auto rounded-xl border px-3 py-2 shadow-xl backdrop-blur ${visual.border} ${visual.bg}`}
-            >
-              <div className="flex items-start gap-2">
-                <Icon className={`mt-0.5 h-4 w-4 ${visual.text}`} />
-                <div className="min-w-0 flex-1">
-                  <p className={`text-sm font-medium ${visual.text}`}>{toast.title}</p>
-                  {toast.message ? <p className="mt-0.5 text-xs text-zinc-300">{toast.message}</p> : null}
+      <OverlayPortal active lockScroll={false}>
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[70] flex w-[360px] max-w-[calc(100vw-1rem)] flex-col gap-2">
+          {toasts.map((toast) => {
+            const visual = toastVisual(toast.type);
+            const Icon = visual.icon;
+            return (
+              <div
+                key={toast.id}
+                className={`pointer-events-auto rounded-xl border px-3 py-2 shadow-xl backdrop-blur ${visual.border} ${visual.bg}`}
+              >
+                <div className="flex items-start gap-2">
+                  <Icon className={`mt-0.5 h-4 w-4 ${visual.text}`} />
+                  <div className="min-w-0 flex-1">
+                    <p className={`text-sm font-medium ${visual.text}`}>{toast.title}</p>
+                    {toast.message ? <p className="mt-0.5 text-xs text-zinc-300">{toast.message}</p> : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setToasts((prev) => prev.filter((entry) => entry.id !== toast.id))}
+                    className="text-zinc-400 hover:text-zinc-200"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setToasts((prev) => prev.filter((entry) => entry.id !== toast.id))}
-                  className="text-zinc-400 hover:text-zinc-200"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      </OverlayPortal>
       <ConfirmModal
         open={confirmState.open}
         title={confirmState.title}

@@ -53,6 +53,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   `) as Array<{ total: bigint; valid: bigint; invalid: bigint; suppressed: bigint }>;
 
   const metrics = metricsRows[0] ?? { total: BigInt(0), valid: BigInt(0), invalid: BigInt(0), suppressed: BigInt(0) };
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const addedToday = await prisma.recipientListMembership.count({
+    where: {
+      listId: id,
+      createdAt: { gte: startOfDay }
+    }
+  });
 
   const importLogs = await prisma.auditLog.findMany({
     where: { action: { in: ["list.import_recipients", "list.import_bulk"] } },
@@ -74,7 +82,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         (latestImport?.metadata as Record<string, unknown> | null)?.duplicateCount ??
         0) as number
     ),
-    lastImportDate: latestImport?.createdAt?.toISOString() ?? null
+    lastImportDate: latestImport?.createdAt?.toISOString() ?? null,
+    addedToday
   };
 
   if (!q) {

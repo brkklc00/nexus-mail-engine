@@ -6,6 +6,7 @@ import { Eye, FlaskConical, Info, Loader2, MailPlus, Search, Server, Trash2 } fr
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
+import { OverlayPortal } from "@/components/ui/overlay-portal";
 
 type TemplateStatus = "draft" | "active" | "archived" | "disabled";
 type SortMode = "updated_desc" | "created_desc" | "name" | "usage_count";
@@ -13,12 +14,10 @@ type PageSize = 25 | 50 | 100;
 type EditorTab = "editor" | "preview" | "testSend" | "tracking";
 type PreviewMode = "desktop" | "mobile";
 
-type TemplateItem = {
+type TemplateListItem = {
   id: string;
   title: string;
   subject: string;
-  htmlBody: string;
-  plainTextBody: string | null;
   category: string | null;
   version: number;
   status: string;
@@ -27,9 +26,14 @@ type TemplateItem = {
   updatedAt: string;
 };
 
+type TemplateDetail = TemplateListItem & {
+  htmlBody: string;
+  plainTextBody: string | null;
+};
+
 type TemplateListResponse = {
   ok: boolean;
-  items: TemplateItem[];
+  items: TemplateListItem[];
   total: number;
   page: number;
   pageSize: number;
@@ -55,7 +59,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
   const confirm = useConfirm();
 
   const [loading, setLoading] = useState(false);
-  const [templates, setTemplates] = useState<TemplateItem[]>([]);
+  const [templates, setTemplates] = useState<TemplateListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<PageSize>(25);
@@ -73,8 +77,9 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
   const [editorTab, setEditorTab] = useState<EditorTab>("editor");
   const [previewMode, setPreviewMode] = useState<PreviewMode>("desktop");
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewTemplate, setPreviewTemplate] = useState<TemplateItem | null>(null);
-  const [selected, setSelected] = useState<TemplateItem | null>(null);
+  const [previewTemplate, setPreviewTemplate] = useState<TemplateDetail | null>(null);
+  const [selected, setSelected] = useState<TemplateDetail | null>(null);
+  const [selectedStatusDraft, setSelectedStatusDraft] = useState<TemplateStatus>("draft");
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState({
@@ -140,7 +145,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
           status: statusOverride
         })
       });
-      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateItem };
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
       if (!response.ok || !payload.ok || !payload.template) {
         throw new Error(payload.error ?? "Template oluşturulamadı");
       }
@@ -158,6 +163,20 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
 
   async function saveEditor(statusOverride?: TemplateStatus) {
     if (!selected) return;
+    const nextStatus = statusOverride ?? selected.status;
+    if (nextStatus !== selected.status) {
+      const confirmed = await confirm({
+        title: "Status değişikliği onayı",
+        message:
+          nextStatus === "disabled" && selected.usageCount > 0
+            ? "Template campaignlerde kullanılmış. Disable işlemini onaylıyor musun?"
+            : `Template status "${nextStatus}" olarak güncellenecek.`,
+        confirmLabel: "Onayla",
+        cancelLabel: "Vazgeç",
+        tone: nextStatus === "disabled" ? "warning" : "info"
+      });
+      if (!confirmed) return;
+    }
     setActionLoading("save");
     try {
       const response = await fetch(`/api/templates/${selected.id}`, {
@@ -172,7 +191,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
           ...(statusOverride ? { status: statusOverride } : {})
         })
       });
-      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateItem };
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
       if (!response.ok || !payload.ok || !payload.template) {
         throw new Error(payload.error ?? "Template kaydedilemedi");
       }
@@ -181,7 +200,22 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
         usageCount: selected.usageCount
       };
       setSelected(updated);
-      setTemplates((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      setSelectedStatusDraft((updated.status as TemplateStatus) ?? "draft");
+      setTemplates((prev) =>
+        prev.map((item) =>
+          item.id === updated.id
+            ? {
+                ...item,
+                title: updated.title,
+                subject: updated.subject,
+                category: updated.category,
+                status: updated.status,
+                version: updated.version,
+                updatedAt: updated.updatedAt
+              }
+            : item
+        )
+      );
       toast.success(statusOverride ? `Template ${statusOverride} olarak kaydedildi` : "Template kaydedildi");
       await loadTemplates();
     } catch (error) {
@@ -295,6 +329,20 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
     }
   }
 
+  async function fetchTemplateDetail(id: string) {
+    setActionLoading("openEditor");
+    try {
+      const response = await fetch(`/api/templates/${id}`);
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
+      if (!response.ok || !payload.ok || !payload.template) {
+        throw new Error(payload.error ?? "Template detayı alınamadı");
+      }
+      return payload.template;
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   const listCaption = useMemo(() => `Toplam ${total} template · Sayfa ${page}/${totalPages}`, [page, total, totalPages]);
 
   return (
@@ -398,8 +446,11 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
                         <div className="flex flex-wrap gap-1">
                           <button
                             type="button"
-                            onClick={() => {
-                              setSelected({ ...item });
+                            onClick={async () => {
+                              const detail = await fetchTemplateDetail(item.id);
+                              if (!detail) return;
+                              setSelected(detail);
+                              setSelectedStatusDraft((detail.status as TemplateStatus) ?? "draft");
                               setEditorTab("editor");
                               setEditorOpen(true);
                             }}
@@ -409,8 +460,10 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
                           </button>
                           <button
                             type="button"
-                            onClick={() => {
-                              setPreviewTemplate(item);
+                            onClick={async () => {
+                              const detail = await fetchTemplateDetail(item.id);
+                              if (!detail) return;
+                              setPreviewTemplate(detail);
                               setPreviewMode("desktop");
                               setPreviewOpen(true);
                             }}
@@ -443,53 +496,43 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
         )}
       </section>
 
-      {trackingOpen ? (
-        <div className="fixed inset-0 z-[120] bg-black/60 p-4 backdrop-blur-sm" onClick={() => setTrackingOpen(false)}>
-          <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-sm font-semibold text-white">Tracking Guide</p>
-              <button type="button" className="rounded border border-border px-2 py-1 text-xs text-zinc-300" onClick={() => setTrackingOpen(false)}>
-                Close
-              </button>
-            </div>
-            <div className="space-y-2 text-sm text-zinc-300">
-              <p><strong>Open tracking:</strong> <code>{"{{tracking_pixel}}"}</code> placeholder ile open pixel enjekte edilir.</p>
-              <p><strong>Click tracking:</strong> HTML linkleri otomatik `/track/click/[token]` endpointine rewrite edilir.</p>
-              <p><strong>Unsubscribe:</strong> <code>{"{{unsubscribe_url}}"}</code> ile global unsubscribe linki eklenir.</p>
-              <p><strong>Supported placeholders:</strong> <code>name</code>, <code>email</code>, <code>first_name</code>, <code>last_name</code>, <code>{"{{tracking_pixel}}"}</code>, <code>{"{{unsubscribe_url}}"}</code>.</p>
-              <pre className="rounded border border-border bg-zinc-900/70 p-2 text-xs text-zinc-200">{buildTrackingSnippet()}</pre>
-            </div>
-          </div>
+      <SimpleModal open={trackingOpen} onClose={() => setTrackingOpen(false)} title="Tracking Guide">
+        <div className="space-y-2 text-sm text-zinc-300">
+          <p><strong>Open tracking:</strong> <code>{"{{tracking_pixel}}"}</code> placeholder ile open pixel enjekte edilir.</p>
+          <p><strong>Click tracking:</strong> HTML linkleri otomatik `/track/click/[token]` endpointine rewrite edilir.</p>
+          <p><strong>Unsubscribe:</strong> <code>{"{{unsubscribe_url}}"}</code> ile global unsubscribe linki eklenir.</p>
+          <p><strong>Supported placeholders:</strong> <code>name</code>, <code>email</code>, <code>first_name</code>, <code>last_name</code>, <code>{"{{tracking_pixel}}"}</code>, <code>{"{{unsubscribe_url}}"}</code>.</p>
+          <pre className="rounded border border-border bg-zinc-900/70 p-2 text-xs text-zinc-200">{buildTrackingSnippet()}</pre>
         </div>
-      ) : null}
+      </SimpleModal>
 
-      {createOpen ? (
-        <div className="fixed inset-0 z-[120] bg-black/60 p-4 backdrop-blur-sm" onClick={() => setCreateOpen(false)}>
-          <div className="mx-auto max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
-            <p className="mb-3 text-sm font-semibold text-white">New Template</p>
-            <div className="grid gap-2">
-              <input value={createForm.title} onChange={(e) => setCreateForm((prev) => ({ ...prev, title: e.target.value }))} placeholder="Template name" className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
-              <input value={createForm.subject} onChange={(e) => setCreateForm((prev) => ({ ...prev, subject: e.target.value }))} placeholder="Subject" className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
-              <input value={createForm.category} onChange={(e) => setCreateForm((prev) => ({ ...prev, category: e.target.value }))} placeholder="Category / tags" className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
-              <textarea rows={10} value={createForm.htmlBody} onChange={(e) => setCreateForm((prev) => ({ ...prev, htmlBody: e.target.value }))} placeholder="HTML body" className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
-              <textarea rows={5} value={createForm.plainTextBody} onChange={(e) => setCreateForm((prev) => ({ ...prev, plainTextBody: e.target.value }))} placeholder="Plain text body" className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" disabled={actionLoading === "create"} onClick={() => void createTemplate("draft")} className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 disabled:opacity-50">
-                {actionLoading === "create" ? <Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> : null}
-                Save draft
-              </button>
-              <button type="button" disabled={actionLoading === "create"} onClick={() => void createTemplate("active")} className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">
-                Save active
-              </button>
-            </div>
-          </div>
+      <SimpleModal open={createOpen} onClose={() => setCreateOpen(false)} title="New Template" maxWidthClass="max-w-4xl">
+        <div className="grid gap-2">
+          <input value={createForm.title} onChange={(e) => setCreateForm((prev) => ({ ...prev, title: e.target.value }))} placeholder="Template name" className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
+          <input value={createForm.subject} onChange={(e) => setCreateForm((prev) => ({ ...prev, subject: e.target.value }))} placeholder="Subject" className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
+          <input value={createForm.category} onChange={(e) => setCreateForm((prev) => ({ ...prev, category: e.target.value }))} placeholder="Tags / category" className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
+          <select value={createForm.status} onChange={(e) => setCreateForm((prev) => ({ ...prev, status: e.target.value as "draft" | "active" }))} className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100">
+            <option value="draft">draft</option>
+            <option value="active">active</option>
+          </select>
+          <textarea rows={10} value={createForm.htmlBody} onChange={(e) => setCreateForm((prev) => ({ ...prev, htmlBody: e.target.value }))} placeholder="HTML body" className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
+          <textarea rows={5} value={createForm.plainTextBody} onChange={(e) => setCreateForm((prev) => ({ ...prev, plainTextBody: e.target.value }))} placeholder="Plain text body" className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
         </div>
-      ) : null}
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" disabled={actionLoading === "create"} onClick={() => void createTemplate("draft")} className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 disabled:opacity-50">
+            {actionLoading === "create" ? <Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> : null}
+            Save draft
+          </button>
+          <button type="button" disabled={actionLoading === "create"} onClick={() => void createTemplate("active")} className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">
+            Save & activate
+          </button>
+        </div>
+      </SimpleModal>
 
       {editorOpen && selected ? (
-        <div className="fixed inset-0 z-[120] bg-black/60 p-4 backdrop-blur-sm" onClick={() => setEditorOpen(false)}>
-          <div className="ml-auto h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
+        <OverlayPortal active={editorOpen} lockScroll>
+          <div className="fixed inset-0 z-40 bg-black/60 p-3 backdrop-blur-sm" onClick={() => setEditorOpen(false)}>
+            <div className="ml-auto h-[94vh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between gap-2">
               <div>
                 <p className="text-sm font-semibold text-white">{selected.title}</p>
@@ -499,6 +542,19 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
               </div>
               <div className="flex gap-2">
                 <StatusBadge label={selected.status} tone={statusTone(selected.status)} />
+                <select
+                  value={selectedStatusDraft}
+                  onChange={(e) => setSelectedStatusDraft(e.target.value as TemplateStatus)}
+                  className="rounded border border-border bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+                >
+                  <option value="draft">draft</option>
+                  <option value="active">active</option>
+                  <option value="disabled">disabled</option>
+                  <option value="archived">archived</option>
+                </select>
+                <button type="button" className="rounded border border-border px-2 py-1 text-xs text-zinc-200" onClick={() => void saveEditor(selectedStatusDraft)}>
+                  Apply status
+                </button>
                 <button type="button" className="rounded border border-border px-2 py-1 text-xs text-zinc-300" onClick={() => setEditorOpen(false)}>
                   Close
                 </button>
@@ -524,6 +580,12 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
                   </button>
                   <button type="button" disabled={actionLoading === "save"} onClick={() => void saveEditor("draft")} className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 disabled:opacity-50">
                     Save as draft
+                  </button>
+                  <button type="button" disabled={actionLoading === "save"} onClick={() => void saveEditor("active")} className="rounded-lg border border-emerald-500/40 px-3 py-2 text-sm text-emerald-200 disabled:opacity-50">
+                    Save & activate
+                  </button>
+                  <button type="button" disabled={actionLoading === "save"} onClick={() => void saveEditor("disabled")} className="rounded-lg border border-orange-500/40 px-3 py-2 text-sm text-orange-200 disabled:opacity-50">
+                    Disable
                   </button>
                   <button type="button" disabled={actionLoading === "save"} onClick={() => void archiveTemplate()} className="rounded-lg border border-amber-500/40 px-3 py-2 text-sm text-amber-200 disabled:opacity-50">
                     Archive
@@ -591,22 +653,21 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
                 <pre className="mt-1 rounded border border-border bg-zinc-950 p-2 text-xs text-zinc-200">{buildTrackingSnippet()}</pre>
               </div>
             ) : null}
+            </div>
           </div>
-        </div>
+        </OverlayPortal>
       ) : null}
 
-      {previewOpen && previewTemplate ? (
-        <div className="fixed inset-0 z-[120] bg-black/60 p-4 backdrop-blur-sm" onClick={() => setPreviewOpen(false)}>
-          <div className="mx-auto max-w-5xl rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
+      <SimpleModal open={previewOpen && Boolean(previewTemplate)} onClose={() => setPreviewOpen(false)} title="Template Preview" maxWidthClass="max-w-5xl">
+        {previewTemplate ? (
+          <>
             <div className="mb-3 flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold text-white">Template Preview</p>
                 <p className="text-xs text-zinc-400">{previewTemplate.subject}</p>
               </div>
               <div className="flex gap-2">
                 <button type="button" onClick={() => setPreviewMode("desktop")} className={`rounded border px-2 py-1 text-xs ${previewMode === "desktop" ? "border-indigo-400 text-indigo-200" : "border-border text-zinc-300"}`}>Desktop</button>
                 <button type="button" onClick={() => setPreviewMode("mobile")} className={`rounded border px-2 py-1 text-xs ${previewMode === "mobile" ? "border-indigo-400 text-indigo-200" : "border-border text-zinc-300"}`}>Mobile</button>
-                <button type="button" onClick={() => setPreviewOpen(false)} className="rounded border border-border px-2 py-1 text-xs text-zinc-300">Close</button>
               </div>
             </div>
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_280px]">
@@ -618,9 +679,9 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
                 <pre className="mt-2 whitespace-pre-wrap text-xs text-zinc-300">{previewTemplate.plainTextBody || "(empty)"}</pre>
               </div>
             </div>
-          </div>
-        </div>
-      ) : null}
+          </>
+        ) : null}
+      </SimpleModal>
     </div>
   );
 }
@@ -630,5 +691,36 @@ function TabButton({ active, onClick, label }: { active: boolean; onClick: () =>
     <button type="button" onClick={onClick} className={`rounded border px-2 py-1 text-xs ${active ? "border-indigo-400 text-indigo-200" : "border-border text-zinc-300"}`}>
       {label}
     </button>
+  );
+}
+
+function SimpleModal({
+  open,
+  onClose,
+  title,
+  children,
+  maxWidthClass = "max-w-3xl"
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: React.ReactNode;
+  maxWidthClass?: string;
+}) {
+  if (!open) return null;
+  return (
+    <OverlayPortal active={open} lockScroll>
+      <div className="fixed inset-0 z-50 bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className={`relative z-[60] mx-auto max-h-[92vh] w-full ${maxWidthClass} overflow-y-auto rounded-2xl border border-border bg-zinc-950 p-4`} onClick={(e) => e.stopPropagation()}>
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-sm font-semibold text-white">{title}</p>
+            <button type="button" className="rounded border border-border px-2 py-1 text-xs text-zinc-300" onClick={onClose}>
+              Close
+            </button>
+          </div>
+          {children}
+        </div>
+      </div>
+    </OverlayPortal>
   );
 }

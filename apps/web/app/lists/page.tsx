@@ -1,4 +1,3 @@
-import { FolderPlus } from "lucide-react";
 import { prisma } from "@nexus/db";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
