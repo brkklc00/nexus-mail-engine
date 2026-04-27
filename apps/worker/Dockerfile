@@ -14,7 +14,7 @@ RUN corepack enable && pnpm install
 
 FROM deps AS build
 COPY prisma ./prisma
-RUN rm -rf node_modules/.prisma node_modules/@prisma/client && pnpm exec prisma generate --schema prisma/schema.prisma
+RUN rm -rf node_modules/.prisma && pnpm exec prisma generate --schema prisma/schema.prisma
 COPY . .
 RUN pnpm --filter @nexus/worker build || pnpm -r build
 
