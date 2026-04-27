@@ -59,6 +59,30 @@ type ActionState =
   | "search"
   | null;
 
+type ActionResultSummary = {
+  scanned: number;
+  valid: number;
+  invalid: number;
+  duplicatesFound: number;
+  duplicatesRemoved: number;
+  suppressedFound: number;
+  removed: number;
+};
+
+type ImportProgress = {
+  running: boolean;
+  totalBatches: number;
+  currentBatch: number;
+  totalProcessed: number;
+  added: number;
+  invalidSkipped: number;
+  duplicateSkipped: number;
+  alreadySuppressedSkipped: number;
+  alreadyInListSkipped: number;
+  alreadyInOtherListsSkipped: number;
+  capacitySkipped: number;
+};
+
 const EMPTY_SUMMARY: ListSummary = {
   totalRecipients: 0,
   validCount: 0,
@@ -67,6 +91,52 @@ const EMPTY_SUMMARY: ListSummary = {
   suppressedCount: 0,
   lastImportDate: null
 };
+
+const EMPTY_IMPORT_PROGRESS: ImportProgress = {
+  running: false,
+  totalBatches: 0,
+  currentBatch: 0,
+  totalProcessed: 0,
+  added: 0,
+  invalidSkipped: 0,
+  duplicateSkipped: 0,
+  alreadySuppressedSkipped: 0,
+  alreadyInListSkipped: 0,
+  alreadyInOtherListsSkipped: 0,
+  capacitySkipped: 0
+};
+
+function splitTextIntoBatches(input: string, maxLines = 8000, maxChars = 220_000): string[] {
+  const normalized = input.replace(/\r/g, "");
+  const rawLines =
+    normalized.includes("\n") || normalized.includes(";") || normalized.includes(",")
+      ? normalized.replace(/[;,]+/g, "\n").split("\n")
+      : [normalized];
+
+  const lines = rawLines.map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return [];
+
+  const batches: string[] = [];
+  let current: string[] = [];
+  let charCount = 0;
+
+  for (const line of lines) {
+    const nextChars = charCount + line.length + 1;
+    if (current.length >= maxLines || nextChars > maxChars) {
+      batches.push(current.join("\n"));
+      current = [];
+      charCount = 0;
+    }
+    current.push(line);
+    charCount += line.length + 1;
+  }
+  if (current.length > 0) batches.push(current.join("\n"));
+  return batches;
+}
+
+function formatActionSummary(result: ActionResultSummary): string {
+  return `scanned ${result.scanned}, valid ${result.valid}, invalid ${result.invalid}, duplicatesFound ${result.duplicatesFound}, duplicatesRemoved ${result.duplicatesRemoved}, suppressedFound ${result.suppressedFound}, removed ${result.removed}`;
+}
 
 export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   const router = useRouter();
@@ -84,6 +154,8 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     rows: []
   });
   const [actionState, setActionState] = useState<ActionState>(null);
+  const [importProgress, setImportProgress] = useState<ImportProgress>(EMPTY_IMPORT_PROGRESS);
+  const [lastActionSummary, setLastActionSummary] = useState<ActionResultSummary | null>(null);
 
   const [listForm, setListForm] = useState({
     name: "",
@@ -244,41 +316,75 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
 
   async function importBulk() {
     if (!selected || !importForm.text.trim()) return;
-    setActionState("import");
-    const response = await fetch(`/api/lists/${selected.id}/import`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(importForm)
-    });
-    const payload = (await response.json().catch(() => ({}))) as {
-      ok?: boolean;
-      error?: string;
-      result?: {
-        totalProcessed: number;
-        added: number;
-        duplicateSkipped: number;
-        invalidSkipped: number;
-        alreadySuppressedSkipped: number;
-        alreadyInListSkipped: number;
-        alreadyInOtherListsSkipped: number;
-        capacitySkipped: number;
-      };
-    };
-    if (!response.ok || !payload.ok || !payload.result) {
-      toast.error("Bulk import başarısız", payload.error ?? "Veri işlenemedi.");
-      setActionState(null);
+    const batches = splitTextIntoBatches(importForm.text, 8000, 220_000);
+    if (batches.length === 0) {
+      toast.warning("Import için geçerli giriş bulunamadı");
       return;
     }
+
+    setActionState("import");
+    setImportProgress({
+      ...EMPTY_IMPORT_PROGRESS,
+      running: true,
+      totalBatches: batches.length
+    });
+
+    let aggregate = { ...EMPTY_IMPORT_PROGRESS, running: true, totalBatches: batches.length };
+    for (let i = 0; i < batches.length; i += 1) {
+      const response = await fetch(`/api/lists/${selected.id}/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: batches[i],
+          dedupeGlobally: importForm.dedupeGlobally
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        result?: {
+          totalProcessed: number;
+          added: number;
+          duplicateSkipped: number;
+          invalidSkipped: number;
+          alreadySuppressedSkipped: number;
+          alreadyInListSkipped: number;
+          alreadyInOtherListsSkipped: number;
+          capacitySkipped: number;
+        };
+      };
+      if (!response.ok || !payload.ok || !payload.result) {
+        toast.error("Bulk import başarısız", payload.error ?? "Veri işlenemedi.");
+        setImportProgress((prev) => ({ ...prev, running: false }));
+        setActionState(null);
+        return;
+      }
+      aggregate = {
+        ...aggregate,
+        currentBatch: i + 1,
+        totalProcessed: aggregate.totalProcessed + payload.result.totalProcessed,
+        added: aggregate.added + payload.result.added,
+        invalidSkipped: aggregate.invalidSkipped + payload.result.invalidSkipped,
+        duplicateSkipped: aggregate.duplicateSkipped + payload.result.duplicateSkipped,
+        alreadySuppressedSkipped: aggregate.alreadySuppressedSkipped + payload.result.alreadySuppressedSkipped,
+        alreadyInListSkipped: aggregate.alreadyInListSkipped + payload.result.alreadyInListSkipped,
+        alreadyInOtherListsSkipped: aggregate.alreadyInOtherListsSkipped + payload.result.alreadyInOtherListsSkipped,
+        capacitySkipped: aggregate.capacitySkipped + payload.result.capacitySkipped
+      };
+      setImportProgress(aggregate);
+    }
+
     setImportForm((prev) => ({ ...prev, text: "" }));
     toast.success(
       "Import tamamlandı",
-      `Processed ${payload.result.totalProcessed}, added ${payload.result.added}, duplicate ${payload.result.duplicateSkipped}, invalid ${payload.result.invalidSkipped}, suppressed ${payload.result.alreadySuppressedSkipped}, capacity skipped ${payload.result.capacitySkipped}`
+      `Processed ${aggregate.totalProcessed}, added ${aggregate.added}, duplicate ${aggregate.duplicateSkipped}, invalid ${aggregate.invalidSkipped}, suppressed ${aggregate.alreadySuppressedSkipped}, capacity skipped ${aggregate.capacitySkipped}`
     );
     const summary = await fetchListSummary(selected.id);
     if (summary) {
       setSelectedSummary(summary);
       setLists((prev) => prev.map((item) => (item.id === selected.id ? { ...item, summary } : item)));
     }
+    setImportProgress((prev) => ({ ...prev, running: false }));
     setActionState(null);
     router.refresh();
   }
@@ -357,14 +463,24 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     const payload = (await response.json().catch(() => ({}))) as {
       ok?: boolean;
       error?: string;
-      result?: Record<string, number>;
+      result?: ActionResultSummary;
     };
     if (!response.ok || !payload.ok) {
       toast.error("Liste aksiyonu başarısız", payload.error ?? "İşlem başarısız.");
       setActionState(null);
       return;
     }
-    toast.success("Liste aksiyonu tamamlandı", JSON.stringify(payload.result ?? {}));
+    const result = payload.result ?? {
+      scanned: 0,
+      valid: 0,
+      invalid: 0,
+      duplicatesFound: 0,
+      duplicatesRemoved: 0,
+      suppressedFound: 0,
+      removed: 0
+    };
+    setLastActionSummary(result);
+    toast.success("Liste aksiyonu tamamlandı", formatActionSummary(result));
     const summary = await fetchListSummary(selected.id);
     if (summary) {
       setSelectedSummary(summary);
@@ -551,6 +667,19 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                 {actionState === "import" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                 Import
               </button>
+              {importProgress.running || importProgress.currentBatch > 0 ? (
+                <div className="mt-3 rounded-lg border border-border bg-zinc-900/70 p-2 text-xs text-zinc-300">
+                  <p>
+                    Batch {importProgress.currentBatch}/{Math.max(importProgress.totalBatches, 1)} · processed{" "}
+                    {importProgress.totalProcessed.toLocaleString()} · added {importProgress.added.toLocaleString()}
+                  </p>
+                  <p className="text-zinc-500">
+                    invalid {importProgress.invalidSkipped.toLocaleString()} · duplicate {importProgress.duplicateSkipped.toLocaleString()} · suppressed{" "}
+                    {importProgress.alreadySuppressedSkipped.toLocaleString()} · capacity skipped{" "}
+                    {importProgress.capacitySkipped.toLocaleString()}
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             <div className="rounded-xl border border-border bg-zinc-900/60 p-3">
@@ -637,6 +766,16 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                   onClick={() => void exportCsv("invalid")}
                 />
               </div>
+              {lastActionSummary ? (
+                <div className="mt-3 rounded-lg border border-border bg-zinc-900/70 p-2 text-xs text-zinc-300">
+                  <p>scanned {lastActionSummary.scanned.toLocaleString()} · valid {lastActionSummary.valid.toLocaleString()} · invalid {lastActionSummary.invalid.toLocaleString()}</p>
+                  <p>
+                    duplicatesFound {lastActionSummary.duplicatesFound.toLocaleString()} · duplicatesRemoved{" "}
+                    {lastActionSummary.duplicatesRemoved.toLocaleString()} · suppressedFound{" "}
+                    {lastActionSummary.suppressedFound.toLocaleString()} · removed {lastActionSummary.removed.toLocaleString()}
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             <div className="rounded-xl border border-border bg-zinc-900/60 p-3">

@@ -102,3 +102,15 @@ When `pnpm boot:prodlike` fails, debug in this order:
    - `metrics:throughput`
    - `metrics:throttled`
    - `metrics:shared-safety`
+
+## Large Import Notes
+
+- Recipient bulk import artık istemci tarafında chunked/batched çalışır; tek istekte dev payload gönderilmez.
+- Önerilen batch boyutu: yaklaşık `5k-20k` e-posta veya ~`200KB` payload.
+- Nginx reverse proxy kullanıyorsanız yine de body limitini artırın:
+
+```nginx
+client_max_body_size 200M;
+```
+
+- Not: Bu ayar yardımcıdır; asıl koruma chunked import yaklaşımıdır.
