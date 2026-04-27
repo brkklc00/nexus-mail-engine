@@ -186,6 +186,7 @@ model Campaign {
   listId              String?
   segmentId           String?
   smtpAccountId       String
+  smtpPoolConfig      Json?
   provider            String
   scheduledAt         DateTime?
   startedAt           DateTime?
@@ -230,6 +231,7 @@ model CampaignRecipient {
   id             String                     @id @default(uuid())
   campaignId     String
   recipientId    String
+  smtpAccountId  String?
   sendStatus     CampaignRecipientSendStatus @default(pending)
   idempotencyKey String                     @unique
   sentAt         DateTime?
@@ -241,6 +243,7 @@ model CampaignRecipient {
 
   @@unique([campaignId, recipientId])
   @@index([sendStatus, createdAt])
+  @@index([smtpAccountId, sendStatus])
 }
 
 model CampaignLog {

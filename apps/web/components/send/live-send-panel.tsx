@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, Pause, Play, Rocket, StopCircle } from "lucide-react";
+import { AlertTriangle, Loader2, Pause, Play, Rocket, StopCircle } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 
 type BootstrapData = {
   templates: Array<{ id: string; title: string }>;
-  lists: Array<{ id: string; name: string }>;
-  smtps: Array<{ id: string; name: string }>;
+  lists: Array<{ id: string; name: string; estimatedRecipients: number }>;
+  smtps: Array<{ id: string; name: string; targetRatePerSecond: number; maxRatePerSecond: number | null; isThrottled: boolean }>;
   campaigns: Array<{ id: string; name: string; status: string }>;
 };
 
@@ -26,6 +26,10 @@ type LiveEvent = {
   throttleReason?: string | null;
   warmupTier?: string;
   warmupNextTier?: string;
+  activeSmtps?: Array<{ id: string; name: string }>;
+  currentRotation?: string;
+  perSmtpSent?: Array<{ smtpAccountId: string; smtpName: string; sent: number }>;
+  queue?: { waiting: number; active: number; failed: number };
 };
 
 export function LiveSendPanel() {
@@ -41,7 +45,12 @@ export function LiveSendPanel() {
     name: "Nexus Test Campaign",
     templateId: "",
     listId: "",
-    smtpAccountId: ""
+    smtpAccountId: "",
+    smtpMode: "single" as "single" | "pool",
+    smtpIds: [] as string[],
+    parallelSmtpCount: 1,
+    rotateEvery: 500,
+    strategy: "rotate_every_n" as "round_robin" | "rotate_every_n" | "weighted_warmup"
   });
 
   useEffect(() => {
@@ -57,7 +66,8 @@ export function LiveSendPanel() {
           ...prev,
           templateId: data.templates[0]?.id ?? "",
           listId: data.lists[0]?.id ?? "",
-          smtpAccountId: data.smtps[0]?.id ?? ""
+          smtpAccountId: data.smtps[0]?.id ?? "",
+          smtpIds: data.smtps[0]?.id ? [data.smtps[0].id] : []
         }));
       } catch (error) {
         toast.error("Send bootstrap yüklenemedi", error instanceof Error ? error.message : "Request failed");
@@ -91,8 +101,36 @@ export function LiveSendPanel() {
   const canPause = campaignStatus === "running";
   const canResume = campaignStatus === "paused";
   const canCancel = ["running", "paused", "queued", "pending"].includes(campaignStatus);
+  const selectedList = bootstrap?.lists.find((list) => list.id === form.listId) ?? null;
+  const selectedPool = (bootstrap?.smtps ?? []).filter((smtp) =>
+    form.smtpMode === "single" ? smtp.id === form.smtpAccountId : form.smtpIds.includes(smtp.id)
+  );
+  const estimatedRate = selectedPool.reduce((sum, smtp) => sum + (smtp.maxRatePerSecond ?? smtp.targetRatePerSecond ?? 0), 0);
+  const poolEmpty = form.smtpMode === "pool" ? form.smtpIds.length === 0 : !form.smtpAccountId;
+
+  function toggleSmtpInPool(smtpId: string) {
+    setForm((prev) => {
+      const exists = prev.smtpIds.includes(smtpId);
+      const smtpIds = exists ? prev.smtpIds.filter((id) => id !== smtpId) : [...prev.smtpIds, smtpId];
+      return {
+        ...prev,
+        smtpIds,
+        smtpAccountId: smtpIds[0] ?? prev.smtpAccountId
+      };
+    });
+  }
 
   async function createAndStartCampaign() {
+    const selectedSmtpNames = selectedPool.map((smtp) => smtp.name).join(", ");
+    const confirmed = await confirm({
+      title: "Campaign başlatılsın mı?",
+      message: `Target: ${selectedList?.estimatedRecipients ?? 0} recipient | SMTP: ${selectedSmtpNames || "-"} | Rotation: ${form.strategy} / every ${form.rotateEvery} | Estimated throughput: ${estimatedRate.toFixed(2)}/s`,
+      confirmLabel: "Create + Start",
+      cancelLabel: "Vazgeç",
+      tone: "warning"
+    });
+    if (!confirmed) return;
+
     setActionLoading("create");
     try {
       const createRes = await fetch("/api/campaigns", {
@@ -102,7 +140,12 @@ export function LiveSendPanel() {
           name: form.name,
           templateId: form.templateId,
           listId: form.listId,
-          smtpAccountId: form.smtpAccountId
+          smtpAccountId: form.smtpMode === "single" ? form.smtpAccountId : form.smtpIds[0],
+          smtpMode: form.smtpMode,
+          smtpIds: form.smtpMode === "single" ? [form.smtpAccountId] : form.smtpIds,
+          parallelSmtpCount: form.parallelSmtpCount,
+          rotateEvery: form.rotateEvery,
+          strategy: form.strategy
         })
       });
       if (!createRes.ok) {
@@ -112,8 +155,8 @@ export function LiveSendPanel() {
       const created = (await createRes.json()) as { campaign: { id: string } };
       const startRes = await fetch(`/api/campaigns/${created.campaign.id}/start`, { method: "POST" });
       if (!startRes.ok) {
-        const err = (await startRes.json().catch(() => ({}))) as { error?: string };
-        throw new Error(err.error ?? "Campaign start failed");
+        const err = (await startRes.json().catch(() => ({}))) as { error?: string; code?: string };
+        throw new Error(err.error ?? err.code ?? "Campaign start failed");
       }
       setCampaignId(created.campaign.id);
       setLogs((prev) => [`campaign created + started: ${created.campaign.id}`, ...prev]);
@@ -204,13 +247,98 @@ export function LiveSendPanel() {
             </option>
           ))}
         </select>
+        <select
+          className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+          value={form.smtpMode}
+          onChange={(e) => setForm((s) => ({ ...s, smtpMode: e.target.value as "single" | "pool" }))}
+        >
+          <option value="single">SMTP mode: Single SMTP</option>
+          <option value="pool">SMTP mode: SMTP pool</option>
+        </select>
+        <select
+          className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+          value={form.strategy}
+          onChange={(e) =>
+            setForm((s) => ({
+              ...s,
+              strategy: e.target.value as "round_robin" | "rotate_every_n" | "weighted_warmup"
+            }))
+          }
+        >
+          <option value="rotate_every_n">Strategy: rotate every N emails</option>
+          <option value="round_robin">Strategy: round robin</option>
+          <option value="weighted_warmup">Strategy: weighted by warmup/rate</option>
+        </select>
+        <input
+          className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+          type="number"
+          min={1}
+          max={50}
+          value={form.parallelSmtpCount}
+          onChange={(e) => setForm((s) => ({ ...s, parallelSmtpCount: Number(e.target.value || 1) }))}
+          placeholder="Parallel SMTP count"
+        />
+        <input
+          className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+          type="number"
+          min={1}
+          max={50000}
+          value={form.rotateEvery}
+          onChange={(e) => setForm((s) => ({ ...s, rotateEvery: Number(e.target.value || 500) }))}
+          placeholder="Rotate every N emails"
+        />
+      </div>
+
+      {form.smtpMode === "pool" ? (
+        <div className="space-y-2 rounded-md border border-border bg-zinc-900/40 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs uppercase tracking-wider text-zinc-400">SMTP Pool Selector</p>
+            <button
+              type="button"
+              className="rounded border border-border px-2 py-1 text-xs text-zinc-300"
+              onClick={() => setForm((s) => ({ ...s, smtpIds: (bootstrap?.smtps ?? []).map((smtp) => smtp.id) }))}
+            >
+              Select all active SMTPs
+            </button>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            {(bootstrap?.smtps ?? []).map((smtp) => {
+              const checked = form.smtpIds.includes(smtp.id);
+              return (
+                <label
+                  key={smtp.id}
+                  className={`flex items-center justify-between rounded border px-2 py-1 text-xs ${
+                    checked ? "border-indigo-500 bg-indigo-500/10 text-indigo-200" : "border-border bg-zinc-900/60 text-zinc-300"
+                  }`}
+                >
+                  <span>
+                    {smtp.name} · {smtp.maxRatePerSecond ?? smtp.targetRatePerSecond}/s
+                  </span>
+                  <input type="checkbox" checked={checked} onChange={() => toggleSmtpInPool(smtp.id)} />
+                </label>
+              );
+            })}
+          </div>
+          {poolEmpty ? (
+            <p className="flex items-center gap-1 text-xs text-amber-300">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              SMTP havuzu boş. Campaign başlatılamaz.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-1 gap-3 rounded-md border border-border bg-zinc-900/40 p-3 text-xs text-zinc-300 md:grid-cols-3">
+        <p>Target list: {selectedList?.name ?? "-"}</p>
+        <p>Estimated target count: {selectedList?.estimatedRecipients ?? 0}</p>
+        <p>Estimated throughput: {estimatedRate.toFixed(2)}/s</p>
       </div>
 
       <div className="flex gap-2">
         <button
           className="inline-flex items-center gap-2 rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-60"
           onClick={createAndStartCampaign}
-          disabled={actionLoading !== null || !form.templateId || !form.listId || !form.smtpAccountId}
+          disabled={actionLoading !== null || !form.templateId || !form.listId || poolEmpty}
         >
           {actionLoading === "create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
           Create + Start
@@ -258,11 +386,37 @@ export function LiveSendPanel() {
         <Metric label="Effective Rate" value={`${live?.effectiveRate ?? 0}/s`} />
       </div>
 
+      <div className="grid grid-cols-1 gap-3 text-sm md:grid-cols-3">
+        <Metric label="Queue Waiting" value={live?.queue?.waiting ?? 0} />
+        <Metric label="Queue Active" value={live?.queue?.active ?? 0} />
+        <Metric label="Queue Failed" value={live?.queue?.failed ?? 0} />
+      </div>
+
       {live ? (
-        <div className="flex flex-wrap gap-2">
-          <StatusBadge label={live.status} tone={live.status === "running" ? "success" : "info"} />
-          {live.throttleReason ? <StatusBadge label={live.throttleReason} tone="warning" /> : null}
-          {live.warmupTier ? <StatusBadge label={`tier ${live.warmupTier}`} tone="muted" /> : null}
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-2">
+            <StatusBadge label={live.status} tone={live.status === "running" ? "success" : "info"} />
+            {live.throttleReason ? <StatusBadge label={live.throttleReason} tone="warning" /> : null}
+            {live.warmupTier ? <StatusBadge label={`tier ${live.warmupTier}`} tone="muted" /> : null}
+            {live.currentRotation ? <StatusBadge label={`rotation: ${live.currentRotation}`} tone="info" /> : null}
+          </div>
+          {live.activeSmtps && live.activeSmtps.length > 0 ? (
+            <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
+              Active SMTPs: {live.activeSmtps.map((smtp) => smtp.name).join(", ")}
+            </div>
+          ) : null}
+          {live.perSmtpSent && live.perSmtpSent.length > 0 ? (
+            <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
+              <p className="mb-1 uppercase tracking-wide text-zinc-400">Per SMTP Sent</p>
+              <div className="grid gap-1 md:grid-cols-2">
+                {live.perSmtpSent.map((item) => (
+                  <p key={item.smtpAccountId} className="rounded bg-zinc-900/80 px-2 py-1">
+                    {item.smtpName}: {item.sent}
+                  </p>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

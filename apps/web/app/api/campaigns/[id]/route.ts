@@ -24,7 +24,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
   }
 
-  const [topLinkGroups, totalClicks, uniqueClicks, failedGroups, skippedSuppression] = await Promise.all([
+  const [topLinkGroups, totalClicks, uniqueClicks, failedGroups, skippedSuppression, perSmtpGroups] = await Promise.all([
     prisma.clickEvent.groupBy({
       by: ["campaignLinkId"],
       where: { campaignId: id, campaignLinkId: { not: null } },
@@ -47,6 +47,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
         status: "skipped",
         OR: [{ eventType: { contains: "suppression", mode: "insensitive" } }, { message: { contains: "suppression", mode: "insensitive" } }]
       }
+    }),
+    prisma.campaignRecipient.groupBy({
+      by: ["smtpAccountId", "sendStatus"],
+      where: { campaignId: id },
+      _count: { _all: true }
     })
   ]);
 
@@ -66,6 +71,32 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     100,
     Number((((campaign.totalSent + campaign.totalFailed + campaign.totalSkipped) / completionBase) * 100).toFixed(2))
   );
+
+  const smtpCountMap = new Map<string, { sent: number; failed: number; skipped: number; queued: number; pending: number }>();
+  for (const row of perSmtpGroups as any[]) {
+    if (!row.smtpAccountId) continue;
+    const current = smtpCountMap.get(row.smtpAccountId) ?? { sent: 0, failed: 0, skipped: 0, queued: 0, pending: 0 };
+    const count = Number(row._count?._all ?? 0);
+    if (row.sendStatus === "sent") current.sent += count;
+    if (row.sendStatus === "failed") current.failed += count;
+    if (row.sendStatus === "skipped") current.skipped += count;
+    if (row.sendStatus === "queued") current.queued += count;
+    if (row.sendStatus === "pending") current.pending += count;
+    smtpCountMap.set(row.smtpAccountId, current);
+  }
+  const smtpIds = Array.from(smtpCountMap.keys());
+  const smtpRows = smtpIds.length
+    ? await prisma.smtpAccount.findMany({
+        where: { id: { in: smtpIds } },
+        select: { id: true, name: true }
+      })
+    : [];
+  const smtpNameMap = new Map(smtpRows.map((row: { id: string; name: string }) => [row.id, row.name]));
+  const perSmtpMetrics = Array.from(smtpCountMap.entries()).map(([smtpAccountId, metrics]) => ({
+    smtpAccountId,
+    smtpName: smtpNameMap.get(smtpAccountId) ?? smtpAccountId,
+    ...metrics
+  }));
 
   return NextResponse.json({
     campaign: {
@@ -119,6 +150,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
         skipped: campaign.totalSkipped,
         suppressionMatched: skippedSuppression
       },
+      perSmtpMetrics,
       topLinks,
       recentLogs: campaign.logs.map((log: any) => ({
         id: log.id,

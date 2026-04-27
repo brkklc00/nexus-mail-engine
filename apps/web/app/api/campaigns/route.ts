@@ -10,7 +10,12 @@ const createSchema = z.object({
   name: z.string().min(2),
   templateId: z.string().uuid(),
   listId: z.string().uuid().optional(),
-  smtpAccountId: z.string().uuid(),
+  smtpAccountId: z.string().uuid().optional(),
+  smtpMode: z.enum(["single", "pool"]).default("single"),
+  smtpIds: z.array(z.string().uuid()).optional(),
+  parallelSmtpCount: z.number().int().min(1).max(50).optional(),
+  rotateEvery: z.number().int().min(1).max(50000).optional(),
+  strategy: z.enum(["round_robin", "rotate_every_n", "weighted_warmup"]).optional(),
   scheduledAt: z.string().datetime().optional()
 });
 
@@ -31,6 +36,11 @@ export async function POST(req: Request) {
       templateId: payload.data.templateId,
       listId: payload.data.listId,
       smtpAccountId: payload.data.smtpAccountId,
+      smtpMode: payload.data.smtpMode,
+      smtpIds: payload.data.smtpIds,
+      parallelSmtpCount: payload.data.parallelSmtpCount,
+      rotateEvery: payload.data.rotateEvery,
+      strategy: payload.data.strategy,
       scheduledAt: payload.data.scheduledAt ? new Date(payload.data.scheduledAt) : null
     });
     await writeAuditLog(session.userId, "campaign.create", "campaign", { campaignId: campaign.id });

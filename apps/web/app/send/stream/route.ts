@@ -1,6 +1,7 @@
 import { prisma } from "@nexus/db";
 import { calculateEffectiveRate, type WarmupTier } from "@nexus/rate-control";
 import { getSession } from "@/server/auth/session";
+import { getQueueObservability } from "@/server/observability/queue-observability.service";
 
 const encoder = new TextEncoder();
 const DEFAULT_ALIBABA_LADDER: WarmupTier[] = [
@@ -51,6 +52,38 @@ export async function GET(req: Request) {
           return;
         }
 
+        const configuredSmtpIds = Array.isArray(((campaign as any).smtpPoolConfig as any)?.smtpIds)
+          ? ((((campaign as any).smtpPoolConfig as any).smtpIds as string[]))
+          : [campaign.smtpAccountId];
+        const [smtpPool, perSmtpSentRows, perSmtpQueuedRows, queueObs] = await Promise.all([
+          prisma.smtpAccount.findMany({
+            where: { id: { in: configuredSmtpIds }, isActive: true, isSoftDeleted: false },
+            select: { id: true, name: true, isThrottled: true }
+          }),
+          prisma.campaignRecipient.groupBy({
+            by: ["smtpAccountId"],
+            where: { campaignId: campaign.id, sendStatus: "sent" },
+            _count: { _all: true }
+          }),
+          prisma.campaignRecipient.groupBy({
+            by: ["smtpAccountId"],
+            where: { campaignId: campaign.id, sendStatus: "queued" },
+            _count: { _all: true }
+          }),
+          getQueueObservability()
+        ]);
+        const perSmtpSent = perSmtpSentRows
+          .filter((row: any) => Boolean(row.smtpAccountId))
+          .map((row: any) => ({
+            smtpAccountId: row.smtpAccountId,
+            smtpName: smtpPool.find((smtp: any) => smtp.id === row.smtpAccountId)?.name ?? row.smtpAccountId,
+            sent: Number(row._count?._all ?? 0)
+          }));
+        const activeSmtpIds = perSmtpQueuedRows
+          .filter((row: any) => Boolean(row.smtpAccountId) && Number(row._count?._all ?? 0) > 0)
+          .map((row: any) => row.smtpAccountId as string);
+        const currentRotation = activeSmtpIds[0] ?? configuredSmtpIds[0] ?? campaign.smtpAccountId;
+
         const warmupAgg = await prisma.smtpWarmupStat.aggregate({
           where: { smtpAccountId: campaign.smtpAccountId },
           _sum: { successfulDeliveries: true }
@@ -79,7 +112,18 @@ export async function GET(req: Request) {
             effectiveRate: rate.effectiveRatePerSecond,
             throttleReason: campaign.throttleReason,
             warmupTier: rate.warmupTierName,
-            warmupNextTier: rate.nextTierName
+            warmupNextTier: rate.nextTierName,
+            activeSmtps: smtpPool.filter((smtp: any) => !smtp.isThrottled).map((smtp: any) => ({
+              id: smtp.id,
+              name: smtp.name
+            })),
+            currentRotation,
+            perSmtpSent,
+            queue: {
+              waiting: Number(queueObs.deliveryCounts?.waiting ?? queueObs.deliveryCounts?.wait ?? 0),
+              active: Number(queueObs.deliveryCounts?.active ?? 0),
+              failed: Number(queueObs.deliveryCounts?.failed ?? 0)
+            }
           })
         );
 
