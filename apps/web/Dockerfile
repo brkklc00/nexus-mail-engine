@@ -14,9 +14,9 @@ RUN corepack enable && pnpm install
 
 FROM deps AS build
 COPY prisma ./prisma
-RUN rm -rf node_modules/.prisma && npx prisma generate --schema prisma/schema.prisma
+RUN rm -rf node_modules/.prisma && pnpm exec prisma generate --schema prisma/schema.prisma && test -d node_modules/.prisma
 COPY . .
-RUN pnpm -r build && pnpm --filter @nexus/web build
+RUN pnpm --filter @nexus/domain --filter @nexus/db --filter @nexus/queue --filter @nexus/rate-control --filter @nexus/mailer --filter @nexus/security build && pnpm --filter @nexus/web build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
