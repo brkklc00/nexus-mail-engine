@@ -11,6 +11,7 @@ const updateSchema = z.object({
   subject: z.string().min(1).optional(),
   htmlBody: z.string().min(1).optional(),
   plainTextBody: z.string().optional().nullable(),
+  category: z.string().optional().nullable(),
   status: templateStatusSchema.optional()
 });
 
