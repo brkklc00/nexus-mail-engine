@@ -13,11 +13,11 @@ COPY packages/security/package.json packages/security/package.json
 RUN corepack enable && pnpm install
 
 FROM deps AS build
-COPY . .
-RUN rm -rf node_modules/.prisma node_modules/@prisma/client .next apps/web/.next \
+COPY prisma ./prisma
+RUN rm -rf node_modules/.prisma \
   && pnpm exec prisma generate --schema prisma/schema.prisma \
-  && node -e "const {Prisma}=require('@prisma/client'); const m=Prisma.dmmf.datamodel.models; const sm=m.find(x=>x.name==='SmtpAccount'); const sg=m.find(x=>x.name==='Segment'); console.log(sm.fields.map(f=>f.name)); console.log(sg.fields.map(f=>f.name)); if(!sm.fields.some(f=>f.name==='healthStatus')) process.exit(1); if(!sg.fields.some(f=>f.name==='isArchived')) process.exit(1);" \
-  && node -e "const p=require.resolve('@prisma/client'); console.log('Prisma client:', p);"
+  && node -e "const {Prisma}=require('@prisma/client'); const m=Prisma.dmmf.datamodel.models; const sm=m.find(x=>x.name==='SmtpAccount'); const sg=m.find(x=>x.name==='Segment'); if(!sm.fields.some(f=>f.name==='healthStatus')) process.exit(1); if(!sg.fields.some(f=>f.name==='isArchived')) process.exit(1);"
+COPY . .
 RUN pnpm --filter @nexus/domain --filter @nexus/db --filter @nexus/queue --filter @nexus/rate-control --filter @nexus/mailer --filter @nexus/security build && pnpm --filter @nexus/web build
 
 FROM node:22-alpine AS runner
