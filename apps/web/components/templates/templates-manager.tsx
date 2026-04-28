@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { Eye, FlaskConical, Info, Loader2, MailPlus, Search, Server, Trash2 } from "lucide-react";
+import { FlaskConical, Info, Loader2, MailPlus, Search, Server, Trash2 } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -78,8 +78,6 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorTab, setEditorTab] = useState<EditorTab>("editor");
   const [previewMode, setPreviewMode] = useState<PreviewMode>("desktop");
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewTemplate, setPreviewTemplate] = useState<TemplateDetail | null>(null);
   const [selected, setSelected] = useState<TemplateDetail | null>(null);
   const [selectedStatusDraft, setSelectedStatusDraft] = useState<TemplateStatus>("draft");
 
@@ -460,20 +458,6 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
                           >
                             Edit
                           </button>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const detail = await fetchTemplateDetail(item.id);
-                              if (!detail) return;
-                              setPreviewTemplate(detail);
-                              setPreviewMode("desktop");
-                              setPreviewOpen(true);
-                            }}
-                            className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs"
-                          >
-                            <Eye className="h-3.5 w-3.5" />
-                            Preview
-                          </button>
                         </div>
                       </td>
                     </tr>
@@ -660,30 +644,6 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
         </OverlayPortal>
       ) : null}
 
-      <SimpleModal open={previewOpen && Boolean(previewTemplate)} onClose={() => setPreviewOpen(false)} title="Template Preview" maxWidthClass="max-w-5xl">
-        {previewTemplate ? (
-          <>
-            <div className="mb-3 flex items-center justify-between">
-              <div>
-                <p className="text-xs text-zinc-400">{previewTemplate.subject}</p>
-              </div>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setPreviewMode("desktop")} className={`rounded border px-2 py-1 text-xs ${previewMode === "desktop" ? "border-indigo-400 text-indigo-200" : "border-border text-zinc-300"}`}>Desktop</button>
-                <button type="button" onClick={() => setPreviewMode("mobile")} className={`rounded border px-2 py-1 text-xs ${previewMode === "mobile" ? "border-indigo-400 text-indigo-200" : "border-border text-zinc-300"}`}>Mobile</button>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_280px]">
-              <div className="rounded-lg border border-border bg-zinc-950 p-2">
-                <iframe title="template-preview-modal" sandbox="" srcDoc={previewTemplate.htmlBody} className={`h-[540px] w-full rounded border border-border bg-white ${previewMode === "mobile" ? "mx-auto max-w-[390px]" : ""}`} />
-              </div>
-              <div className="rounded-lg border border-border bg-zinc-900/50 p-3">
-                <p className="text-xs uppercase tracking-wide text-zinc-400">Plain text preview</p>
-                <pre className="mt-2 whitespace-pre-wrap text-xs text-zinc-300">{previewTemplate.plainTextBody || "(empty)"}</pre>
-              </div>
-            </div>
-          </>
-        ) : null}
-      </SimpleModal>
     </div>
   );
 }

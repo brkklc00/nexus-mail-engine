@@ -1,7 +1,7 @@
 "use client";
 
 import { type ReactNode, useMemo, useState } from "react";
-import { Download, FileUp, Loader2, PlusCircle, Search, ShieldMinus, Trash2, Upload } from "lucide-react";
+import { Download, FileUp, Loader2, PlusCircle, ShieldMinus, Trash2, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
@@ -29,24 +29,6 @@ type ListItem = {
   createdAt: string;
 };
 
-type SearchRow = {
-  membershipId: string;
-  recipientId: string;
-  email: string;
-  emailNormalized: string;
-  name: string | null;
-  status: string;
-  updatedAt: string;
-};
-
-type SearchPayload = {
-  query: string;
-  page: number;
-  pageSize: number;
-  totalMatches: number;
-  rows: SearchRow[];
-};
-
 type ActionState =
   | "create"
   | "update"
@@ -60,7 +42,6 @@ type ActionState =
   | "clear"
   | "exportValid"
   | "exportInvalid"
-  | "search"
   | null;
 
 type ActionResultSummary = {
@@ -151,19 +132,14 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   const [lists, setLists] = useState(initialLists);
   const [selectedId, setSelectedId] = useState(initialLists[0]?.id ?? "");
   const [selectedSummary, setSelectedSummary] = useState<ListSummary>(initialLists[0]?.summary ?? EMPTY_SUMMARY);
-  const [searchPayload, setSearchPayload] = useState<SearchPayload>({
-    query: "",
-    page: 1,
-    pageSize: 50,
-    totalMatches: 0,
-    rows: []
-  });
   const [actionState, setActionState] = useState<ActionState>(null);
   const [importProgress, setImportProgress] = useState<ImportProgress>(EMPTY_IMPORT_PROGRESS);
   const [lastActionSummary, setLastActionSummary] = useState<ActionResultSummary | null>(null);
   const [resultModal, setResultModal] = useState<{ title: string; body: string } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [bulkRemoveOpen, setBulkRemoveOpen] = useState(false);
+  const [validationOpen, setValidationOpen] = useState(false);
 
   const [listForm, setListForm] = useState({
     name: "",
@@ -180,7 +156,6 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     removeFromAllLists: false,
     addToSuppression: false
   });
-  const [searchQuery, setSearchQuery] = useState("");
 
   const selected = useMemo(() => lists.find((item) => item.id === selectedId) ?? null, [lists, selectedId]);
 
@@ -200,8 +175,6 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
 
   async function selectList(id: string) {
     setSelectedId(id);
-    setSearchPayload({ query: "", page: 1, pageSize: 50, totalMatches: 0, rows: [] });
-    setSearchQuery("");
     const summary = await fetchListSummary(id);
     if (summary) {
       setSelectedSummary(summary);
@@ -545,29 +518,6 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     toast.info("CSV content loaded", `${file.name} is ready. Run import to process it.`);
   }
 
-  async function searchRecipients(page = 1) {
-    if (!selected) return;
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) {
-      setSearchPayload({ query: "", page: 1, pageSize: 50, totalMatches: 0, rows: [] });
-      return;
-    }
-    setActionState("search");
-    const response = await fetch(`/api/lists/${selected.id}/search?q=${encodeURIComponent(query)}&page=${page}`);
-    const payload = (await response.json().catch(() => ({}))) as {
-      ok?: boolean;
-      error?: string;
-      search?: SearchPayload;
-    };
-    if (!response.ok || !payload.ok || !payload.search) {
-      toast.error(t("lists.searchFailed"), payload.error ?? "Search results could not be loaded.");
-      setActionState(null);
-      return;
-    }
-    setSearchPayload(payload.search);
-    setActionState(null);
-  }
-
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px_1fr]">
       <section className="rounded-2xl border border-border bg-card p-4">
@@ -653,17 +603,33 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                 >
                   {actionState === "delete" ? <Loader2 className="inline h-3.5 w-3.5 animate-spin" /> : <Trash2 className="inline h-3.5 w-3.5" />} Delete
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setBulkRemoveOpen(true)}
+                  className="rounded-lg border border-amber-400/40 px-3 py-2 text-xs text-amber-200"
+                >
+                  Bulk Remove
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setValidationOpen(true)}
+                  className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200"
+                >
+                  Validation Tools
+                </button>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
-              <Stat label="Total" value={selectedSummary.totalRecipients} />
-              <Stat label="Valid" value={selectedSummary.validCount} />
-              <Stat label="Invalid" value={selectedSummary.invalidCount} />
-              <Stat label="Suppressed" value={selectedSummary.suppressedCount} />
-              <Stat label="Dup skipped" value={selectedSummary.duplicateSkippedCount} />
-              <Stat label="Added today" value={selectedSummary.addedToday ?? 0} />
-              <Stat label="Capacity limit" value={selected.maxSize} />
+            <div className="overflow-x-auto">
+              <div className="flex min-w-max gap-2">
+                <Stat label="Total" value={selectedSummary.totalRecipients} />
+                <Stat label="Valid" value={selectedSummary.validCount} />
+                <Stat label="Invalid" value={selectedSummary.invalidCount} />
+                <Stat label="Suppressed" value={selectedSummary.suppressedCount} />
+                <Stat label="Dup skipped" value={selectedSummary.duplicateSkippedCount} />
+                <Stat label="Added today" value={selectedSummary.addedToday ?? 0} />
+                <Stat label="Capacity limit" value={selected.maxSize} />
+              </div>
             </div>
 
             <div className="rounded-xl border border-border bg-zinc-900/60 p-3">
@@ -724,166 +690,15 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
               ) : null}
             </div>
 
-            <div className="rounded-xl border border-border bg-zinc-900/60 p-3">
-              <p className="text-xs uppercase tracking-wide text-zinc-400">Bulk Remove</p>
-              <textarea
-                rows={5}
-                value={removeForm.text}
-                onChange={(e) => setRemoveForm((s) => ({ ...s, text: e.target.value }))}
-                className="mt-2 w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-                placeholder={"remove@domain.com\nremove2@domain.com"}
-              />
-              <div className="mt-2 flex flex-wrap gap-4 text-xs text-zinc-300">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={removeForm.removeFromAllLists}
-                    onChange={(e) => setRemoveForm((s) => ({ ...s, removeFromAllLists: e.target.checked }))}
-                  />
-                  Remove from all lists
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={removeForm.addToSuppression}
-                    onChange={(e) => setRemoveForm((s) => ({ ...s, addToSuppression: e.target.checked }))}
-                  />
-                  Add to suppression while removing
-                </label>
+            {lastActionSummary ? (
+              <div className="rounded-xl border border-border bg-zinc-900/60 p-3 text-xs text-zinc-300">
+                <p>Last validation result:</p>
+                <p>
+                  scanned {lastActionSummary.scanned.toLocaleString()} · valid {lastActionSummary.valid.toLocaleString()} · invalid{" "}
+                  {lastActionSummary.invalid.toLocaleString()} · removed {lastActionSummary.removed.toLocaleString()}
+                </p>
               </div>
-              <button
-                type="button"
-                onClick={() => void bulkRemove()}
-                disabled={actionState !== null}
-                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-amber-400/40 px-3 py-2 text-sm text-amber-200 disabled:opacity-60"
-              >
-                {actionState === "bulkRemove" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldMinus className="h-4 w-4" />}
-                Run bulk remove
-              </button>
-            </div>
-
-            <div className="rounded-xl border border-border bg-zinc-900/60 p-3">
-              <p className="mb-2 text-xs uppercase tracking-wide text-zinc-400">Validation Tools</p>
-              <div className="flex flex-wrap gap-2">
-                <ActionBtn
-                  label="Validate list"
-                  loading={actionState === "validate"}
-                  onClick={() => void runListAction("validate", "validate", "Validate this list?", "Invalid emails will be marked as invalid.")}
-                />
-                <ActionBtn
-                  label="Deduplicate list"
-                  loading={actionState === "dedupe"}
-                  onClick={() => void runListAction("dedupe", "dedupe", "Run deduplication?", "Duplicate membership rows will be removed.")}
-                />
-                <ActionBtn
-                  label="Remove invalid emails"
-                  loading={actionState === "removeInvalid"}
-                  onClick={() => void runListAction("remove_invalid", "removeInvalid", "Remove invalid records?", "Membership rows with invalid status will be removed.")}
-                />
-                <ActionBtn
-                  label="Remove suppressed emails"
-                  loading={actionState === "removeSuppressed"}
-                  onClick={() =>
-                    void runListAction("remove_suppressed", "removeSuppressed", "Remove suppressed records?", "Memberships matching global/list suppression will be removed.")
-                  }
-                />
-                <ActionBtn
-                  label="Clear selected list"
-                  loading={actionState === "clear"}
-                  danger
-                  onClick={() =>
-                    void runListAction("clear", "clear", "Clear this list completely?", "All memberships in the selected list will be removed.", "danger")
-                  }
-                />
-                <ActionBtn
-                  label="Export valid emails"
-                  loading={actionState === "exportValid"}
-                  icon={<Download className="h-3.5 w-3.5" />}
-                  onClick={() => void exportCsv("valid")}
-                />
-                <ActionBtn
-                  label="Export invalid emails"
-                  loading={actionState === "exportInvalid"}
-                  icon={<Download className="h-3.5 w-3.5" />}
-                  onClick={() => void exportCsv("invalid")}
-                />
-              </div>
-              {lastActionSummary ? (
-                <div className="mt-3 rounded-lg border border-border bg-zinc-900/70 p-2 text-xs text-zinc-300">
-                  <p>scanned {lastActionSummary.scanned.toLocaleString()} · valid {lastActionSummary.valid.toLocaleString()} · invalid {lastActionSummary.invalid.toLocaleString()}</p>
-                  <p>
-                    duplicatesFound {lastActionSummary.duplicatesFound.toLocaleString()} · duplicatesRemoved{" "}
-                    {lastActionSummary.duplicatesRemoved.toLocaleString()} · suppressedFound{" "}
-                    {lastActionSummary.suppressedFound.toLocaleString()} · removed {lastActionSummary.removed.toLocaleString()}
-                  </p>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="rounded-xl border border-border bg-zinc-900/60 p-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative min-w-[280px] flex-1">
-                  <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-zinc-500" />
-                  <input
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-zinc-900/70 py-2 pl-8 pr-3 text-sm"
-                    placeholder="Search recipients by email (returns first 50 matches)"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void searchRecipients(1)}
-                  disabled={actionState !== null}
-                  className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200 disabled:opacity-60"
-                >
-                  {actionState === "search" ? <Loader2 className="inline h-3.5 w-3.5 animate-spin" /> : null} Search
-                </button>
-              </div>
-
-              {searchPayload.query ? (
-                <div className="mt-3 space-y-2">
-                  <p className="text-xs text-zinc-500">
-                    {searchPayload.totalMatches.toLocaleString()} match · page {searchPayload.page}
-                  </p>
-                  {searchPayload.rows.length === 0 ? (
-                    <p className="text-xs text-zinc-500">No search results.</p>
-                  ) : (
-                    searchPayload.rows.map((row) => (
-                      <div key={row.membershipId} className="flex items-center justify-between rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-xs">
-                        <div>
-                          <p className="text-zinc-200">{row.email}</p>
-                          <p className="text-zinc-500">{row.name ?? "-"}</p>
-                        </div>
-                        <StatusBadge label={row.status} tone={row.status === "invalid" ? "danger" : "info"} />
-                      </div>
-                    ))
-                  )}
-                  {searchPayload.totalMatches > searchPayload.pageSize ? (
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        disabled={searchPayload.page <= 1 || actionState !== null}
-                        onClick={() => void searchRecipients(searchPayload.page - 1)}
-                        className="rounded border border-border px-2 py-1 text-xs disabled:opacity-50"
-                      >
-                        Prev
-                      </button>
-                      <button
-                        type="button"
-                        disabled={searchPayload.page * searchPayload.pageSize >= searchPayload.totalMatches || actionState !== null}
-                        onClick={() => void searchRecipients(searchPayload.page + 1)}
-                        className="rounded border border-border px-2 py-1 text-xs disabled:opacity-50"
-                      >
-                        Next
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <p className="mt-3 text-xs text-zinc-500">Default view shows summary only. Use search to inspect up to 50 matches per page.</p>
-              )}
-            </div>
+            ) : null}
           </>
         ) : (
           <EmptyState icon="folder-plus" title="Select a list" description="Pick a list from the left to use dashboard and tools." />
@@ -936,13 +751,102 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
           {resultModal?.body}
         </pre>
       </ModalShell>
+
+      <ModalShell open={bulkRemoveOpen} title="Bulk Remove" onClose={() => setBulkRemoveOpen(false)}>
+        <textarea
+          rows={6}
+          value={removeForm.text}
+          onChange={(e) => setRemoveForm((s) => ({ ...s, text: e.target.value }))}
+          className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
+          placeholder={"remove@domain.com\nremove2@domain.com"}
+        />
+        <div className="mt-2 flex flex-wrap gap-4 text-xs text-zinc-300">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={removeForm.removeFromAllLists}
+              onChange={(e) => setRemoveForm((s) => ({ ...s, removeFromAllLists: e.target.checked }))}
+            />
+            Remove from all lists
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={removeForm.addToSuppression}
+              onChange={(e) => setRemoveForm((s) => ({ ...s, addToSuppression: e.target.checked }))}
+            />
+            Add to suppression while removing
+          </label>
+        </div>
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={async () => {
+              await bulkRemove();
+              setBulkRemoveOpen(false);
+            }}
+            disabled={actionState !== null}
+            className="inline-flex items-center gap-2 rounded-lg border border-amber-400/40 px-3 py-2 text-sm text-amber-200 disabled:opacity-60"
+          >
+            {actionState === "bulkRemove" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldMinus className="h-4 w-4" />}
+            Run bulk remove
+          </button>
+        </div>
+      </ModalShell>
+
+      <ModalShell open={validationOpen} title="Validation Tools" onClose={() => setValidationOpen(false)}>
+        <div className="flex flex-wrap gap-2">
+          <ActionBtn
+            label="Validate list"
+            loading={actionState === "validate"}
+            onClick={() => void runListAction("validate", "validate", "Validate this list?", "Invalid emails will be marked as invalid.")}
+          />
+          <ActionBtn
+            label="Deduplicate list"
+            loading={actionState === "dedupe"}
+            onClick={() => void runListAction("dedupe", "dedupe", "Run deduplication?", "Duplicate membership rows will be removed.")}
+          />
+          <ActionBtn
+            label="Remove invalid emails"
+            loading={actionState === "removeInvalid"}
+            onClick={() => void runListAction("remove_invalid", "removeInvalid", "Remove invalid records?", "Membership rows with invalid status will be removed.")}
+          />
+          <ActionBtn
+            label="Remove suppressed emails"
+            loading={actionState === "removeSuppressed"}
+            onClick={() =>
+              void runListAction("remove_suppressed", "removeSuppressed", "Remove suppressed records?", "Memberships matching global/list suppression will be removed.")
+            }
+          />
+          <ActionBtn
+            label="Clear selected list"
+            loading={actionState === "clear"}
+            danger
+            onClick={() =>
+              void runListAction("clear", "clear", "Clear this list completely?", "All memberships in the selected list will be removed.", "danger")
+            }
+          />
+          <ActionBtn
+            label="Export valid emails"
+            loading={actionState === "exportValid"}
+            icon={<Download className="h-3.5 w-3.5" />}
+            onClick={() => void exportCsv("valid")}
+          />
+          <ActionBtn
+            label="Export invalid emails"
+            loading={actionState === "exportInvalid"}
+            icon={<Download className="h-3.5 w-3.5" />}
+            onClick={() => void exportCsv("invalid")}
+          />
+        </div>
+      </ModalShell>
     </div>
   );
 }
 
 function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2">
+    <div className="min-w-[150px] rounded-lg border border-border bg-zinc-900/70 px-3 py-2">
       <p className="text-[11px] uppercase tracking-wide text-zinc-500">{label}</p>
       <p className="text-sm font-semibold text-zinc-100">{value.toLocaleString()}</p>
     </div>

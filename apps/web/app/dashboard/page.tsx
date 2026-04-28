@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { getQueueObservability } from "@/server/observability/queue-observability.service";
+import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +34,18 @@ type RecentActivityLog = {
   campaign: { name: string } | null;
 };
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams
+}: {
+  searchParams?: Promise<{ activityPage?: string; activityPageSize?: string }>;
+}) {
+  const params = (await searchParams) ?? {};
+  const requestedPageSize = Number(params.activityPageSize ?? 20);
+  const recentPageSize = requestedPageSize === 10 ? 10 : 20;
+  const requestedPage = Number(params.activityPage ?? 1);
+  const recentPage = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.floor(requestedPage) : 1;
+  const recentSkip = (recentPage - 1) * recentPageSize;
+  const smtpPreviewLimit = 5;
   const dayStart = startOfToday();
   const [
     templates,
@@ -45,8 +57,13 @@ export default async function DashboardPage() {
     opensToday,
     clicksToday,
     recentLogs,
+    totalRecentLogs,
     recentFailedLogs,
-    smtpStates
+    smtpStates,
+    smtpTotalCount,
+    smtpHealthyCount,
+    smtpThrottledCount,
+    smtpErrorCount
   ] = await Promise.all([
     prisma.mailTemplate.count(),
     prisma.recipientList.count(),
@@ -62,9 +79,11 @@ export default async function DashboardPage() {
     prisma.clickEvent.count({ where: { createdAt: { gte: dayStart } } }),
     prisma.campaignLog.findMany({
       orderBy: { createdAt: "desc" },
-      take: 8,
+      skip: recentSkip,
+      take: recentPageSize,
       include: { campaign: { select: { name: true } } }
     }) as Promise<RecentActivityLog[]>,
+    prisma.campaignLog.count(),
     prisma.campaignLog.findMany({
       where: {
         createdAt: { gte: dayStart },
@@ -76,9 +95,13 @@ export default async function DashboardPage() {
     prisma.smtpAccount.findMany({
       where: { isSoftDeleted: false },
       orderBy: { createdAt: "desc" },
-      take: 4,
+      take: smtpPreviewLimit,
       select: { id: true, name: true, isThrottled: true, throttleReason: true, providerLabel: true }
-    }) as Promise<SmtpSummary[]>
+    }) as Promise<SmtpSummary[]>,
+    prisma.smtpAccount.count({ where: { isSoftDeleted: false } }),
+    prisma.smtpAccount.count({ where: { isSoftDeleted: false, isThrottled: false } }),
+    prisma.smtpAccount.count({ where: { isSoftDeleted: false, isThrottled: true } }),
+    prisma.smtpAccount.count({ where: { isSoftDeleted: false, healthStatus: "error" } })
   ]);
   const queueMetrics = await getQueueObservability().catch(() => null);
 
@@ -149,6 +172,15 @@ export default async function DashboardPage() {
     { label: "Clicks Today", value: clicksToday, icon: MousePointerClick, tone: "warning" as const }
   ];
 
+  const recentTotalPages = Math.max(1, Math.ceil(totalRecentLogs / recentPageSize));
+
+  const smtpTotals = {
+    total: smtpTotalCount,
+    healthy: smtpHealthyCount,
+    throttled: smtpThrottledCount,
+    error: smtpErrorCount
+  };
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -186,9 +218,20 @@ export default async function DashboardPage() {
         <div className="space-y-4">
           <QueueObservabilityWidget />
           <div className="rounded-2xl border border-border bg-card p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <BarChart3 className="h-4 w-4 text-zinc-400" />
-              <h3 className="text-sm font-medium text-zinc-200">SMTP Health</h3>
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="h-4 w-4 text-zinc-400" />
+                <h3 className="text-sm font-medium text-zinc-200">SMTP Health</h3>
+              </div>
+              <Link href="/settings/smtp" className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
+                View all SMTPs
+              </Link>
+            </div>
+            <div className="mb-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-zinc-300">Total: {smtpTotals.total}</div>
+              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-emerald-300">Healthy: {smtpTotals.healthy}</div>
+              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-amber-300">Throttled: {smtpTotals.throttled}</div>
+              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-rose-300">Error: {smtpTotals.error}</div>
             </div>
             <div className="space-y-2">
               {smtpStates.length === 0 ? (
@@ -198,7 +241,7 @@ export default async function DashboardPage() {
                   description="SMTP health and throttle state will appear here after accounts are added."
                 />
               ) : (
-                smtpStates.map((smtp: SmtpSummary) => (
+                smtpStates.slice(0, smtpPreviewLimit).map((smtp: SmtpSummary) => (
                   <div key={smtp.id} className="rounded-xl border border-border bg-zinc-900/60 p-3">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-medium text-white">{smtp.name}</p>
@@ -219,7 +262,27 @@ export default async function DashboardPage() {
       </section>
 
       <section className="rounded-2xl border border-border bg-card p-4">
-        <h3 className="mb-3 text-sm font-medium text-zinc-200">Recent Activity</h3>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h3 className="text-sm font-medium text-zinc-200">Recent Activity</h3>
+          <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <span>Page size:</span>
+            <Link
+              href={`/dashboard?activityPage=1&activityPageSize=10`}
+              className={`rounded border px-2 py-1 ${recentPageSize === 10 ? "border-indigo-500/60 text-indigo-200" : "border-border text-zinc-300"}`}
+            >
+              10
+            </Link>
+            <Link
+              href={`/dashboard?activityPage=1&activityPageSize=20`}
+              className={`rounded border px-2 py-1 ${recentPageSize === 20 ? "border-indigo-500/60 text-indigo-200" : "border-border text-zinc-300"}`}
+            >
+              20
+            </Link>
+            <Link href="/logs" className="rounded border border-border px-2 py-1 text-zinc-300">
+              Load more
+            </Link>
+          </div>
+        </div>
         {recentLogs.length === 0 ? (
           <EmptyState
             icon="chart-bar"
@@ -241,6 +304,34 @@ export default async function DashboardPage() {
             ))}
           </div>
         )}
+        {totalRecentLogs > recentPageSize ? (
+          <div className="mt-3 flex items-center justify-between">
+            <p className="text-xs text-zinc-400">
+              Page {Math.min(recentPage, recentTotalPages)} / {recentTotalPages}
+            </p>
+            <div className="flex items-center gap-2">
+              <Link
+                href={`/dashboard?activityPage=${Math.max(1, recentPage - 1)}&activityPageSize=${recentPageSize}`}
+                className={`rounded border px-2 py-1 text-xs ${
+                  recentPage <= 1 ? "pointer-events-none border-border text-zinc-500" : "border-border text-zinc-300"
+                }`}
+              >
+                Prev
+              </Link>
+              <Link
+                href={`/dashboard?activityPage=${Math.min(recentTotalPages, recentPage + 1)}&activityPageSize=${recentPageSize}`}
+                className={`rounded border px-2 py-1 text-xs ${
+                  recentPage >= recentTotalPages ? "pointer-events-none border-border text-zinc-500" : "border-border text-zinc-300"
+                }`}
+              >
+                Next
+              </Link>
+              <Link href="/logs" className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
+                View all ({totalRecentLogs})
+              </Link>
+            </div>
+          </div>
+        ) : null}
       </section>
     </div>
   );

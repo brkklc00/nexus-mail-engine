@@ -70,6 +70,15 @@ const defaultQuery: SegmentQuery = {
   delivery: []
 };
 
+type PresetKey =
+  | "opened"
+  | "not_opened"
+  | "clicked"
+  | "not_clicked"
+  | "failed"
+  | "suppressed"
+  | "unsubscribed";
+
 function toggleDelivery(current: SegmentQuery, value: "sent" | "failed" | "skipped" | "suppressed"): SegmentQuery {
   const set = new Set(current.delivery ?? []);
   if (set.has(value)) set.delete(value);
@@ -90,9 +99,32 @@ export function SegmentsManager() {
   const [saveName, setSaveName] = useState("");
   const [saveDescription, setSaveDescription] = useState("");
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const [activePreset, setActivePreset] = useState<PresetKey | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const initialLoadErrorShown = useRef(false);
 
   const hasTrackingData = useMemo(() => Boolean(queryResult?.stats.topClickedLinks.length || queryResult?.stats.openedCount), [queryResult]);
+
+  function applyPreset(preset: PresetKey) {
+    const base: SegmentQuery = {
+      ...defaultQuery,
+      baseListId: query.baseListId ?? null,
+      campaignId: null,
+      templateId: null,
+      listId: null,
+      smtpAccountId: null,
+      emailDomain: null
+    };
+    if (preset === "opened") base.engagement = { opened: true };
+    if (preset === "not_opened") base.engagement = { notOpened: true };
+    if (preset === "clicked") base.engagement = { clicked: true };
+    if (preset === "not_clicked") base.engagement = { notClicked: true };
+    if (preset === "failed") base.delivery = ["failed"];
+    if (preset === "suppressed") base.suppressionMode = "include";
+    if (preset === "unsubscribed") base.engagement = { unsubscribed: true };
+    setActivePreset(preset);
+    setQuery(base);
+  }
 
   async function loadBootstrap() {
     const response = await fetch("/api/send/bootstrap", { cache: "no-store" });
@@ -265,7 +297,29 @@ export function SegmentsManager() {
             {loading ? <Loader2 className="inline h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="inline h-3.5 w-3.5" />} Run Query
           </button>
         </div>
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        <div className="mb-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+          <PresetButton label="Opened" active={activePreset === "opened"} onClick={() => applyPreset("opened")} />
+          <PresetButton label="Not opened" active={activePreset === "not_opened"} onClick={() => applyPreset("not_opened")} />
+          <PresetButton label="Clicked" active={activePreset === "clicked"} onClick={() => applyPreset("clicked")} />
+          <PresetButton label="Not clicked" active={activePreset === "not_clicked"} onClick={() => applyPreset("not_clicked")} />
+          <PresetButton label="Failed" active={activePreset === "failed"} onClick={() => applyPreset("failed")} />
+          <PresetButton label="Suppressed" active={activePreset === "suppressed"} onClick={() => applyPreset("suppressed")} />
+          <PresetButton label="Unsubscribed" active={activePreset === "unsubscribed"} onClick={() => applyPreset("unsubscribed")} />
+        </div>
+
+        <div className="mb-3 flex items-center justify-between rounded-lg border border-border bg-zinc-900/40 px-3 py-2">
+          <p className="text-xs text-zinc-300">Use presets for fast segmentation. Advanced filters are optional.</p>
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((prev) => !prev)}
+            className="rounded border border-border px-2 py-1 text-xs text-zinc-200"
+          >
+            {advancedOpen ? "Hide advanced filters" : "Show advanced filters"}
+          </button>
+        </div>
+
+        {advancedOpen ? (
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
           <select
             value={query.baseListId ?? ""}
             onChange={(e) => setQuery((s) => ({ ...s, baseListId: e.target.value || null }))}
@@ -405,7 +459,8 @@ export function SegmentsManager() {
               onChange={() => setQuery((s) => toggleDelivery(s, "suppressed"))}
             />
           </div>
-        </div>
+          </div>
+        ) : null}
       </section>
 
       <section className="rounded-2xl border border-border bg-card p-4">
@@ -617,6 +672,28 @@ function ExportButton({ label, onClick }: { label: string; onClick: () => void }
   return (
     <button type="button" className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-900" onClick={onClick}>
       <Download className="mr-1 inline h-3.5 w-3.5" />
+      {label}
+    </button>
+  );
+}
+
+function PresetButton({
+  label,
+  active,
+  onClick
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-lg border px-3 py-2 text-xs ${
+        active ? "border-indigo-500/70 bg-indigo-500/10 text-indigo-200" : "border-border bg-zinc-900/40 text-zinc-200"
+      }`}
+    >
       {label}
     </button>
   );
