@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "@nexus/db";
-import { deliveryQueue, withDistributedLock } from "@nexus/queue";
+import { deliveryQueue, safeJobId, withDistributedLock } from "@nexus/queue";
 import { FairCampaignScheduler } from "./fair-scheduler.js";
 import { transitionCampaignRecipientStatus } from "../state/campaign-recipient-state.service.js";
 
@@ -203,7 +203,9 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
             attempt: 1
           },
           {
-            jobId: `delivery:${campaign.id}:${nextRecipient.recipientId}:${campaign.template.version}`
+            jobId: safeJobId(
+              `delivery_${campaign.id}_${nextRecipient.recipientId}_${campaign.template.version}`
+            )
           }
         );
         dispatched += 1;

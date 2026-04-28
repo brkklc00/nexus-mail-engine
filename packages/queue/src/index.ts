@@ -9,6 +9,10 @@ export const QUEUE_NAMES = {
   DEAD_LETTER: "dead_letter_queue"
 } as const;
 
+export function safeJobId(str: string): string {
+  return str.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
 export type CampaignDispatchJob = {
   campaignId: string;
   trigger: "schedule" | "resume" | "manual";

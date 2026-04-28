@@ -1,5 +1,5 @@
 import { prisma } from "@nexus/db";
-import { campaignQueue, getRedisClient, QUEUE_NAMES, withDistributedLock } from "@nexus/queue";
+import { campaignQueue, getRedisClient, QUEUE_NAMES, safeJobId, withDistributedLock } from "@nexus/queue";
 import { listSegmentRecipientIds, type SegmentQueryInput } from "@/server/segments/segment-query.service";
 
 const CAMPAIGN_LOCK_TTL_MS = 30_000;
@@ -468,7 +468,7 @@ export async function startCampaign(campaignId: string) {
       await campaignQueue.add(
         "campaign_start",
         { campaignId: campaign.id, trigger: "manual" },
-        { jobId: `campaign_start:${campaign.id}` }
+        { jobId: safeJobId(`campaign_start_${campaign.id}`) }
       );
     } catch (error) {
       const serialized = serializeError(error);
@@ -522,7 +522,7 @@ export async function resumeCampaign(campaignId: string) {
     await campaignQueue.add(
       "campaign_resume",
       { campaignId, trigger: "resume" },
-      { jobId: `campaign_resume:${campaignId}` }
+      { jobId: safeJobId(`campaign_resume_${campaignId}`) }
     );
     await prisma.campaignLog.create({
       data: {
