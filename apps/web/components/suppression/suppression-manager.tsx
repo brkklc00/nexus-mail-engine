@@ -49,6 +49,8 @@ type AlibabaSyncResult = {
   scanned: number;
   matched: number;
   added: number;
+  removedFromLists: number;
+  listRemovalSkipped: number;
   alreadySuppressed: number;
   ignoredTemporary: number;
   ignoredByCategory: number;
@@ -152,6 +154,7 @@ export function SuppressionManager() {
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncSummary, setSyncSummary] = useState<AlibabaSyncResult | null>(null);
   const [syncSummaryOpen, setSyncSummaryOpen] = useState(false);
+  const [syncRemoveFromLists, setSyncRemoveFromLists] = useState(true);
 
   const pageSizeOptions = [25, 50, 100];
   const hasFilterInput = useMemo(
@@ -385,7 +388,8 @@ export function SuppressionManager() {
         body: JSON.stringify({
           from: new Date(syncFrom).toISOString(),
           to: new Date(syncTo).toISOString(),
-          categories
+          categories,
+          removeFromLists: syncRemoveFromLists
         })
       });
       const payload = (await response.json().catch(() => ({}))) as AlibabaSyncResult;
@@ -403,7 +407,7 @@ export function SuppressionManager() {
               ? "Alibaba credentials are not configured."
               : payload.apiRequestMade && payload.totalReportsReturned === 0
                 ? "Alibaba API connected, but no failed delivery reports were found for the selected date range."
-                : `Scanned ${payload.scanned}, matched ${payload.matched}, added ${payload.added}.`;
+                : `Scanned ${payload.scanned}, matched ${payload.matched}, added ${payload.added}, removed from lists ${payload.removedFromLists}.`;
       toast.success("Alibaba sync completed", statusText);
       await loadStats();
       if (hasQueried || hasFilterInput) {
@@ -705,9 +709,17 @@ export function SuppressionManager() {
           ))}
         </div>
         <p className="mt-2 text-xs text-zinc-500">Temporary failures are reported as ignored during sync and are not added to suppression.</p>
+        <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
+          <input
+            type="checkbox"
+            checked={syncRemoveFromLists}
+            onChange={(e) => setSyncRemoveFromLists(e.target.checked)}
+          />
+          Also remove suppressed emails from all recipient lists
+        </label>
         {syncSummary ? (
           <p className="mt-2 text-xs text-zinc-300">
-            Last run: mode {syncSummary.mode}, reports {syncSummary.totalReportsReturned}, added {syncSummary.added}
+            Last run: mode {syncSummary.mode}, reports {syncSummary.totalReportsReturned}, added {syncSummary.added}, removed {syncSummary.removedFromLists}
           </p>
         ) : null}
       </section>
@@ -835,6 +847,9 @@ export function SuppressionManager() {
               <p>Total reports returned: {syncSummary.totalReportsReturned}</p>
               <p>
                 Scanned: {syncSummary.scanned} | Matched: {syncSummary.matched} | Added: {syncSummary.added}
+              </p>
+              <p>
+                Removed from lists: {syncSummary.removedFromLists} | List removal skipped: {syncSummary.listRemovalSkipped}
               </p>
               <p>
                 Already suppressed: {syncSummary.alreadySuppressed} | Ignored temporary: {syncSummary.ignoredTemporary} | Ignored by category:{" "}

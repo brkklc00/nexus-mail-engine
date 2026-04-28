@@ -8,7 +8,8 @@ import crypto from "node:crypto";
 const schema = z.object({
   from: z.string(),
   to: z.string(),
-  categories: z.array(z.enum(["invalid", "hard_bounce", "complaint", "blocked_rejected"])).min(1)
+  categories: z.array(z.enum(["invalid", "hard_bounce", "complaint", "blocked_rejected"])).min(1),
+  removeFromLists: z.boolean().optional().default(true)
 });
 
 type Category = "invalid" | "hard_bounce" | "complaint" | "blocked_rejected" | "temporary";
@@ -151,6 +152,8 @@ export async function POST(req: Request) {
   const errors: string[] = [];
   let apiRequestMade = false;
   let totalReportsReturned = 0;
+  let removedFromLists = 0;
+  let listRemovalSkipped = 0;
 
   if (mode === "disabled") {
     await writeAuditLog(session.userId, "suppression.sync_alibaba", "suppression", {
@@ -168,6 +171,8 @@ export async function POST(req: Request) {
       scanned: 0,
       matched: 0,
       added: 0,
+      removedFromLists,
+      listRemovalSkipped,
       alreadySuppressed: 0,
       ignoredTemporary: 0,
       ignoredByCategory: 0,
@@ -302,6 +307,43 @@ export async function POST(req: Request) {
     added += created.count;
   }
 
+  if (parsed.data.removeFromLists && candidates.length > 0) {
+    let totalRecipientsMatched = 0;
+    const emailChunks = chunk(
+      candidates.map((item) => item.emailNormalized),
+      2000
+    );
+    for (const emailChunk of emailChunks) {
+      const matchedRecipients = await prisma.recipient.findMany({
+        where: { emailNormalized: { in: emailChunk } },
+        select: { id: true }
+      });
+      totalRecipientsMatched += matchedRecipients.length;
+      if (matchedRecipients.length === 0) continue;
+      const recipientIdChunks = chunk(
+        matchedRecipients.map((item: any) => item.id),
+        2000
+      );
+      for (const recipientIdChunk of recipientIdChunks) {
+        const deleted = await prisma.recipientListMembership.deleteMany({
+          where: { recipientId: { in: recipientIdChunk } }
+        });
+        removedFromLists += deleted.count;
+      }
+    }
+    listRemovalSkipped = Math.max(0, candidates.length - totalRecipientsMatched);
+  } else {
+    listRemovalSkipped = candidates.length;
+  }
+
+  console.info("[suppression.sync_alibaba] list cleanup", {
+    totalSuppressedFetched: totalReportsReturned,
+    totalSuppressedMatched: candidates.length,
+    removedFromLists,
+    listRemovalSkipped,
+    removeFromListsEnabled: parsed.data.removeFromLists
+  });
+
   const summary = {
     mode,
     dateRange: {
@@ -315,6 +357,8 @@ export async function POST(req: Request) {
     selectedCategories: parsed.data.categories,
     matched: candidates.length,
     added,
+    removedFromLists,
+    listRemovalSkipped,
     alreadySuppressed: existing.size,
     ignoredTemporary,
     ignoredByCategory
@@ -330,6 +374,8 @@ export async function POST(req: Request) {
     scanned,
     matched: candidates.length,
     added,
+    removedFromLists,
+    listRemovalSkipped,
     alreadySuppressed: existing.size,
     ignoredTemporary,
     ignoredByCategory,
