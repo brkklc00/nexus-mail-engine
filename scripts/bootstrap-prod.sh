@@ -23,6 +23,10 @@ else
   npx tsx scripts/apply-state-machine-constraints.ts
 fi
 
-echo "[bootstrap] running seed..."
-npx prisma db seed --schema prisma/schema.prisma
+if [ "${ENABLE_SEED:-false}" = "true" ]; then
+  echo "[bootstrap] running seed..."
+  npx prisma db seed --schema prisma/schema.prisma
+else
+  echo "Seed skipped (ENABLE_SEED=false)"
+fi
 echo "[bootstrap] done"

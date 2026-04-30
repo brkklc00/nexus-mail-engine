@@ -20,7 +20,7 @@ Production-grade, self-hosted bulk email operations platform.
 4. Run migrations: `pnpm prisma:migrate`
 5. Start web: `pnpm dev:web`
 6. Start worker: `pnpm dev:worker`
-7. Seed sample data: `pnpm prisma:seed`
+7. Optional seed (manual only): `npm run seed`
 
 ## Key Directories
 
@@ -47,7 +47,7 @@ Production-grade, self-hosted bulk email operations platform.
 This command runs:
 
 1. `docker compose up --build --scale worker=2`
-2. `bootstrap` service (migration + seed)
+2. `bootstrap` service (migration + optional seed via `ENABLE_SEED=true`)
 3. `web` + multiple `worker` replicas
 4. `smoke` service that verifies:
    - login
@@ -93,7 +93,7 @@ This command runs:
 
 When `pnpm boot:prodlike` fails, debug in this order:
 
-1. `bootstrap` logs (migration, db push fallback, constraints, seed)
+1. `bootstrap` logs (migration, db push fallback, constraints, optional seed)
 2. `web` health: `curl http://localhost:3000/health`
 3. `worker` health: `curl http://localhost:4050/health`
 4. queue + safety metrics keys in Redis:

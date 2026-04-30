@@ -11,6 +11,11 @@ function hashPassword(password: string) {
 }
 
 async function main() {
+  if (process.env.ENABLE_SEED !== "true") {
+    console.log("Seed skipped (ENABLE_SEED=false)");
+    return;
+  }
+
   const adminEmail = (process.env.ADMIN_EMAIL ?? "admin@nexus.local").toLowerCase();
   const adminPassword = process.env.ADMIN_PASSWORD ?? "ChangeMe123!";
 

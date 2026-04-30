@@ -14,6 +14,7 @@
     "prisma:migrate": "pnpm exec prisma migrate dev --schema prisma/schema.prisma",
     "prisma:migrate:deploy": "pnpm exec prisma migrate deploy --schema prisma/schema.prisma",
     "db:state-machine:apply": "tsx scripts/apply-state-machine-constraints.ts",
+    "seed": "ENABLE_SEED=true tsx prisma/seed.ts",
     "prisma:seed": "pnpm exec prisma db seed --schema prisma/schema.prisma",
     "test:tracking": "tsx scripts/verify-tracking.ts",
     "test:rate": "pnpm --filter @nexus/worker test:rate",

@@ -49,6 +49,7 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       SEED_SMTP_PASSWORD: ${SEED_SMTP_PASSWORD}
+      ENABLE_SEED: ${ENABLE_SEED:-false}
     depends_on:
       postgres:
         condition: service_healthy
