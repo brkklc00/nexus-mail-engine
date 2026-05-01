@@ -4,10 +4,20 @@ import { prisma } from "@nexus/db";
 import { getSession } from "@/server/auth/session";
 import { writeAuditLog } from "@/server/auth/guard";
 
-const schema = z.object({
-  text: z.string().min(1),
-  dedupeGlobally: z.boolean().default(false)
-});
+const schema = z
+  .object({
+    text: z.string().min(1).optional(),
+    emails: z.array(z.string().min(1)).min(1).max(12000).optional(),
+    dedupeGlobally: z.boolean().default(false)
+  })
+  .superRefine((value, ctx) => {
+    if (!value.text && (!value.emails || value.emails.length === 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Either text or emails must be provided"
+      });
+    }
+  });
 
 const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g;
 const emailHeaderAliases = new Set([
@@ -27,6 +37,12 @@ type Candidate = {
   email: string;
   emailNormalized: string;
   name?: string;
+};
+
+type ParsedCandidates = {
+  totalProcessed: number;
+  candidates: Candidate[];
+  invalidSkipped: number;
 };
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -130,7 +146,7 @@ function extractCsvEmailColumnTokens(text: string): string[] | null {
   return extracted;
 }
 
-function parseCandidates(text: string): { totalProcessed: number; candidates: Candidate[]; invalidSkipped: number } {
+function parseCandidates(text: string): ParsedCandidates {
   const csvEmailTokens = extractCsvEmailColumnTokens(text);
   const rawTokens =
     csvEmailTokens ??
@@ -158,6 +174,33 @@ function parseCandidates(text: string): { totalProcessed: number; candidates: Ca
   return { totalProcessed: rawTokens.length, candidates: output, invalidSkipped };
 }
 
+function parseCandidateEmails(emails: string[]): ParsedCandidates {
+  let invalidSkipped = 0;
+  const output: Candidate[] = [];
+
+  for (const raw of emails) {
+    for (const token of extractEmailsFromToken(raw)) {
+      const [emailRaw] = token.split("|");
+      const normalized = emailRaw.trim().toLowerCase();
+      const valid = z.string().email().safeParse(normalized).success;
+      if (!valid) {
+        invalidSkipped += 1;
+        continue;
+      }
+      output.push({
+        email: normalized,
+        emailNormalized: normalized
+      });
+    }
+  }
+
+  return {
+    totalProcessed: emails.length,
+    candidates: output,
+    invalidSkipped
+  };
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) {
@@ -174,7 +217,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ ok: false, error: "List not found" }, { status: 404 });
   }
 
-  const parsedData = parseCandidates(parsed.data.text);
+  const parsedData = parsed.data.emails ? parseCandidateEmails(parsed.data.emails) : parseCandidates(parsed.data.text ?? "");
   const seen = new Set<string>();
   const dedupedInput: Candidate[] = [];
   let duplicateInInput = 0;
@@ -198,7 +241,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         invalidSkipped: parsedData.invalidSkipped,
         alreadySuppressedSkipped: 0,
         alreadyInListSkipped: 0,
-        alreadyInOtherListsSkipped: 0
+        alreadyInOtherListsSkipped: 0,
+        capacitySkipped: 0
       }
     });
   }
