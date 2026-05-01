@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2, Pause, Play, Rocket, StopCircle } from "lucide-react";
 import Link from "next/link";
-import { useI18n } from "@/components/i18n/i18n-provider";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 
@@ -67,7 +66,6 @@ type LiveEvent = {
 export function LiveSendPanel() {
   const toast = useToast();
   const confirm = useConfirm();
-  const { t } = useI18n();
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [campaignId, setCampaignId] = useState("");
   const [live, setLive] = useState<LiveEvent | null>(null);
@@ -145,7 +143,7 @@ export function LiveSendPanel() {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Request failed";
         setBootstrapError(message);
-        toast.error(t("send.bootstrapFailedTitle"), message || t("send.bootstrapFailedBody"));
+        toast.error("Send bootstrap failed", message || "Could not load bootstrap data.");
       } finally {
         setLoadingBootstrap(false);
       }
@@ -222,19 +220,19 @@ export function LiveSendPanel() {
 
   async function createAndStartCampaign() {
     if (noTemplate) {
-      toast.warning(t("send.templateRequiredTitle"), t("send.templateRequiredBody"));
+      toast.warning("Template is required", "Select a template before starting.");
       return;
     }
     if (targetEmpty) {
-      toast.warning(t("send.targetRequiredTitle"), t("send.targetRequiredBody"));
+      toast.warning("Target is required", "Select a list/segment or configure ad-hoc filters.");
       return;
     }
     if (targetZero) {
-      toast.warning(t("send.targetZeroTitle"), t("send.targetZeroBody"));
+      toast.warning("Target has zero recipients", "Selected target does not contain recipients.");
       return;
     }
     if (noUsableSmtp) {
-      toast.warning(t("send.smtpRequiredTitle"), t("send.smtpRequiredBody"));
+      toast.warning("SMTP is required", "Select at least one active SMTP account.");
       return;
     }
     const selectedSmtpNames = selectedPool.map((smtp) => smtp.name).join(", ");
@@ -242,7 +240,7 @@ export function LiveSendPanel() {
       title: "Start this campaign?",
       message: `Target: ${estimatedTarget} recipient | SMTP: ${selectedSmtpNames || "-"} | Rotation: ${form.strategy} / every ${form.rotateEvery} | Estimated throughput: ${estimatedRate.toFixed(2)}/s`,
       confirmLabel: "Create + Start",
-      cancelLabel: t("common.cancel"),
+      cancelLabel: "Cancel",
       tone: "warning"
     });
     if (!confirmed) return;
@@ -307,7 +305,7 @@ export function LiveSendPanel() {
         title: "Cancel this campaign?",
         message: "Pending sends will be marked as skipped.",
         confirmLabel: "Cancel campaign",
-        cancelLabel: t("common.cancel"),
+        cancelLabel: "Cancel",
         tone: "danger"
       });
       if (!accepted) return;

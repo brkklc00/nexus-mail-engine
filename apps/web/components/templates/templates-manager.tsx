@@ -7,7 +7,6 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { OverlayPortal } from "@/components/ui/overlay-portal";
-import { useI18n } from "@/components/i18n/i18n-provider";
 
 type TemplateStatus = "draft" | "active" | "archived" | "disabled";
 type SortMode = "updated_desc" | "created_desc" | "name" | "usage_count";
@@ -58,7 +57,6 @@ function buildTrackingSnippet() {
 export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] }) {
   const toast = useToast();
   const confirm = useConfirm();
-  const { t } = useI18n();
 
   const [loading, setLoading] = useState(false);
   const [templates, setTemplates] = useState<TemplateListItem[]>([]);
@@ -109,14 +107,14 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       const response = await fetch(`/api/templates?${params.toString()}`, { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as TemplateListResponse & { error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? t("templates.listLoadFailed"));
+        throw new Error(payload.error ?? "Templates could not be loaded");
       }
       setTemplates(payload.items ?? []);
       setTotal(payload.total ?? 0);
       setTotalPages(payload.totalPages ?? 1);
       setCategories(payload.categories ?? []);
     } catch (error) {
-      toast.error(t("templates.listLoadFailed"), error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Templates could not be loaded", error instanceof Error ? error.message : "Unexpected error");
       setTemplates([]);
       setTotal(0);
       setTotalPages(1);
@@ -147,7 +145,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
       if (!response.ok || !payload.ok || !payload.template) {
-        throw new Error(payload.error ?? t("templates.createFailed"));
+        throw new Error(payload.error ?? "Template could not be created");
       }
       toast.success(statusOverride === "active" ? "Template saved as active" : "Template draft saved");
       setCreateOpen(false);
@@ -155,7 +153,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       setPage(1);
       await loadTemplates();
     } catch (error) {
-      toast.error(t("templates.createFailed"), error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Template could not be created", error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setActionLoading(null);
     }
@@ -172,7 +170,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
             ? "This template is used in campaigns. Do you want to disable it?"
             : `Template status will be updated to "${nextStatus}".`,
         confirmLabel: "Confirm",
-        cancelLabel: t("common.cancel"),
+        cancelLabel: "Cancel",
         tone: nextStatus === "disabled" ? "warning" : "info"
       });
       if (!confirmed) return;
@@ -193,7 +191,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
       if (!response.ok || !payload.ok || !payload.template) {
-        throw new Error(payload.error ?? t("templates.saveFailed"));
+        throw new Error(payload.error ?? "Template could not be saved");
       }
       const updated = {
         ...payload.template,
@@ -219,7 +217,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       toast.success(statusOverride ? `Template saved as ${statusOverride}` : "Template saved");
       await loadTemplates();
     } catch (error) {
-      toast.error(t("templates.saveFailed"), error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Template could not be saved", error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setActionLoading(null);
     }
@@ -231,7 +229,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       title: "Archive template?",
       message: "Template status will be changed to archived.",
       confirmLabel: "Archive",
-      cancelLabel: t("common.cancel"),
+      cancelLabel: "Cancel",
       tone: "warning"
     });
     if (!approved) return;
@@ -244,7 +242,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       title: "Delete template?",
       message: "If this template is in use, archiving will be recommended instead.",
       confirmLabel: "Delete",
-      cancelLabel: t("common.cancel"),
+      cancelLabel: "Cancel",
       tone: "danger"
     });
     if (!approved) return;
@@ -259,7 +257,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
             title: "Template is used by campaigns",
             message: "Archive instead of hard delete?",
             confirmLabel: "Archive",
-            cancelLabel: t("common.cancel"),
+            cancelLabel: "Cancel",
             tone: "warning"
           });
           if (archiveApprove) {
@@ -267,14 +265,14 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
           }
           return;
         }
-        throw new Error(payload.error ?? t("templates.deleteFailed"));
+        throw new Error(payload.error ?? "Template could not be deleted");
       }
       toast.success("Template deleted");
       setEditorOpen(false);
       setSelected(null);
       await loadTemplates();
     } catch (error) {
-      toast.error(t("templates.deleteFailed"), error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Template could not be deleted", error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setActionLoading(null);
     }
@@ -335,7 +333,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       const response = await fetch(`/api/templates/${id}`);
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
       if (!response.ok || !payload.ok || !payload.template) {
-        throw new Error(payload.error ?? t("templates.detailFailed"));
+        throw new Error(payload.error ?? "Template detail could not be loaded");
       }
       return payload.template;
     } finally {

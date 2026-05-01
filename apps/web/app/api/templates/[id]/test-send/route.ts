@@ -20,16 +20,16 @@ function mapSmtpError(error: unknown): { message: string; kind: string } {
   const code = (error as Error & { code?: string }).code ?? "";
 
   if (code === "ETIMEDOUT" || /timed out|ETIMEDOUT|CONN/i.test(message)) {
-    return { message: "SMTP connection timeout. Host/port/encryption ayarlarini kontrol edin.", kind: "smtp_timeout" };
+    return { message: "SMTP connection timeout. Check host/port/encryption settings.", kind: "smtp_timeout" };
   }
   if (/greeting/i.test(message)) {
-    return { message: "SMTP greeting never received. SSL/TLS port uyumunu kontrol edin.", kind: "smtp_greeting_failed" };
+    return { message: "SMTP greeting never received. Check SSL/TLS and port compatibility.", kind: "smtp_greeting_failed" };
   }
   if (/Unexpected socket close|socket close/i.test(message)) {
-    return { message: "SMTP socket unexpectedly closed. Encryption veya firewall ayari sorunlu olabilir.", kind: "smtp_socket_closed" };
+    return { message: "SMTP socket unexpectedly closed. Encryption or firewall settings may be incorrect.", kind: "smtp_socket_closed" };
   }
   if (code === "EAUTH" || /auth/i.test(message)) {
-    return { message: "SMTP authentication failed. Kullanici bilgisi veya sifre gecersiz.", kind: "smtp_auth_failed" };
+    return { message: "SMTP authentication failed. Username or password is invalid.", kind: "smtp_auth_failed" };
   }
   return { message: message || fallback.message, kind: "smtp_send_failed" };
 }
@@ -116,7 +116,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         errorKind: mapped.kind,
         hint:
           smtp.providerLabel?.toLowerCase().includes("alibaba") || smtp.host.toLowerCase().includes("aliyun")
-            ? "Alibaba/Aliyun icin SSL + 465 kullanimi yaygin. Secure ayarini kontrol edin."
+            ? "For Alibaba/Aliyun, SSL + port 465 is commonly required. Check your secure setting."
             : undefined
       },
       { status: 400 }

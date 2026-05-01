@@ -7,7 +7,6 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { OverlayPortal } from "@/components/ui/overlay-portal";
-import { useI18n } from "@/components/i18n/i18n-provider";
 
 type ListSummary = {
   totalRecipients: number;
@@ -127,7 +126,6 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   const router = useRouter();
   const toast = useToast();
   const confirm = useConfirm();
-  const { t } = useI18n();
 
   const [lists, setLists] = useState(initialLists);
   const [selectedId, setSelectedId] = useState(initialLists[0]?.id ?? "");
@@ -167,7 +165,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       list?: { summary: ListSummary };
     };
     if (!response.ok || !payload.ok || !payload.list) {
-      toast.error(t("lists.summaryLoadFailed"), payload.error ?? t("smtp.operationFailed"));
+      toast.error("List summary could not be loaded", payload.error ?? "Operation failed");
       return null;
     }
     return payload.list.summary;
@@ -203,7 +201,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       list?: { id: string; name: string; notes: string | null; tags: string[]; maxSize: number; createdAt: string };
     };
     if (!response.ok || !payload.ok || !payload.list) {
-      toast.error(t("lists.createFailed"), payload.error ?? t("smtp.operationFailed"));
+      toast.error("List could not be created", payload.error ?? "Operation failed");
       setActionState(null);
       return;
     }
@@ -251,7 +249,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       list?: { name: string; notes: string | null; tags: string[]; maxSize: number };
     };
     if (!response.ok || !payload.ok || !payload.list) {
-      toast.error(t("lists.updateFailed"), payload.error ?? t("smtp.operationFailed"));
+      toast.error("List could not be updated", payload.error ?? "Operation failed");
       setActionState(null);
       return;
     }
@@ -280,7 +278,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       title: "Delete this list?",
       message: `The "${selected.name}" list and its memberships will be removed.`,
       confirmLabel: "Delete",
-      cancelLabel: t("common.cancel"),
+      cancelLabel: "Cancel",
       tone: "danger"
     });
     if (!accepted) return;
@@ -289,7 +287,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     const response = await fetch(`/api/lists/${selected.id}`, { method: "DELETE" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      toast.error(t("lists.deleteFailed"), payload.error ?? t("smtp.operationFailed"));
+      toast.error("List could not be deleted", payload.error ?? "Operation failed");
       setActionState(null);
       return;
     }
@@ -343,7 +341,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         };
       };
       if (!response.ok || !payload.ok || !payload.result) {
-        toast.error(t("lists.importFailed"), payload.error ?? "Data could not be processed.");
+        toast.error("Import failed", payload.error ?? "Data could not be processed.");
         setImportProgress((prev) => ({ ...prev, running: false }));
         setActionState(null);
         return;
@@ -390,7 +388,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         ? "Emails will be removed from all lists."
         : "Emails will be removed only from the selected list.",
       confirmLabel: "Apply",
-      cancelLabel: t("common.cancel"),
+      cancelLabel: "Cancel",
       tone: "warning"
     });
     if (!accepted) return;
@@ -412,7 +410,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       };
     };
     if (!response.ok || !payload.ok || !payload.result) {
-      toast.error(t("lists.removeFailed"), payload.error ?? t("smtp.operationFailed"));
+      toast.error("Bulk remove failed", payload.error ?? "Operation failed");
       setActionState(null);
       return;
     }
@@ -446,7 +444,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       title,
       message,
       confirmLabel: "Apply",
-      cancelLabel: t("common.cancel"),
+      cancelLabel: "Cancel",
       tone
     });
     if (!accepted) return;
@@ -463,7 +461,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       result?: ActionResultSummary;
     };
     if (!response.ok || !payload.ok) {
-      toast.error("List action failed", payload.error ?? t("smtp.operationFailed"));
+      toast.error("List action failed", payload.error ?? "Operation failed");
       setActionState(null);
       return;
     }

@@ -7,7 +7,6 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { OverlayPortal } from "@/components/ui/overlay-portal";
-import { useI18n } from "@/components/i18n/i18n-provider";
 
 type Account = {
   id: string;
@@ -101,7 +100,6 @@ export function SmtpManager({
   const baselineMetrics = _initialMetrics;
   const toast = useToast();
   const confirm = useConfirm();
-  const { t } = useI18n();
   const [accounts, setAccounts] = useState(initialAccounts);
   const [poolSettings, setPoolSettings] = useState<PoolSettings>({ ...defaultPoolSettings, ...(initialPoolSettings ?? {}) });
   const [poolSaving, setPoolSaving] = useState(false);
@@ -354,7 +352,7 @@ export function SmtpManager({
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
       if (!response.ok || !payload.ok || !payload.account) {
-        throw new Error(payload.error ?? t("smtp.saveFailed"));
+        throw new Error(payload.error ?? "SMTP could not be saved");
       }
       const saved = payload.account as Account;
       if (editingId) {
@@ -370,7 +368,7 @@ export function SmtpManager({
         resetForm();
       }
     } catch (error) {
-      toast.error(t("smtp.saveFailed"), error instanceof Error ? error.message : "Unexpected error");
+      toast.error("SMTP could not be saved", error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setActionLoading(null);
     }
@@ -382,7 +380,7 @@ export function SmtpManager({
         title: "Disable SMTP account?",
         message: `"${account.name}" will not be used in new campaigns.`,
         confirmLabel: "Disable",
-        cancelLabel: t("common.cancel"),
+        cancelLabel: "Cancel",
         tone: "warning"
       });
       if (!accepted) return;
@@ -395,12 +393,12 @@ export function SmtpManager({
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
-      toast.error("SMTP could not be updated", payload.error ?? t("smtp.operationFailed"));
+      toast.error("SMTP could not be updated", payload.error ?? "SMTP operation failed");
       setActionLoading(null);
       return;
     }
     setAccounts((prev) => prev.map((item) => (item.id === account.id ? payload.account! : item)));
-    toast.info(payload.account.isActive ? "SMTP aktif edildi" : "SMTP pasif edildi");
+    toast.info(payload.account.isActive ? "SMTP enabled" : "SMTP disabled");
     setActionLoading(null);
   }
 
@@ -419,7 +417,7 @@ export function SmtpManager({
       };
     };
     if (response.ok && payload.ok) {
-      toast.success(t("smtp.connectionTestSuccess"));
+      toast.success("SMTP connection test succeeded");
       setAccounts((prev) =>
         prev.map((item) =>
           item.id === accountId ? { ...item, healthStatus: "healthy", lastError: null, lastTestAt: new Date().toISOString() } : item
@@ -437,7 +435,7 @@ export function SmtpManager({
       setActionLoading(null);
       return;
     }
-    toast.error(t("smtp.connectionTestFailed"), payload.error ?? "Connection could not be established.");
+    toast.error("SMTP connection test failed", payload.error ?? "Connection could not be established.");
     setAccounts((prev) =>
       prev.map((item) =>
         item.id === accountId
@@ -501,7 +499,7 @@ export function SmtpManager({
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
-      toast.error("Throttle reset failed", payload.error ?? t("smtp.operationFailed"));
+      toast.error("Throttle reset failed", payload.error ?? "SMTP operation failed");
       setActionLoading(null);
       return;
     }
@@ -515,7 +513,7 @@ export function SmtpManager({
       title: "Delete SMTP account?",
       message: `"${account.name}" will be hard-deleted only if not in use. Otherwise it will be archived.`,
       confirmLabel: "Delete",
-      cancelLabel: t("common.cancel"),
+      cancelLabel: "Cancel",
       tone: "danger"
     });
     if (!accepted) return;
@@ -534,7 +532,7 @@ export function SmtpManager({
         toast.warning("SMTP is used in campaigns, archived instead of deleted.");
         setAccounts((prev) => prev.filter((item) => item.id !== account.id));
       } else {
-        toast.error(t("smtp.deleteFailed"), payload.error ?? t("smtp.operationFailed"));
+        toast.error("SMTP could not be deleted", payload.error ?? "SMTP operation failed");
       }
       setActionLoading(null);
       return;
@@ -549,7 +547,7 @@ export function SmtpManager({
       title: "Disable SMTP?",
       message: `"${account.name}" will be removed from active pool.`,
       confirmLabel: "Disable",
-      cancelLabel: t("common.cancel"),
+      cancelLabel: "Cancel",
       tone: "warning"
     });
     if (!accepted) return;
@@ -561,7 +559,7 @@ export function SmtpManager({
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: Account };
     if (!response.ok || !payload.ok || !payload.account) {
-      toast.error("Disable failed", payload.error ?? t("smtp.operationFailed"));
+      toast.error("Disable failed", payload.error ?? "SMTP operation failed");
       setActionLoading(null);
       return;
     }
@@ -575,7 +573,7 @@ export function SmtpManager({
       title: "Archive SMTP?",
       message: `"${account.name}" will be removed from the list and active pool.`,
       confirmLabel: "Archive",
-      cancelLabel: t("common.cancel"),
+      cancelLabel: "Cancel",
       tone: "warning"
     });
     if (!accepted) return;
@@ -587,7 +585,7 @@ export function SmtpManager({
     });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      toast.error("Archive failed", payload.error ?? t("smtp.operationFailed"));
+      toast.error("Archive failed", payload.error ?? "SMTP operation failed");
       setActionLoading(null);
       return;
     }
@@ -810,7 +808,7 @@ export function SmtpManager({
                   <>
                     <Field label="Planned SMTP Count" helper="Used for calculation"><NumberInput value={form.plannedSmtpCount} onChange={(value) => setForm((s) => ({ ...s, plannedSmtpCount: Math.max(1, value) }))} /></Field>
                     <Field label="Target RPS" helper="Calculated from global planner"><NumberInput step="0.0001" value={form.targetRatePerSecond} onChange={(value) => setForm((s) => ({ ...s, targetRatePerSecond: value }))} /></Field>
-                    <Field label="Max RPS" helper="Provider cap veya override"><NumberInput step="0.0001" value={form.maxRatePerSecond} onChange={(value) => setForm((s) => ({ ...s, maxRatePerSecond: value }))} /></Field>
+                    <Field label="Max RPS" helper="Provider cap or override"><NumberInput step="0.0001" value={form.maxRatePerSecond} onChange={(value) => setForm((s) => ({ ...s, maxRatePerSecond: value }))} /></Field>
                     <Field label="Daily quota" helper="0 = unlimited"><NumberInput value={form.dailyCap} onChange={(value) => setForm((s) => ({ ...s, dailyCap: value }))} /></Field>
                     <Field label="Hourly quota" helper="0 = unlimited"><NumberInput value={form.hourlyCap} onChange={(value) => setForm((s) => ({ ...s, hourlyCap: value }))} /></Field>
                     <Field label="Minute quota" helper="0 = unlimited"><NumberInput value={form.minuteCap} onChange={(value) => setForm((s) => ({ ...s, minuteCap: value }))} /></Field>
