@@ -10,6 +10,18 @@ const schema = z.object({
 });
 
 const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g;
+const emailHeaderAliases = new Set([
+  "email",
+  "e mail",
+  "mail",
+  "mail address",
+  "email address",
+  "mail adresi",
+  "eposta",
+  "e posta",
+  "correo",
+  "address"
+]);
 
 type Candidate = {
   email: string;
@@ -25,24 +37,107 @@ function chunk<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
+function normalizeHeaderLabel(input: string): string {
+  return input
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function detectDelimiter(line: string): "," | ";" | "\t" | null {
+  const counts: Array<{ delimiter: "," | ";" | "\t"; count: number }> = [
+    { delimiter: ",", count: (line.match(/,/g) ?? []).length },
+    { delimiter: ";", count: (line.match(/;/g) ?? []).length },
+    { delimiter: "\t", count: (line.match(/\t/g) ?? []).length }
+  ];
+  counts.sort((a, b) => b.count - a.count);
+  return counts[0].count > 0 ? counts[0].delimiter : null;
+}
+
+function splitCsvRow(line: string, delimiter: "," | ";" | "\t"): string[] {
+  const cells: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    const next = line[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && next === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (!inQuotes && char === delimiter) {
+      cells.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  cells.push(current);
+  return cells;
+}
+
+function extractEmailsFromToken(token: string): string[] {
+  const clean = token.trim();
+  if (!clean) return [];
+  const matches = clean.match(emailRegex);
+  if (!matches || matches.length === 0) return [clean];
+  return matches.map((m) => {
+    const wrapped = clean.match(/^(.*)<\s*([^>]+)\s*>$/);
+    if (wrapped && wrapped[2]?.toLowerCase() === m.toLowerCase()) {
+      return `${m}|${wrapped[1].trim().replace(/^"|"$/g, "")}`;
+    }
+    return m;
+  });
+}
+
+function extractCsvEmailColumnTokens(text: string): string[] | null {
+  const lines = text
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return [];
+  const delimiter = detectDelimiter(lines[0]);
+  if (!delimiter) return null;
+
+  const headerCells = splitCsvRow(lines[0], delimiter).map((cell) => normalizeHeaderLabel(cell));
+  const emailColumnIndex = headerCells.findIndex((header) => emailHeaderAliases.has(header));
+  if (emailColumnIndex < 0) return null;
+
+  const extracted: string[] = [];
+  for (const line of lines.slice(1)) {
+    const cells = splitCsvRow(line, delimiter);
+    const cellValue = cells[emailColumnIndex]?.trim() ?? "";
+    if (!cellValue) continue;
+    extracted.push(...extractEmailsFromToken(cellValue));
+  }
+
+  return extracted;
+}
+
 function parseCandidates(text: string): { totalProcessed: number; candidates: Candidate[]; invalidSkipped: number } {
-  const rawTokens = text
-    .replace(/[;\t]+/g, "\n")
-    .replace(/,+/g, "\n")
-    .split(/\r?\n/)
-    .flatMap((line) => {
-      const clean = line.trim();
-      if (!clean) return [];
-      const matches = clean.match(emailRegex);
-      if (!matches || matches.length === 0) return [clean];
-      return matches.map((m) => {
-        const wrapped = clean.match(/^(.*)<\s*([^>]+)\s*>$/);
-        if (wrapped && wrapped[2]?.toLowerCase() === m.toLowerCase()) {
-          return `${m}|${wrapped[1].trim().replace(/^"|"$/g, "")}`;
-        }
-        return m;
-      });
-    });
+  const csvEmailTokens = extractCsvEmailColumnTokens(text);
+  const rawTokens =
+    csvEmailTokens ??
+    text
+      .replace(/[;\t]+/g, "\n")
+      .split(/\r?\n/)
+      .flatMap((line) => extractEmailsFromToken(line));
 
   let invalidSkipped = 0;
   const output: Candidate[] = [];

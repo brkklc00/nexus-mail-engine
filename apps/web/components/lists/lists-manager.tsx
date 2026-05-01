@@ -92,9 +92,10 @@ const EMPTY_IMPORT_PROGRESS: ImportProgress = {
 
 function splitTextIntoBatches(input: string, maxLines = 8000, maxChars = 220_000): string[] {
   const normalized = input.replace(/\r/g, "");
-  const rawLines =
-    normalized.includes("\n") || normalized.includes(";") || normalized.includes(",")
-      ? normalized.replace(/[;,]+/g, "\n").split("\n")
+  const rawLines = normalized.includes("\n")
+    ? normalized.split("\n")
+    : normalized.includes(";") || normalized.includes("\t")
+      ? normalized.split(/[;\t]+/g)
       : [normalized];
 
   const lines = rawLines.map((line) => line.trim()).filter(Boolean);
@@ -642,37 +643,40 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                 className="mt-2 w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
                 placeholder={"john@acme.com\nJane Doe <jane@acme.com>\nfoo@bar.com; bar@foo.com"}
               />
-              <label className="mt-2 inline-flex cursor-pointer items-center gap-2 rounded-lg border border-border px-2 py-1 text-xs text-zinc-300">
-                <FileUp className="h-3.5 w-3.5" />
-                Upload CSV
-                <input
-                  type="file"
-                  accept=".csv,text/csv,text/plain"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    void importCsvFile(file);
-                  }}
-                />
-              </label>
-              <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
-                <input
-                  type="checkbox"
-                  checked={importForm.dedupeGlobally}
-                  onChange={(e) => setImportForm((s) => ({ ...s, dedupeGlobally: e.target.checked }))}
-                />
-                Dedupe globally (skip emails already in other lists)
-              </label>
-              <button
-                type="button"
-                onClick={() => void importBulk()}
-                disabled={actionState !== null}
-                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 disabled:opacity-60"
-              >
-                {actionState === "import" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                Import
-              </button>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-xs text-zinc-300">
+                  <FileUp className="h-3.5 w-3.5" />
+                  Upload CSV
+                  <input
+                    type="file"
+                    accept=".csv,text/csv,text/plain"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      void importCsvFile(file);
+                    }}
+                  />
+                </label>
+                <label className="inline-flex items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-xs text-zinc-300">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5"
+                    checked={importForm.dedupeGlobally}
+                    onChange={(e) => setImportForm((s) => ({ ...s, dedupeGlobally: e.target.checked }))}
+                  />
+                  Dedupe globally
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void importBulk()}
+                  disabled={actionState !== null}
+                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm text-zinc-200 disabled:opacity-60"
+                >
+                  {actionState === "import" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                  Import
+                </button>
+              </div>
               {importProgress.running || importProgress.currentBatch > 0 ? (
                 <div className="mt-3 rounded-lg border border-border bg-zinc-900/70 p-2 text-xs text-zinc-300">
                   <p>
