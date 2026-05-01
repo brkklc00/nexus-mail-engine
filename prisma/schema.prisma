@@ -145,6 +145,7 @@ model RecipientListMembership {
   recipient   Recipient     @relation(fields: [recipientId], references: [id], onDelete: Cascade)
 
   @@unique([listId, recipientId])
+  @@index([listId])
   @@index([recipientId])
 }
 

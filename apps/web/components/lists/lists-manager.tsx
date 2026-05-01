@@ -69,6 +69,7 @@ type ImportProgress = {
   errors: number;
   source: "paste" | "csv" | null;
   headerDetected: boolean | null;
+  startedAtMs: number | null;
 };
 
 const EMPTY_SUMMARY: ListSummary = {
@@ -95,10 +96,23 @@ const EMPTY_IMPORT_PROGRESS: ImportProgress = {
   capacitySkipped: 0,
   errors: 0,
   source: null,
-  headerDetected: null
+  headerDetected: null,
+  startedAtMs: null
 };
 
-const IMPORT_CHUNK_SIZE = 7500;
+const DEFAULT_IMPORT_CHUNK_SIZE = Math.max(
+  1000,
+  Math.min(50000, Number(process.env.NEXT_PUBLIC_IMPORT_CHUNK_SIZE ?? "20000"))
+);
+const MAX_IMPORT_CHUNK_SIZE = Math.max(
+  DEFAULT_IMPORT_CHUNK_SIZE,
+  Math.min(50000, Number(process.env.NEXT_PUBLIC_IMPORT_MAX_CHUNK_SIZE ?? "50000"))
+);
+const IMPORT_CONCURRENCY = Math.max(
+  1,
+  Math.min(5, Number(process.env.NEXT_PUBLIC_IMPORT_CONCURRENCY ?? "4"))
+);
+const IMPORT_CHUNK_SIZE = Math.min(DEFAULT_IMPORT_CHUNK_SIZE, MAX_IMPORT_CHUNK_SIZE);
 const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g;
 const emailHeaderAliases = new Set([
   "email",
@@ -140,6 +154,18 @@ function splitTextIntoBatches(input: string, maxLines = IMPORT_CHUNK_SIZE, maxCh
   }
   if (current.length > 0) batches.push(current.join("\n"));
   return batches;
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function isValidEmailSyntax(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function normalizeHeaderLabel(input: string): string {
@@ -196,6 +222,53 @@ function extractEmailsFromToken(token: string): string[] {
   const matches = clean.match(emailRegex);
   if (!matches || matches.length === 0) return [];
   return matches.map((value) => value.trim().toLowerCase()).filter(Boolean);
+}
+
+function extractEmailsFromText(text: string): string[] {
+  return text
+    .replace(/[;\t]+/g, "\n")
+    .split(/\r?\n/)
+    .flatMap((line) => extractEmailsFromToken(line));
+}
+
+function preprocessChunk(rawEmails: string[], seenGlobal: Set<string>) {
+  const accepted: string[] = [];
+  let invalidSkipped = 0;
+  let duplicateSkipped = 0;
+  const seenInChunk = new Set<string>();
+
+  for (const value of rawEmails) {
+    const email = value.trim().toLowerCase();
+    if (!isValidEmailSyntax(email)) {
+      invalidSkipped += 1;
+      continue;
+    }
+    if (seenInChunk.has(email) || seenGlobal.has(email)) {
+      duplicateSkipped += 1;
+      continue;
+    }
+    seenInChunk.add(email);
+    seenGlobal.add(email);
+    accepted.push(email);
+  }
+
+  return { emails: accepted, invalidSkipped, duplicateSkipped };
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>
+) {
+  let nextIndex = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const current = nextIndex;
+      nextIndex += 1;
+      await worker(items[current], current);
+    }
+  });
+  await Promise.all(runners);
 }
 
 async function* streamFileLines(file: File): AsyncGenerator<string> {
@@ -532,6 +605,18 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     setActionState("import");
 
     try {
+      const seenGlobal = new Set<string>();
+      const updateEveryBatches = 3;
+      let completedBatches = 0;
+      let lastUiBatch = 0;
+
+      const pushProgress = (aggregate: ImportProgress, force = false) => {
+        if (force || completedBatches - lastUiBatch >= updateEveryBatches) {
+          setImportProgress({ ...aggregate });
+          lastUiBatch = completedBatches;
+        }
+      };
+
       if (selectedCsvFile) {
         const analysis = await analyzeCsvCandidates(selectedCsvFile);
         let aggregate: ImportProgress = {
@@ -539,30 +624,59 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
           running: true,
           source: "csv",
           totalTarget: analysis.totalCandidates,
-          headerDetected: analysis.headerDetected
+          headerDetected: analysis.headerDetected,
+          totalBatches: Math.max(1, Math.ceil(analysis.totalCandidates / IMPORT_CHUNK_SIZE)),
+          startedAtMs: Date.now()
         };
         setImportProgress(aggregate);
 
+        const inFlight = new Set<Promise<void>>();
+        let firstError: Error | null = null;
+
         for await (const chunkPayload of streamCsvEmailChunks(selectedCsvFile, IMPORT_CHUNK_SIZE)) {
-          const result = await sendImportChunk(
-            selected.id,
-            { emails: chunkPayload.emails },
-            importForm.dedupeGlobally
-          );
-          aggregate = {
-            ...aggregate,
-            currentBatch: aggregate.currentBatch + 1,
-            totalProcessed: aggregate.totalProcessed + result.totalProcessed,
-            added: aggregate.added + result.added,
-            invalidSkipped: aggregate.invalidSkipped + result.invalidSkipped,
-            duplicateSkipped: aggregate.duplicateSkipped + result.duplicateSkipped,
-            alreadySuppressedSkipped: aggregate.alreadySuppressedSkipped + result.alreadySuppressedSkipped,
-            alreadyInListSkipped: aggregate.alreadyInListSkipped + result.alreadyInListSkipped,
-            alreadyInOtherListsSkipped: aggregate.alreadyInOtherListsSkipped + result.alreadyInOtherListsSkipped,
-            capacitySkipped: aggregate.capacitySkipped + result.capacitySkipped,
-            headerDetected: chunkPayload.headerDetected
-          };
-          setImportProgress(aggregate);
+          const task = (async () => {
+            const pre = preprocessChunk(chunkPayload.emails, seenGlobal);
+            aggregate.totalProcessed += chunkPayload.emails.length;
+            aggregate.invalidSkipped += pre.invalidSkipped;
+            aggregate.duplicateSkipped += pre.duplicateSkipped;
+            aggregate.headerDetected = chunkPayload.headerDetected;
+
+            if (pre.emails.length > 0) {
+              const result = await sendImportChunk(
+                selected.id,
+                { emails: pre.emails },
+                importForm.dedupeGlobally
+              );
+              aggregate.added += result.added;
+              aggregate.invalidSkipped += result.invalidSkipped;
+              aggregate.duplicateSkipped += result.duplicateSkipped;
+              aggregate.alreadySuppressedSkipped += result.alreadySuppressedSkipped;
+              aggregate.alreadyInListSkipped += result.alreadyInListSkipped;
+              aggregate.alreadyInOtherListsSkipped += result.alreadyInOtherListsSkipped;
+              aggregate.capacitySkipped += result.capacitySkipped;
+            }
+
+            completedBatches += 1;
+            aggregate.currentBatch = completedBatches;
+            pushProgress(aggregate);
+          })()
+            .catch((error) => {
+              aggregate.errors += 1;
+              if (!firstError) firstError = error instanceof Error ? error : new Error("Import batch failed");
+            })
+            .finally(() => {
+              inFlight.delete(task);
+            });
+
+          inFlight.add(task);
+          if (inFlight.size >= IMPORT_CONCURRENCY) {
+            await Promise.race(inFlight);
+          }
+        }
+
+        await Promise.all(inFlight);
+        if (firstError) {
+          throw firstError;
         }
 
         setSelectedCsvFile(null);
@@ -574,42 +688,51 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
           title: "Import result",
           body: `Total scanned: ${aggregate.totalProcessed}\nValid imported: ${aggregate.added}\nInvalid skipped: ${aggregate.invalidSkipped}\nDuplicate skipped: ${aggregate.duplicateSkipped}\nSuppressed skipped: ${aggregate.alreadySuppressedSkipped}\nGlobal duplicate skipped: ${aggregate.alreadyInOtherListsSkipped}\nCapacity skipped: ${aggregate.capacitySkipped}\nErrors: ${aggregate.errors}`
         });
+        pushProgress(aggregate, true);
       } else {
-        const batches = splitTextIntoBatches(importForm.text, IMPORT_CHUNK_SIZE, 220_000);
-        if (batches.length === 0) {
+        const rawEmails = extractEmailsFromText(importForm.text);
+        if (rawEmails.length === 0) {
           toast.warning("No valid input found for import");
           setActionState(null);
           return;
         }
+        const batches = chunkArray(rawEmails, IMPORT_CHUNK_SIZE);
 
         let aggregate: ImportProgress = {
           ...EMPTY_IMPORT_PROGRESS,
           running: true,
           source: "paste",
-          totalBatches: batches.length
+          totalBatches: batches.length,
+          totalTarget: rawEmails.length,
+          startedAtMs: Date.now()
         };
         setImportProgress(aggregate);
 
-        for (let i = 0; i < batches.length; i += 1) {
-          const result = await sendImportChunk(
-            selected.id,
-            { text: batches[i] },
-            importForm.dedupeGlobally
-          );
-          aggregate = {
-            ...aggregate,
-            currentBatch: i + 1,
-            totalProcessed: aggregate.totalProcessed + result.totalProcessed,
-            added: aggregate.added + result.added,
-            invalidSkipped: aggregate.invalidSkipped + result.invalidSkipped,
-            duplicateSkipped: aggregate.duplicateSkipped + result.duplicateSkipped,
-            alreadySuppressedSkipped: aggregate.alreadySuppressedSkipped + result.alreadySuppressedSkipped,
-            alreadyInListSkipped: aggregate.alreadyInListSkipped + result.alreadyInListSkipped,
-            alreadyInOtherListsSkipped: aggregate.alreadyInOtherListsSkipped + result.alreadyInOtherListsSkipped,
-            capacitySkipped: aggregate.capacitySkipped + result.capacitySkipped
-          };
-          setImportProgress(aggregate);
-        }
+        await runWithConcurrency(batches, IMPORT_CONCURRENCY, async (batch) => {
+          const pre = preprocessChunk(batch, seenGlobal);
+          aggregate.totalProcessed += batch.length;
+          aggregate.invalidSkipped += pre.invalidSkipped;
+          aggregate.duplicateSkipped += pre.duplicateSkipped;
+
+          if (pre.emails.length > 0) {
+            const result = await sendImportChunk(
+              selected.id,
+              { emails: pre.emails },
+              importForm.dedupeGlobally
+            );
+            aggregate.added += result.added;
+            aggregate.invalidSkipped += result.invalidSkipped;
+            aggregate.duplicateSkipped += result.duplicateSkipped;
+            aggregate.alreadySuppressedSkipped += result.alreadySuppressedSkipped;
+            aggregate.alreadyInListSkipped += result.alreadyInListSkipped;
+            aggregate.alreadyInOtherListsSkipped += result.alreadyInOtherListsSkipped;
+            aggregate.capacitySkipped += result.capacitySkipped;
+          }
+
+          completedBatches += 1;
+          aggregate.currentBatch = completedBatches;
+          pushProgress(aggregate);
+        });
 
         setImportForm((prev) => ({ ...prev, text: "" }));
         toast.success(
@@ -620,6 +743,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
           title: "Import result",
           body: `Total scanned: ${aggregate.totalProcessed}\nValid imported: ${aggregate.added}\nInvalid skipped: ${aggregate.invalidSkipped}\nDuplicate skipped: ${aggregate.duplicateSkipped}\nSuppressed skipped: ${aggregate.alreadySuppressedSkipped}\nGlobal duplicate skipped: ${aggregate.alreadyInOtherListsSkipped}\nCapacity skipped: ${aggregate.capacitySkipped}\nErrors: ${aggregate.errors}`
         });
+        pushProgress(aggregate, true);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Data could not be processed.";
@@ -777,6 +901,14 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     setSelectedCsvFile(file);
     toast.info("CSV file selected", `${file.name} will be imported in scalable chunks.`);
   }
+
+  const elapsedSeconds =
+    importProgress.startedAtMs && (importProgress.running || importProgress.currentBatch > 0)
+      ? Math.max(1, Math.floor((Date.now() - importProgress.startedAtMs) / 1000))
+      : 0;
+  const rowsPerSecond = elapsedSeconds > 0 ? importProgress.totalProcessed / elapsedSeconds : 0;
+  const remainingRows = Math.max(0, (importProgress.totalTarget || importProgress.totalProcessed) - importProgress.totalProcessed);
+  const etaSeconds = rowsPerSecond > 0 ? Math.ceil(remainingRows / rowsPerSecond) : 0;
 
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px_1fr]">
@@ -970,6 +1102,9 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                     {importProgress.invalidSkipped.toLocaleString()} · duplicate {importProgress.duplicateSkipped.toLocaleString()} · suppressed{" "}
                     {importProgress.alreadySuppressedSkipped.toLocaleString()} · global duplicate {importProgress.alreadyInOtherListsSkipped.toLocaleString()} · errors{" "}
                     {importProgress.errors.toLocaleString()}
+                  </p>
+                  <p className="text-zinc-500">
+                    speed {rowsPerSecond.toFixed(1)} rows/sec · ETA {etaSeconds > 0 ? `${etaSeconds}s` : "-"}
                   </p>
                   {importProgress.headerDetected !== null ? (
                     <p className="text-zinc-500">

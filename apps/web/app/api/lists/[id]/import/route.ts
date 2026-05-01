@@ -4,10 +4,19 @@ import { prisma } from "@nexus/db";
 import { getSession } from "@/server/auth/session";
 import { writeAuditLog } from "@/server/auth/guard";
 
+const MAX_EMAILS_PER_CHUNK = Math.max(
+  1000,
+  Math.min(50000, Number(process.env.IMPORT_MAX_CHUNK_SIZE ?? "50000"))
+);
+const DB_WRITE_CHUNK_SIZE = Math.max(
+  500,
+  Math.min(20000, Number(process.env.IMPORT_DB_WRITE_CHUNK_SIZE ?? "5000"))
+);
+
 const schema = z
   .object({
     text: z.string().min(1).optional(),
-    emails: z.array(z.string().min(1)).min(1).max(12000).optional(),
+    emails: z.array(z.string().min(1)).min(1).max(MAX_EMAILS_PER_CHUNK).optional(),
     dedupeGlobally: z.boolean().default(false)
   })
   .superRefine((value, ctx) => {
@@ -292,27 +301,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const capacitySkipped = importable.length - cappedImportable.length;
 
   let added = 0;
-  for (const candidateChunk of chunk(cappedImportable, 500)) {
+  for (const candidateChunk of chunk(cappedImportable, DB_WRITE_CHUNK_SIZE)) {
     const emailSet = candidateChunk.map((item) => item.emailNormalized);
-    const existingRecipients = await prisma.recipient.findMany({
-      where: { emailNormalized: { in: emailSet } },
-      select: { id: true, emailNormalized: true }
+    await prisma.recipient.createMany({
+      data: candidateChunk.map((item) => ({
+        email: item.email,
+        emailNormalized: item.emailNormalized,
+        name: item.name ?? null,
+        status: "active",
+        tags: []
+      })),
+      skipDuplicates: true
     });
-    const existingMap = new Map(existingRecipients.map((r: { emailNormalized: string; id: string }) => [r.emailNormalized, r.id]));
-
-    const newRecipients = candidateChunk.filter((item) => !existingMap.has(item.emailNormalized));
-    if (newRecipients.length > 0) {
-      await prisma.recipient.createMany({
-        data: newRecipients.map((item) => ({
-          email: item.email,
-          emailNormalized: item.emailNormalized,
-          name: item.name ?? null,
-          status: "active",
-          tags: []
-        })),
-        skipDuplicates: true
-      });
-    }
 
     const resolvedRecipients = await prisma.recipient.findMany({
       where: { emailNormalized: { in: emailSet } },
@@ -340,11 +340,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     capacitySkipped
   };
 
-  await writeAuditLog(session.userId, "list.import_bulk", "recipient_list", {
-    listId,
-    ...result,
-    dedupeGlobally: parsed.data.dedupeGlobally
-  });
+  // Chunk-based imports can produce thousands of requests; avoid heavy audit spam.
+  if (!parsed.data.emails) {
+    await writeAuditLog(session.userId, "list.import_bulk", "recipient_list", {
+      listId,
+      ...result,
+      dedupeGlobally: parsed.data.dedupeGlobally
+    });
+  }
 
   return NextResponse.json({ ok: true, result });
 }
