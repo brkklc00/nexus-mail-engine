@@ -90,21 +90,22 @@ type ProviderPreset = "alibaba" | "custom";
 
 export function SmtpManager({
   initialAccounts,
-  initialMetrics: _initialMetrics,
+  initialMetrics,
   initialPoolSettings
 }: {
   initialAccounts: Account[];
   initialMetrics: Metrics;
   initialPoolSettings: Partial<PoolSettings> | null;
 }) {
-  const baselineMetrics = _initialMetrics;
   const toast = useToast();
   const confirm = useConfirm();
   const [accounts, setAccounts] = useState(initialAccounts);
+  const [baselineMetrics, setBaselineMetrics] = useState(initialMetrics);
   const [poolSettings, setPoolSettings] = useState<PoolSettings>({ ...defaultPoolSettings, ...(initialPoolSettings ?? {}) });
   const [poolSaving, setPoolSaving] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [showBulkAlibabaModal, setShowBulkAlibabaModal] = useState(false);
   const [modalTab, setModalTab] = useState<ModalTab>("connection");
   const [providerPreset, setProviderPreset] = useState<ProviderPreset>("custom");
   const [testResultModal, setTestResultModal] = useState<{
@@ -150,6 +151,35 @@ export function SmtpManager({
     tags: "",
     groupLabel: ""
   });
+  const [bulkAlibabaLines, setBulkAlibabaLines] = useState("");
+  const [bulkAlibabaUpdateExisting, setBulkAlibabaUpdateExisting] = useState(false);
+  const [bulkAlibabaResult, setBulkAlibabaResult] = useState<{
+    scanned: number;
+    added: number;
+    updated: number;
+    skippedDuplicate: number;
+    invalid: number;
+    errors: string[];
+  } | null>(null);
+
+  async function refreshSmtpSnapshot() {
+    try {
+      const response = await fetch("/api/smtp", { cache: "no-store" });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        accounts?: Account[];
+        metrics?: Metrics;
+      };
+      if (!response.ok || !payload.ok || !payload.accounts || !payload.metrics) {
+        throw new Error(payload.error ?? "SMTP list could not be refreshed");
+      }
+      setAccounts(payload.accounts);
+      setBaselineMetrics(payload.metrics);
+    } catch (error) {
+      toast.error("SMTP list could not be refreshed", error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
 
   function isAlibabaCandidate(host: string, providerLabel: string) {
     const h = host.toLowerCase();
@@ -594,6 +624,64 @@ export function SmtpManager({
     setActionLoading(null);
   }
 
+  async function submitBulkAlibabaImport() {
+    if (!bulkAlibabaLines.trim()) {
+      toast.warning("Paste at least one email:password line");
+      return;
+    }
+    const accepted = await confirm({
+      title: "Run bulk Alibaba SMTP import?",
+      message: "SMTP records will be created or updated based on your setting.",
+      confirmLabel: "Import",
+      cancelLabel: "Cancel",
+      tone: "warning"
+    });
+    if (!accepted) return;
+
+    setActionLoading("bulk_alibaba_import");
+    try {
+      const response = await fetch("/api/smtp/bulk-add-alibaba", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lines: bulkAlibabaLines,
+          updateExisting: bulkAlibabaUpdateExisting
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        scanned?: number;
+        added?: number;
+        updated?: number;
+        skippedDuplicate?: number;
+        invalid?: number;
+        errors?: string[];
+      };
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Bulk import failed");
+      }
+      const summary = {
+        scanned: Number(payload.scanned ?? 0),
+        added: Number(payload.added ?? 0),
+        updated: Number(payload.updated ?? 0),
+        skippedDuplicate: Number(payload.skippedDuplicate ?? 0),
+        invalid: Number(payload.invalid ?? 0),
+        errors: payload.errors ?? []
+      };
+      setBulkAlibabaResult(summary);
+      toast.success(
+        "Bulk Alibaba import completed",
+        `scanned ${summary.scanned}, added ${summary.added}, updated ${summary.updated}, duplicate ${summary.skippedDuplicate}, invalid ${summary.invalid}`
+      );
+      await refreshSmtpSnapshot();
+    } catch (error) {
+      toast.error("Bulk Alibaba import failed", error instanceof Error ? error.message : "Unexpected error");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -664,9 +752,21 @@ export function SmtpManager({
       <div className="rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between gap-2">
           <p className="text-sm font-semibold text-white">SMTP Accounts</p>
-          <button type="button" onClick={() => { resetForm(); setShowModal(true); }} className="rounded-lg bg-accent px-3 py-2 text-xs text-white">
-            Add SMTP
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setBulkAlibabaResult(null);
+                setShowBulkAlibabaModal(true);
+              }}
+              className="rounded-lg border border-indigo-400/40 px-3 py-2 text-xs text-indigo-200"
+            >
+              Bulk Add Alibaba SMTPs
+            </button>
+            <button type="button" onClick={() => { resetForm(); setShowModal(true); }} className="rounded-lg bg-accent px-3 py-2 text-xs text-white">
+              Add SMTP
+            </button>
+          </div>
         </div>
         {accounts.length === 0 ? (
           <EmptyState icon="server" title="No SMTP accounts" description="Create your first account with Add SMTP." />
@@ -873,6 +973,77 @@ export function SmtpManager({
                   Close
                 </button>
               </div>
+            </div>
+          </div>
+        </OverlayPortal>
+      ) : null}
+
+      {showBulkAlibabaModal ? (
+        <OverlayPortal active={showBulkAlibabaModal} lockScroll>
+          <div className="fixed inset-0 z-50 bg-black/60 p-4 backdrop-blur-sm" onClick={() => setShowBulkAlibabaModal(false)}>
+            <div className="mx-auto w-full max-w-3xl rounded-2xl border border-border bg-zinc-950 p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-sm font-semibold text-white">Bulk Add Alibaba SMTPs</p>
+                <button
+                  type="button"
+                  onClick={() => setShowBulkAlibabaModal(false)}
+                  className="rounded border border-border px-2 py-1 text-xs text-zinc-300"
+                >
+                  Close
+                </button>
+              </div>
+              <textarea
+                rows={10}
+                value={bulkAlibabaLines}
+                onChange={(e) => setBulkAlibabaLines(e.target.value)}
+                placeholder={`email:password\nmarketing@example.com:SMTP_PASSWORD\nsender@example.com:SMTP_PASSWORD`}
+                className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100"
+              />
+              <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={bulkAlibabaUpdateExisting}
+                  onChange={(e) => setBulkAlibabaUpdateExisting(e.target.checked)}
+                />
+                Update existing SMTPs
+              </label>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  disabled={actionLoading === "bulk_alibaba_import"}
+                  onClick={() => void submitBulkAlibabaImport()}
+                  className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-50"
+                >
+                  {actionLoading === "bulk_alibaba_import" ? <Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> : null}
+                  Import
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkAlibabaLines("");
+                    setBulkAlibabaResult(null);
+                  }}
+                  className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-300"
+                >
+                  Clear
+                </button>
+              </div>
+              {bulkAlibabaResult ? (
+                <div className="mt-3 rounded-lg border border-border bg-zinc-900/40 p-3 text-xs text-zinc-300">
+                  <p>scanned: {bulkAlibabaResult.scanned}</p>
+                  <p>added: {bulkAlibabaResult.added}</p>
+                  <p>updated: {bulkAlibabaResult.updated}</p>
+                  <p>skipped duplicate: {bulkAlibabaResult.skippedDuplicate}</p>
+                  <p>invalid: {bulkAlibabaResult.invalid}</p>
+                  {bulkAlibabaResult.errors.length > 0 ? (
+                    <div className="mt-2 max-h-36 overflow-auto rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-200">
+                      {bulkAlibabaResult.errors.slice(0, 50).map((item) => (
+                        <p key={item}>- {item}</p>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
         </OverlayPortal>
