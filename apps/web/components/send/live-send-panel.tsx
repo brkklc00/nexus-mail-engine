@@ -89,7 +89,8 @@ export function LiveSendPanel() {
     smtpIds: [] as string[],
     parallelSmtpCount: 1,
     rotateEvery: 500,
-    strategy: "round_robin" as "round_robin" | "rotate_every_n" | "weighted_warmup" | "least_used" | "health_based"
+    strategy: "round_robin" as "round_robin" | "rotate_every_n" | "weighted_warmup" | "least_used" | "health_based",
+    autoShortenLinks: false
   });
 
   useEffect(() => {
@@ -275,7 +276,8 @@ export function LiveSendPanel() {
           smtpIds: form.smtpMode === "single" ? [form.smtpAccountId] : form.smtpIds,
           parallelSmtpCount: form.parallelSmtpCount,
           rotateEvery: form.rotateEvery,
-          strategy: form.strategy
+          strategy: form.strategy,
+          autoShortenLinks: form.autoShortenLinks
         })
       });
       if (!createRes.ok) {
@@ -543,6 +545,10 @@ export function LiveSendPanel() {
         </p>
         <p>Estimated target count: {estimatedTarget}</p>
         <p>Estimated throughput: {estimatedRate.toFixed(2)}/s</p>
+        <label className="flex items-center gap-2 md:col-span-3">
+          <input type="checkbox" checked={form.autoShortenLinks} onChange={(e) => setForm((s) => ({ ...s, autoShortenLinks: e.target.checked }))} />
+          Auto-shorten links in template before campaign starts (excludes unsubscribe/tracking links and existing nxusurl links)
+        </label>
       </div>
       <div className="grid grid-cols-1 gap-2 rounded-md border border-border bg-zinc-900/30 p-3 text-xs text-zinc-300 md:grid-cols-3">
         <p>Selected SMTP count: {selectedSmtpCount}</p>

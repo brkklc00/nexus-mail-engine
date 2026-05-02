@@ -1,6 +1,7 @@
 import { prisma } from "@nexus/db";
 import { campaignQueue, getRedisClient, QUEUE_NAMES, safeJobId, withDistributedLock } from "@nexus/queue";
 import { listSegmentRecipientIds, type SegmentQueryInput } from "@/server/segments/segment-query.service";
+import { autoShortenHtmlLinks } from "@/server/short-links/nxusurl.service";
 
 const CAMPAIGN_LOCK_TTL_MS = 30_000;
 const DEFAULT_ROTATE_EVERY = 500;
@@ -119,6 +120,7 @@ export async function createCampaign(input: {
   rotateEvery?: number;
   strategy?: RotationStrategy;
   scheduledAt?: Date | null;
+  autoShortenLinks?: boolean;
 }) {
   const poolSetting = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } });
   const globalPool = ((poolSetting?.value as any) ?? {}) as {
@@ -181,14 +183,37 @@ export async function createCampaign(input: {
   if (smtps.length === 0) {
     throw new Error("smtp_pool_empty");
   }
+  let effectiveTemplate = template;
+  let shortLinkMappings: Array<{ originalUrl: string; shortUrl: string; shortLinkId: string }> = [];
+  if (input.autoShortenLinks) {
+    const transformed = await autoShortenHtmlLinks({
+      html: template.htmlBody,
+      campaignName: input.name,
+      templateName: template.title,
+      templateId: template.id
+    });
+    if (transformed.mappings.length > 0) {
+      effectiveTemplate = await prisma.mailTemplate.create({
+        data: {
+          title: `${template.title} · auto-shortened`,
+          subject: template.subject,
+          htmlBody: transformed.html,
+          plainTextBody: template.plainTextBody,
+          category: template.category,
+          status: "draft"
+        }
+      });
+      shortLinkMappings = transformed.mappings;
+    }
+  }
   const primarySmtp = smtps[0];
   const activeSmtpIds = smtps.map((smtp: any) => smtp.id);
 
-  return prisma.campaign.create({
+  const created = await prisma.campaign.create({
     data: {
       name: input.name,
-      subject: template.subject,
-      templateId: template.id,
+      subject: effectiveTemplate.subject,
+      templateId: effectiveTemplate.id,
       listId: targetMode === "list" ? input.listId ?? null : null,
       segmentId: targetMode === "saved_segment" ? input.segmentId ?? null : null,
       segmentQueryConfig:
@@ -210,6 +235,21 @@ export async function createCampaign(input: {
       scheduledAt: input.scheduledAt ?? null
     }
   });
+  if (shortLinkMappings.length > 0) {
+    await prisma.campaignLog.create({
+      data: {
+        campaignId: created.id,
+        eventType: "campaign_short_links_generated",
+        status: "success",
+        message: `Auto-shortened ${shortLinkMappings.length} link(s) before campaign start.`,
+        metadata: {
+          autoShortenLinks: true,
+          mappings: shortLinkMappings
+        }
+      }
+    });
+  }
+  return created;
 }
 
 export async function startCampaign(campaignId: string) {

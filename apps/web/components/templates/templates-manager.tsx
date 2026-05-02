@@ -92,6 +92,10 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
     smtpAccountId: smtpOptions[0]?.id ?? "",
     toEmail: ""
   });
+  const [shortenForm, setShortenForm] = useState({
+    destinationUrl: "",
+    customAlias: ""
+  });
 
   async function loadTemplates() {
     setLoading(true);
@@ -327,6 +331,52 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
     }
   }
 
+  async function shortenAndInsertLink() {
+    if (!selected) return;
+    const destination = shortenForm.destinationUrl.trim();
+    if (!destination) {
+      toast.warning("Destination URL is required");
+      return;
+    }
+    setActionLoading("shortenLink");
+    try {
+      const response = await fetch("/api/short-links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location_url: destination,
+          ...(shortenForm.customAlias.trim() ? { url: shortenForm.customAlias.trim() } : {}),
+          utm_source: "nexus-mail",
+          utm_medium: "email",
+          utm_campaign: selected.title
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as any;
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.code ?? payload.error ?? "shortener_api_failed");
+      }
+      const data = payload?.data ?? payload;
+      const shortUrl = String(data?.url ?? data?.short_url ?? "");
+      if (!shortUrl) {
+        throw new Error("shortener_api_failed");
+      }
+      setSelected((prev) =>
+        prev
+          ? {
+              ...prev,
+              htmlBody: `${prev.htmlBody}\n<a href="${shortUrl}">${shortUrl}</a>`
+            }
+          : prev
+      );
+      setShortenForm({ destinationUrl: "", customAlias: "" });
+      toast.success("Short URL inserted into template");
+    } catch (error) {
+      toast.error("Shorten link failed", error instanceof Error ? error.message : "shortener_api_failed");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function fetchTemplateDetail(id: string) {
     setActionLoading("openEditor");
     try {
@@ -556,6 +606,29 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
                 <input value={selected.title} onChange={(e) => setSelected((prev) => (prev ? { ...prev, title: e.target.value } : prev))} className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
                 <input value={selected.subject} onChange={(e) => setSelected((prev) => (prev ? { ...prev, subject: e.target.value } : prev))} className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
                 <input value={selected.category ?? ""} onChange={(e) => setSelected((prev) => (prev ? { ...prev, category: e.target.value || null } : prev))} placeholder="Category / tags" className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
+                <div className="grid gap-2 rounded-lg border border-border bg-zinc-900/40 p-2 md:grid-cols-[1fr_180px_auto]">
+                  <input
+                    value={shortenForm.destinationUrl}
+                    onChange={(e) => setShortenForm((prev) => ({ ...prev, destinationUrl: e.target.value }))}
+                    placeholder="Paste destination URL to shorten"
+                    className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                  />
+                  <input
+                    value={shortenForm.customAlias}
+                    onChange={(e) => setShortenForm((prev) => ({ ...prev, customAlias: e.target.value }))}
+                    placeholder="Custom alias (optional)"
+                    className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                  />
+                  <button
+                    type="button"
+                    disabled={actionLoading === "shortenLink"}
+                    onClick={() => void shortenAndInsertLink()}
+                    className="rounded border border-border px-3 py-2 text-sm text-zinc-200 disabled:opacity-50"
+                  >
+                    {actionLoading === "shortenLink" ? <Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> : null}
+                    Shorten Link
+                  </button>
+                </div>
                 <textarea rows={12} value={selected.htmlBody} onChange={(e) => setSelected((prev) => (prev ? { ...prev, htmlBody: e.target.value } : prev))} className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
                 <textarea rows={6} value={selected.plainTextBody ?? ""} onChange={(e) => setSelected((prev) => (prev ? { ...prev, plainTextBody: e.target.value || null } : prev))} className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100" />
                 <div className="flex flex-wrap gap-2">

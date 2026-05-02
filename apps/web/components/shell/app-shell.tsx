@@ -7,6 +7,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   Activity,
   LayoutDashboard,
+  Link2,
   ListChecks,
   type LucideIcon,
   LogOut,
@@ -26,6 +27,7 @@ const navItems: Array<{ href: Route; label: string; icon: LucideIcon }> = [
   { href: "/segments", label: "Segments", icon: SlidersHorizontal },
   { href: "/send", label: "Send", icon: Send },
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
+  { href: "/short-links", label: "Short Links", icon: Link2 },
   { href: "/settings/smtp", label: "SMTP", icon: ServerCog },
   { href: "/suppression", label: "Suppression", icon: ShieldBan },
   { href: "/logs", label: "Logs", icon: Activity }

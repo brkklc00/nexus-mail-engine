@@ -19,7 +19,8 @@ const createSchema = z.object({
   parallelSmtpCount: z.number().int().min(1).max(50).optional(),
   rotateEvery: z.number().int().min(1).max(50000).optional(),
   strategy: z.enum(["round_robin", "rotate_every_n", "weighted_warmup", "warmup_weighted", "least_used", "health_based"]).optional(),
-  scheduledAt: z.string().datetime().optional()
+  scheduledAt: z.string().datetime().optional(),
+  autoShortenLinks: z.boolean().optional()
 });
 
 export async function POST(req: Request) {
@@ -47,7 +48,8 @@ export async function POST(req: Request) {
       parallelSmtpCount: payload.data.parallelSmtpCount,
       rotateEvery: payload.data.rotateEvery,
       strategy: payload.data.strategy,
-      scheduledAt: payload.data.scheduledAt ? new Date(payload.data.scheduledAt) : null
+      scheduledAt: payload.data.scheduledAt ? new Date(payload.data.scheduledAt) : null,
+      autoShortenLinks: payload.data.autoShortenLinks ?? false
     });
     await writeAuditLog(session.userId, "campaign.create", "campaign", { campaignId: campaign.id });
     return NextResponse.json({ campaign });
@@ -73,6 +75,18 @@ export async function POST(req: Request) {
     }
     if (message === "campaign_target_required") {
       return NextResponse.json({ error: "Campaign target is required. Select a list or segment." }, { status: 400 });
+    }
+    if (message === "shortener_not_configured") {
+      return NextResponse.json({ error: "Shortener API is not configured.", code: message }, { status: 503 });
+    }
+    if (message === "shortener_auth_failed") {
+      return NextResponse.json({ error: "Shortener API authentication failed.", code: message }, { status: 401 });
+    }
+    if (message === "invalid_destination_url") {
+      return NextResponse.json({ error: "Invalid destination URL detected during auto-shortening.", code: message }, { status: 400 });
+    }
+    if (message === "duplicate_alias") {
+      return NextResponse.json({ error: "Short link alias already exists.", code: message }, { status: 409 });
     }
     return NextResponse.json({ error: message }, { status: 400 });
   }
