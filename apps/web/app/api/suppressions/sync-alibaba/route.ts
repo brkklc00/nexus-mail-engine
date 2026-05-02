@@ -24,8 +24,8 @@ type NormalizedDateRange = {
   rawTo: string;
   from: Date;
   to: Date;
-  fromIso: string;
-  toIso: string;
+  fromAlibaba: string;
+  toAlibaba: string;
 };
 
 function classify(providerCode: string | null, message: string | null): Category {
@@ -78,6 +78,41 @@ function parseDateInput(value: string): Date | null {
   return parsed;
 }
 
+function toTimezoneParts(date: Date, timezone: string) {
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+  const parts = formatter.formatToParts(date);
+  const valueOf = (type: string) => parts.find((item) => item.type === type)?.value ?? "";
+  return {
+    year: valueOf("year"),
+    month: valueOf("month"),
+    day: valueOf("day"),
+    hour: valueOf("hour"),
+    minute: valueOf("minute"),
+    second: valueOf("second")
+  };
+}
+
+function formatAlibabaDate(date: Date): string {
+  const timezone = (process.env.ALIBABA_DM_REPORT_TIMEZONE ?? "UTC").trim() || "UTC";
+  const safeTimezone = timezone.toUpperCase() === "UTC" ? "UTC" : timezone;
+  try {
+    const parts = toTimezoneParts(date, safeTimezone);
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+  } catch {
+    const parts = toTimezoneParts(date, "UTC");
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+  }
+}
+
 function normalizeDateRange(rawFrom: string, rawTo: string): NormalizedDateRange | null {
   const parsedFrom = parseDateInput(rawFrom);
   const parsedTo = parseDateInput(rawTo);
@@ -100,16 +135,16 @@ function normalizeDateRange(rawFrom: string, rawTo: string): NormalizedDateRange
     rawTo,
     from,
     to,
-    fromIso: from.toISOString(),
-    toIso: to.toISOString()
+    fromAlibaba: formatAlibabaDate(from),
+    toAlibaba: formatAlibabaDate(to)
   };
 }
 
 function buildSignedAlibabaUrl(
   credentials: AlibabaCredentials,
   action: string,
-  fromIso: string,
-  toIso: string
+  fromAlibaba: string,
+  toAlibaba: string
 ): string {
   const endpoint = process.env.ALIBABA_DM_API_ENDPOINT ?? `https://dm.${credentials.region}.aliyuncs.com/`;
   const nonce = crypto.randomUUID();
@@ -124,8 +159,8 @@ function buildSignedAlibabaUrl(
     SignatureNonce: nonce,
     Timestamp: timestamp,
     RegionId: credentials.region,
-    StartTime: fromIso,
-    EndTime: toIso,
+    StartTime: fromAlibaba,
+    EndTime: toAlibaba,
     PageNumber: "1",
     PageSize: String(Math.max(1, Number(process.env.ALIBABA_DM_SYNC_PAGE_SIZE ?? 100)))
   });
@@ -231,13 +266,24 @@ export async function POST(req: Request) {
   if (mode === "real_api" && credentialsPresent && credentials) {
     try {
       const action = process.env.ALIBABA_DM_SUPPRESSION_ACTION ?? "QueryInvalidAddress";
-      const signedUrl = buildSignedAlibabaUrl(credentials, action, normalizedRange.fromIso, normalizedRange.toIso);
+      const signedUrl = buildSignedAlibabaUrl(credentials, action, normalizedRange.fromAlibaba, normalizedRange.toAlibaba);
       apiRequestMade = true;
+      const debugUrl = new URL(signedUrl);
+      const debugQuery = {
+        Action: debugUrl.searchParams.get("Action"),
+        RegionId: debugUrl.searchParams.get("RegionId"),
+        StartTime: debugUrl.searchParams.get("StartTime"),
+        EndTime: debugUrl.searchParams.get("EndTime"),
+        PageNumber: debugUrl.searchParams.get("PageNumber"),
+        PageSize: debugUrl.searchParams.get("PageSize"),
+        Timestamp: debugUrl.searchParams.get("Timestamp")
+      };
+      console.info("[suppression.sync_alibaba] final_query_params", debugQuery);
       console.info("[suppression.sync_alibaba] date_payload", {
         rawStart: normalizedRange.rawFrom,
         rawEnd: normalizedRange.rawTo,
-        isoStart: normalizedRange.fromIso,
-        isoEnd: normalizedRange.toIso
+        alibabaStart: normalizedRange.fromAlibaba,
+        alibabaEnd: normalizedRange.toAlibaba
       });
       const response = await fetch(signedUrl, { method: "GET", cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as any;
@@ -256,10 +302,19 @@ export async function POST(req: Request) {
       const alibabaMessage = payload?.Message ? String(payload.Message) : null;
       if (alibabaCode || alibabaMessage) {
         errors.push([alibabaCode, alibabaMessage].filter(Boolean).join(": "));
+        if (
+          /invaliddate\.malformed/i.test(alibabaCode ?? "") ||
+          /invaliddate\.malformed/i.test(alibabaMessage ?? "") ||
+          /specified date is invalid/i.test(alibabaMessage ?? "")
+        ) {
+          errors.push(
+            `Final Alibaba params => StartTime=${normalizedRange.fromAlibaba}, EndTime=${normalizedRange.toAlibaba}`
+          );
+        }
       }
       console.info("[suppression.sync_alibaba] request_diagnostics", {
         rawSelectedRange: { from: normalizedRange.rawFrom, to: normalizedRange.rawTo },
-        normalizedApiRange: { startTime: normalizedRange.fromIso, endTime: normalizedRange.toIso },
+        normalizedApiRange: { startTime: normalizedRange.fromAlibaba, endTime: normalizedRange.toAlibaba },
         mode,
         credentialsPresent,
         apiRequestMade,
@@ -271,7 +326,7 @@ export async function POST(req: Request) {
       errors.push(error instanceof Error ? error.message : "Alibaba API request failed");
       console.error("[suppression.sync_alibaba] request_failed", {
         rawSelectedRange: { from: normalizedRange.rawFrom, to: normalizedRange.rawTo },
-        normalizedApiRange: { startTime: normalizedRange.fromIso, endTime: normalizedRange.toIso },
+        normalizedApiRange: { startTime: normalizedRange.fromAlibaba, endTime: normalizedRange.toAlibaba },
         mode,
         credentialsPresent,
         apiRequestMade,
@@ -409,8 +464,8 @@ export async function POST(req: Request) {
       to: to.toISOString()
     },
     normalizedApiRange: {
-      startTime: normalizedRange.fromIso,
-      endTime: normalizedRange.toIso
+      startTime: normalizedRange.fromAlibaba,
+      endTime: normalizedRange.toAlibaba
     },
     credentialsPresent,
     apiRequestMade,

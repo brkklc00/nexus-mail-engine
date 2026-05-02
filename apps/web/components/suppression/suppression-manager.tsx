@@ -454,7 +454,7 @@ export function SuppressionManager() {
             : !payload.credentialsPresent
               ? "Alibaba credentials are not configured."
               : payload.errors.some((item) => /specified date is invalid|invalid date/i.test(item))
-                ? "Date format adjusted to Alibaba API requirements."
+                ? "Alibaba date rejected. Check final StartTime/EndTime in sync summary."
               : payload.apiRequestMade && payload.totalReportsReturned === 0
                 ? "Alibaba API connected, but no failed delivery reports were found for the selected date range."
                 : `Scanned ${payload.scanned}, matched ${payload.matched}, added ${payload.added}, removed from lists ${payload.removedFromLists}.`;
@@ -920,7 +920,7 @@ export function SuppressionManager() {
               </p>
               {syncSummary.normalizedApiRange ? (
                 <p>
-                  API range: {syncSummary.normalizedApiRange.startTime} - {syncSummary.normalizedApiRange.endTime} ({syncSummary.timezone ?? "Asia/Singapore"})
+                  API range: StartTime={syncSummary.normalizedApiRange.startTime} | EndTime={syncSummary.normalizedApiRange.endTime}
                 </p>
               ) : null}
               <p>Mode: {syncSummary.mode === "real_api" ? "Real API" : syncSummary.mode === "mock" ? "Mock" : "Disabled"}</p>
