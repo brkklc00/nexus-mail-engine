@@ -454,7 +454,7 @@ export function SuppressionManager() {
             : !payload.credentialsPresent
               ? "Alibaba credentials are not configured."
               : payload.errors.some((item) => /specified date is invalid|invalid date/i.test(item))
-                ? "Alibaba API connected, but date range was rejected. Please try a shorter range or previous day."
+                ? "Date format adjusted to Alibaba API requirements."
               : payload.apiRequestMade && payload.totalReportsReturned === 0
                 ? "Alibaba API connected, but no failed delivery reports were found for the selected date range."
                 : `Scanned ${payload.scanned}, matched ${payload.matched}, added ${payload.added}, removed from lists ${payload.removedFromLists}.`;
@@ -965,7 +965,7 @@ export function SuppressionManager() {
               syncSummary.apiRequestMade &&
               syncSummary.errors.some((item) => /specified date is invalid|invalid date/i.test(item)) ? (
                 <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
-                  Alibaba API connected, but date range was rejected. Please try a shorter range or previous day.
+                  Date format adjusted to Alibaba API requirements.
                 </p>
               ) : null}
               {syncSummary.errors.length > 0 ? (
