@@ -43,6 +43,8 @@ type AlibabaSyncResult = {
   error?: string;
   mode: "real_api" | "mock" | "disabled";
   dateRange: { from: string; to: string };
+  normalizedApiRange?: { startTime: string; endTime: string };
+  timezone?: string;
   credentialsPresent: boolean;
   apiRequestMade: boolean;
   totalReportsReturned: number;
@@ -56,6 +58,8 @@ type AlibabaSyncResult = {
   ignoredByCategory: number;
   errors: string[];
 };
+
+type SyncPreset = "last24h" | "yesterday" | "last3d" | "last7d" | "custom";
 
 type Filters = {
   q: string;
@@ -106,6 +110,45 @@ function parseBatchText(text: string, maxLines = 8000, maxChars = 220_000): stri
   return batches;
 }
 
+function toDatetimeLocalValue(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function computeSyncPresetRange(preset: Exclude<SyncPreset, "custom">): { from: string; to: string } {
+  const safeNow = new Date(Date.now() - 10 * 60 * 1000);
+  if (preset === "last24h") {
+    return {
+      from: toDatetimeLocalValue(new Date(safeNow.getTime() - 24 * 60 * 60 * 1000)),
+      to: toDatetimeLocalValue(safeNow)
+    };
+  }
+  if (preset === "yesterday") {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
+    const yesterdayEnd = new Date(todayStart.getTime() - 1000);
+    return {
+      from: toDatetimeLocalValue(yesterdayStart),
+      to: toDatetimeLocalValue(yesterdayEnd)
+    };
+  }
+  if (preset === "last3d") {
+    return {
+      from: toDatetimeLocalValue(new Date(safeNow.getTime() - 3 * 24 * 60 * 60 * 1000)),
+      to: toDatetimeLocalValue(safeNow)
+    };
+  }
+  return {
+    from: toDatetimeLocalValue(new Date(safeNow.getTime() - 7 * 24 * 60 * 60 * 1000)),
+    to: toDatetimeLocalValue(safeNow)
+  };
+}
+
 export function SuppressionManager() {
   const toast = useToast();
   const confirm = useConfirm();
@@ -140,11 +183,9 @@ export function SuppressionManager() {
   const [removeTo, setRemoveTo] = useState("");
   const [removeLoading, setRemoveLoading] = useState(false);
 
-  const [syncFrom, setSyncFrom] = useState(() => {
-    const d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    return d.toISOString().slice(0, 16);
-  });
-  const [syncTo, setSyncTo] = useState(() => new Date().toISOString().slice(0, 16));
+  const [syncPreset, setSyncPreset] = useState<SyncPreset>("yesterday");
+  const [syncFrom, setSyncFrom] = useState(() => computeSyncPresetRange("yesterday").from);
+  const [syncTo, setSyncTo] = useState(() => computeSyncPresetRange("yesterday").to);
   const [syncCategories, setSyncCategories] = useState<Record<string, boolean>>({
     invalid: true,
     hard_bounce: true,
@@ -162,6 +203,13 @@ export function SuppressionManager() {
       Boolean(filters.q || filters.reason || filters.source || filters.scope !== "all" || filters.range !== "7d" || filters.from || filters.to),
     [filters]
   );
+
+  function applySyncPreset(preset: Exclude<SyncPreset, "custom">) {
+    const range = computeSyncPresetRange(preset);
+    setSyncPreset(preset);
+    setSyncFrom(range.from);
+    setSyncTo(range.to);
+  }
 
   async function loadStats() {
     setLoadingStats(true);
@@ -386,8 +434,8 @@ export function SuppressionManager() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          from: new Date(syncFrom).toISOString(),
-          to: new Date(syncTo).toISOString(),
+          from: syncFrom,
+          to: syncTo,
           categories,
           removeFromLists: syncRemoveFromLists
         })
@@ -405,6 +453,8 @@ export function SuppressionManager() {
             ? "Alibaba sync is not connected to the real API yet."
             : !payload.credentialsPresent
               ? "Alibaba credentials are not configured."
+              : payload.errors.some((item) => /specified date is invalid|invalid date/i.test(item))
+                ? "Alibaba API connected, but date range was rejected. Please try a shorter range or previous day."
               : payload.apiRequestMade && payload.totalReportsReturned === 0
                 ? "Alibaba API connected, but no failed delivery reports were found for the selected date range."
                 : `Scanned ${payload.scanned}, matched ${payload.matched}, added ${payload.added}, removed from lists ${payload.removedFromLists}.`;
@@ -681,15 +731,42 @@ export function SuppressionManager() {
           <input
             type="datetime-local"
             value={syncFrom}
-            onChange={(e) => setSyncFrom(e.target.value)}
+            onChange={(e) => {
+              setSyncPreset("custom");
+              setSyncFrom(e.target.value);
+            }}
             className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
           />
           <input
             type="datetime-local"
             value={syncTo}
-            onChange={(e) => setSyncTo(e.target.value)}
+            onChange={(e) => {
+              setSyncPreset("custom");
+              setSyncTo(e.target.value);
+            }}
             className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
           />
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {[
+            { id: "last24h" as const, label: "Last 24 hours" },
+            { id: "yesterday" as const, label: "Yesterday" },
+            { id: "last3d" as const, label: "Last 3 days" },
+            { id: "last7d" as const, label: "Last 7 days" }
+          ].map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              onClick={() => applySyncPreset(preset.id)}
+              className={`rounded-lg border px-2.5 py-1 text-xs ${
+                syncPreset === preset.id
+                  ? "border-indigo-400/50 bg-indigo-500/10 text-indigo-200"
+                  : "border-border text-zinc-300"
+              }`}
+            >
+              {preset.label}
+            </button>
+          ))}
         </div>
         <div className="mt-2 flex flex-wrap gap-4 text-xs text-zinc-300">
           {[
@@ -841,6 +918,11 @@ export function SuppressionManager() {
               <p>
                 Date range: {new Date(syncSummary.dateRange.from).toLocaleString()} - {new Date(syncSummary.dateRange.to).toLocaleString()}
               </p>
+              {syncSummary.normalizedApiRange ? (
+                <p>
+                  API range: {syncSummary.normalizedApiRange.startTime} - {syncSummary.normalizedApiRange.endTime} ({syncSummary.timezone ?? "Asia/Singapore"})
+                </p>
+              ) : null}
               <p>Mode: {syncSummary.mode === "real_api" ? "Real API" : syncSummary.mode === "mock" ? "Mock" : "Disabled"}</p>
               <p>Credentials configured: {syncSummary.credentialsPresent ? "Yes" : "No"}</p>
               <p>Alibaba API request made: {syncSummary.apiRequestMade ? "Yes" : "No"}</p>
@@ -876,6 +958,14 @@ export function SuppressionManager() {
               syncSummary.totalReportsReturned === 0 ? (
                 <p className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
                   Alibaba API connected, but no failed delivery reports were found for the selected date range.
+                </p>
+              ) : null}
+              {syncSummary.mode === "real_api" &&
+              syncSummary.credentialsPresent &&
+              syncSummary.apiRequestMade &&
+              syncSummary.errors.some((item) => /specified date is invalid|invalid date/i.test(item)) ? (
+                <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
+                  Alibaba API connected, but date range was rejected. Please try a shorter range or previous day.
                 </p>
               ) : null}
               {syncSummary.errors.length > 0 ? (
