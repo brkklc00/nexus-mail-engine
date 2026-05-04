@@ -1,7 +1,24 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BarChart3, CheckCircle2, Loader2, MailX, PlayCircle, PlugZap, RefreshCw, Save, ShieldAlert, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  BarChart3,
+  CheckCircle2,
+  LayoutGrid,
+  List,
+  Loader2,
+  MailX,
+  Pencil,
+  PlayCircle,
+  PlugZap,
+  Power,
+  PowerOff,
+  RefreshCw,
+  Save,
+  ShieldAlert,
+  Trash2
+} from "lucide-react";
 import Link from "next/link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
@@ -89,6 +106,8 @@ const modalTabs = ["connection", "identity", "rate", "warmup", "advanced"] as co
 type ModalTab = (typeof modalTabs)[number];
 type ProviderPreset = "alibaba" | "custom";
 
+const SMTP_VIEW_STORAGE_KEY = "nexus-smtp-accounts-view-mode";
+
 export function SmtpManager({
   initialAccounts,
   initialMetrics,
@@ -164,6 +183,46 @@ export function SmtpManager({
   } | null>(null);
 
   const bulkAlibabaPreview = useMemo(() => getBulkAlibabaPreviewRows(bulkAlibabaLines), [bulkAlibabaLines]);
+
+  const [viewMode, setViewMode] = useState<"card" | "list">(() =>
+    initialAccounts.length > 10 ? "list" : "card"
+  );
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkDeleteModalOpen, setBulkDeleteModalOpen] = useState(false);
+  const [bulkDeleteTyped, setBulkDeleteTyped] = useState("");
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(SMTP_VIEW_STORAGE_KEY);
+      if (stored === "card" || stored === "list") {
+        setViewMode(stored);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SMTP_VIEW_STORAGE_KEY, viewMode);
+    } catch {
+      /* ignore */
+    }
+  }, [viewMode]);
+
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (accounts.some((a) => a.id === id)) next.add(id);
+      }
+      return next;
+    });
+  }, [accounts]);
+
+  const selectedCount = selectedIds.size;
+  const selectedIdList = useMemo(() => [...selectedIds], [selectedIds]);
+  const allVisibleSelected = accounts.length > 0 && accounts.every((a) => selectedIds.has(a.id));
 
   async function refreshSmtpSnapshot() {
     try {
@@ -435,8 +494,11 @@ export function SmtpManager({
     setActionLoading(null);
   }
 
-  async function testConnectionById(accountId: string, accountName: string) {
-    setActionLoading(`test:${accountId}`);
+  async function testConnectionById(accountId: string, accountName: string, options?: { silent?: boolean }) {
+    const silent = options?.silent === true;
+    if (!silent) {
+      setActionLoading(`test:${accountId}`);
+    }
     const response = await fetch(`/api/smtp/${accountId}/test-connection`, { method: "POST" });
     const payload = (await response.json().catch(() => ({}))) as {
       ok?: boolean;
@@ -450,25 +512,33 @@ export function SmtpManager({
       };
     };
     if (response.ok && payload.ok) {
-      toast.success("SMTP connection test succeeded");
+      if (!silent) {
+        toast.success("SMTP connection test succeeded");
+      }
       setAccounts((prev) =>
         prev.map((item) =>
           item.id === accountId ? { ...item, healthStatus: "healthy", lastError: null, lastTestAt: new Date().toISOString() } : item
         )
       );
-      setTestResultModal({
-        open: true,
-        accountName,
-        connected: true,
-        kind: payload.result?.kind ?? "connected",
-        message: payload.result?.message ?? "SMTP connection successful."
-      });
-      setShowModal(false);
-      resetForm();
-      setActionLoading(null);
-      return;
+      if (!silent) {
+        setTestResultModal({
+          open: true,
+          accountName,
+          connected: true,
+          kind: payload.result?.kind ?? "connected",
+          message: payload.result?.message ?? "SMTP connection successful."
+        });
+        setShowModal(false);
+        resetForm();
+      }
+      if (!silent) {
+        setActionLoading(null);
+      }
+      return true;
     }
-    toast.error("SMTP connection test failed", payload.error ?? "Connection could not be established.");
+    if (!silent) {
+      toast.error("SMTP connection test failed", payload.error ?? "Connection could not be established.");
+    }
     setAccounts((prev) =>
       prev.map((item) =>
         item.id === accountId
@@ -476,15 +546,20 @@ export function SmtpManager({
           : item
       )
     );
-    setTestResultModal({
-      open: true,
-      accountName,
-      connected: false,
-      kind: payload.errorKind ?? "unknown",
-      message: payload.error ?? "Connection failed",
-      recommendation: payload.recommendation
-    });
-    setActionLoading(null);
+    if (!silent) {
+      setTestResultModal({
+        open: true,
+        accountName,
+        connected: false,
+        kind: payload.errorKind ?? "unknown",
+        message: payload.error ?? "Connection failed",
+        recommendation: payload.recommendation
+      });
+    }
+    if (!silent) {
+      setActionLoading(null);
+    }
+    return false;
   }
 
   async function testConnection(account: Account) {
@@ -627,6 +702,163 @@ export function SmtpManager({
     setActionLoading(null);
   }
 
+  function toggleRowSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAllVisible() {
+    setSelectedIds((prev) => {
+      if (accounts.length === 0) return new Set();
+      const all = accounts.every((a) => prev.has(a.id));
+      if (all) return new Set();
+      return new Set(accounts.map((a) => a.id));
+    });
+  }
+
+  async function runBulkConnectionTests() {
+    if (selectedIdList.length === 0) return;
+    setActionLoading("bulk_test");
+    let ok = 0;
+    let fail = 0;
+    try {
+      for (const id of selectedIdList) {
+        const acc = accounts.find((a) => a.id === id);
+        if (!acc) continue;
+        const success = await testConnectionById(id, acc.name, { silent: true });
+        if (success) ok += 1;
+        else fail += 1;
+      }
+      toast.success("Bulk test finished", `${ok} succeeded, ${fail} failed`);
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function bulkDisableSelected() {
+    if (selectedIdList.length === 0) return;
+    setActionLoading("bulk_disable");
+    try {
+      for (const id of selectedIdList) {
+        const response = await fetch(`/api/smtp/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "disable" })
+        });
+        const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.error ?? `Disable failed for ${id.slice(0, 8)}…`);
+        }
+      }
+      toast.success(`Disabled ${selectedIdList.length} SMTP account(s)`);
+      setSelectedIds(new Set());
+      await refreshSmtpSnapshot();
+    } catch (error) {
+      toast.error("Bulk disable failed", error instanceof Error ? error.message : "Unexpected error");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function bulkEnableSelected() {
+    if (selectedIdList.length === 0) return;
+    setActionLoading("bulk_enable");
+    try {
+      for (const id of selectedIdList) {
+        const response = await fetch(`/api/smtp/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ isActive: true })
+        });
+        const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.error ?? `Enable failed for ${id.slice(0, 8)}…`);
+        }
+      }
+      toast.success(`Enabled ${selectedIdList.length} SMTP account(s)`);
+      setSelectedIds(new Set());
+      await refreshSmtpSnapshot();
+    } catch (error) {
+      toast.error("Bulk enable failed", error instanceof Error ? error.message : "Unexpected error");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function bulkArchiveSelected() {
+    if (selectedIdList.length === 0) return;
+    const accepted = await confirm({
+      title: "Archive selected SMTP accounts?",
+      message: `${selectedIdList.length} account(s) will be removed from the list and disabled.`,
+      confirmLabel: "Archive",
+      cancelLabel: "Cancel",
+      tone: "warning"
+    });
+    if (!accepted) return;
+    setActionLoading("bulk_archive");
+    try {
+      for (const id of selectedIdList) {
+        const response = await fetch(`/api/smtp/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "archive" })
+        });
+        const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.error ?? `Archive failed for ${id.slice(0, 8)}…`);
+        }
+      }
+      toast.info(`Archived ${selectedIdList.length} SMTP account(s)`);
+      setSelectedIds(new Set());
+      await refreshSmtpSnapshot();
+    } catch (error) {
+      toast.error("Bulk archive failed", error instanceof Error ? error.message : "Unexpected error");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function executeBulkDelete() {
+    if (selectedIdList.length === 0 || bulkDeleteTyped !== "DELETE") return;
+    setActionLoading("bulk_delete");
+    try {
+      const response = await fetch("/api/smtp/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIdList })
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        deleted?: number;
+        skipped?: number;
+        errors?: string[];
+        error?: string;
+      };
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Bulk delete failed");
+      }
+      const deleted = Number(payload.deleted ?? 0);
+      const skipped = Number(payload.skipped ?? 0);
+      const errList = payload.errors ?? [];
+      toast.success(
+        "SMTP accounts removed",
+        `${deleted} archived${skipped > 0 ? `, ${skipped} skipped` : ""}${errList.length ? ` (${errList.length} messages)` : ""}`
+      );
+      setBulkDeleteModalOpen(false);
+      setBulkDeleteTyped("");
+      setSelectedIds(new Set());
+      await refreshSmtpSnapshot();
+    } catch (error) {
+      toast.error("Bulk delete failed", error instanceof Error ? error.message : "Unexpected error");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function submitBulkAlibabaImport() {
     if (!bulkAlibabaLines.trim()) {
       toast.warning("Paste at least one email:password line");
@@ -752,9 +984,39 @@ export function SmtpManager({
         </div>
       </section>
 
-      <div className="rounded-2xl border border-border bg-card p-4">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <p className="text-sm font-semibold text-white">SMTP Accounts</p>
+      <section className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold text-white">SMTP Accounts</p>
+            <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-zinc-400">{accounts.length} total</span>
+            <div className="flex items-center rounded-lg border border-border bg-zinc-950/80 p-0.5">
+              <button
+                type="button"
+                title="Card view"
+                onClick={() => {
+                  setViewMode("card");
+                  setSelectedIds(new Set());
+                }}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] ${
+                  viewMode === "card" ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+                Cards
+              </button>
+              <button
+                type="button"
+                title="List view"
+                onClick={() => setViewMode("list")}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] ${
+                  viewMode === "list" ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <List className="h-3.5 w-3.5" />
+                List
+              </button>
+            </div>
+          </div>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -771,71 +1033,231 @@ export function SmtpManager({
             </button>
           </div>
         </div>
+
+        {viewMode === "list" && selectedCount > 0 ? (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-[11px] text-indigo-100">
+            <span className="font-medium text-white">{selectedCount} selected</span>
+            <button
+              type="button"
+              disabled={!!actionLoading}
+              onClick={() => void runBulkConnectionTests()}
+              className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
+            >
+              Bulk Test
+            </button>
+            <button
+              type="button"
+              disabled={!!actionLoading}
+              onClick={() => void bulkDisableSelected()}
+              className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
+            >
+              Bulk Disable
+            </button>
+            <button
+              type="button"
+              disabled={!!actionLoading}
+              onClick={() => void bulkEnableSelected()}
+              className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
+            >
+              Bulk Enable
+            </button>
+            <button
+              type="button"
+              disabled={!!actionLoading}
+              onClick={() => void bulkArchiveSelected()}
+              className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
+            >
+              Bulk Archive
+            </button>
+            <button
+              type="button"
+              disabled={!!actionLoading}
+              onClick={() => {
+                setBulkDeleteTyped("");
+                setBulkDeleteModalOpen(true);
+              }}
+              className="rounded border border-rose-400/50 px-2 py-1 text-rose-200 hover:bg-rose-500/20 disabled:opacity-50"
+            >
+              Bulk Delete
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="ml-auto rounded border border-border px-2 py-1 text-zinc-400 hover:text-zinc-200"
+            >
+              Clear selection
+            </button>
+          </div>
+        ) : null}
+
         {accounts.length === 0 ? (
           <EmptyState icon="server" title="No SMTP accounts" description="Create your first account with Add SMTP." />
-        ) : null}
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-        {accounts.map((account) => (
-          <article key={account.id} className="rounded-2xl border border-border bg-card p-4">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <p className="text-sm font-medium text-white">{account.name}</p>
-                <p className="text-xs text-zinc-400">
-                  {account.fromEmail} · {account.providerLabel ?? "custom"} · {account.host}:{account.port} · {account.encryption.toUpperCase()}
-                </p>
-              </div>
-              <StatusBadge
-                label={!account.isActive ? "disabled" : account.isThrottled ? "throttled" : account.healthStatus === "error" ? "error" : "healthy"}
-                tone={!account.isActive ? "muted" : account.isThrottled ? "warning" : account.healthStatus === "error" ? "danger" : "success"}
-              />
-            </div>
-            <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-300">
-              <p>Target/Max RPS: {account.targetRatePerSecond}/{account.maxRatePerSecond ?? "-"}</p>
-              <p>Warmup tier: {account.warmupTier ?? "-"}</p>
-              <p>Sent/Failed today: {account.sentToday}/{account.failedToday}</p>
-              <p>Last test: {account.lastTestAt ? new Date(account.lastTestAt).toLocaleString() : "-"}</p>
-            </div>
-            <p className="mt-2 text-xs text-zinc-500">Last error: {account.lastError ?? "-"}</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" onClick={() => void toggleAccount(account)} disabled={actionLoading === `toggle:${account.id}`} className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 disabled:opacity-50">
-                {account.isActive ? "Disable" : "Enable"}
-              </button>
-              <button type="button" onClick={() => void disableAccount(account)} disabled={actionLoading === `disable:${account.id}`} className="rounded-lg border border-amber-400/40 px-3 py-1.5 text-xs text-amber-200 disabled:opacity-50">
-                Disable
-              </button>
-              <button type="button" onClick={() => void archiveAccount(account)} disabled={actionLoading === `archive:${account.id}`} className="rounded-lg border border-zinc-500/50 px-3 py-1.5 text-xs text-zinc-300 disabled:opacity-50">
-                Archive
-              </button>
-              <button type="button" onClick={() => void editAccount(account)} className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200">
-                Edit
-              </button>
-              <button type="button" onClick={() => void testConnection(account)} disabled={actionLoading === `test:${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 disabled:opacity-50">
-                {actionLoading === `test:${account.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlugZap className="h-3.5 w-3.5" />}
-                Test Connection
-              </button>
-              <button type="button" onClick={() => void resetThrottle(account)} disabled={actionLoading === `reset:${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-amber-400/40 px-3 py-1.5 text-xs text-amber-200 disabled:opacity-50">
-                <RefreshCw className="h-3.5 w-3.5" />
-                Reset Throttle
-              </button>
-              <Link href={`/logs?q=${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200">
-                View Logs
-              </Link>
-              <button type="button" onClick={() => void removeAccount(account)} disabled={actionLoading === `delete:${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-rose-400/40 px-3 py-1.5 text-xs text-rose-300 disabled:opacity-50">
-                <Trash2 className="h-3.5 w-3.5" />
-                Delete
-              </button>
-            </div>
-            {account.cooldownUntil ? (
-              <p className="mt-2 flex items-center gap-1 text-xs text-amber-300">
-                <AlertTriangle className="h-3.5 w-3.5" />
-                Cooldown until {new Date(account.cooldownUntil).toLocaleTimeString()}
-              </p>
-            ) : null}
-          </article>
-        ))}
-      </div>
+        ) : viewMode === "list" ? (
+          <div className="overflow-x-auto rounded-xl border border-border">
+            <table className="w-full min-w-[960px] border-collapse text-left text-[11px] text-zinc-300">
+              <thead className="sticky top-0 z-[1] bg-zinc-900/95 text-[10px] uppercase tracking-wide text-zinc-500">
+                <tr>
+                  <th className="border-b border-border px-2 py-2">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={() => toggleSelectAllVisible()}
+                      className="rounded border-border"
+                      title="Select all"
+                    />
+                  </th>
+                  <th className="border-b border-border px-2 py-2">Name</th>
+                  <th className="border-b border-border px-2 py-2">From Email</th>
+                  <th className="border-b border-border px-2 py-2">Provider</th>
+                  <th className="border-b border-border px-2 py-2">Host</th>
+                  <th className="border-b border-border px-2 py-2">Status</th>
+                  <th className="border-b border-border px-2 py-2">Target RPS</th>
+                  <th className="border-b border-border px-2 py-2">Sent / Failed</th>
+                  <th className="border-b border-border px-2 py-2">Last Test</th>
+                  <th className="border-b border-border px-2 py-2 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {accounts.map((account) => (
+                  <tr key={account.id} className="border-b border-border/50 hover:bg-zinc-900/40">
+                    <td className="px-2 py-1.5 align-middle">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(account.id)}
+                        onChange={() => toggleRowSelected(account.id)}
+                        className="rounded border-border"
+                      />
+                    </td>
+                    <td className="max-w-[140px] truncate px-2 py-1.5 font-medium text-zinc-100" title={account.name}>
+                      {account.name}
+                    </td>
+                    <td className="max-w-[180px] truncate px-2 py-1.5 font-mono text-[10px]" title={account.fromEmail}>
+                      {account.fromEmail}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-1.5">{account.providerLabel ?? "—"}</td>
+                    <td className="max-w-[200px] truncate px-2 py-1.5 font-mono text-[10px]" title={`${account.host}:${account.port}`}>
+                      {account.host}:{account.port}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-1.5">
+                      <StatusBadge
+                        label={!account.isActive ? "disabled" : account.isThrottled ? "throttled" : account.healthStatus === "error" ? "error" : "healthy"}
+                        tone={!account.isActive ? "muted" : account.isThrottled ? "warning" : account.healthStatus === "error" ? "danger" : "success"}
+                      />
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{Number(account.targetRatePerSecond ?? 0).toFixed(2)}</td>
+                    <td className="whitespace-nowrap px-2 py-1.5 tabular-nums text-zinc-200">
+                      {account.sentToday} / {account.failedToday}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-1.5 text-zinc-400">
+                      {account.lastTestAt ? new Date(account.lastTestAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <div className="flex flex-nowrap justify-end gap-1">
+                        <button
+                          type="button"
+                          title="Test connection"
+                          onClick={() => void testConnection(account)}
+                          disabled={actionLoading === `test:${account.id}`}
+                          className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+                        >
+                          {actionLoading === `test:${account.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlugZap className="h-3.5 w-3.5" />}
+                        </button>
+                        <button
+                          type="button"
+                          title="Edit"
+                          onClick={() => void editAccount(account)}
+                          className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          title={account.isActive ? "Disable" : "Enable"}
+                          onClick={() => void toggleAccount(account)}
+                          disabled={actionLoading === `toggle:${account.id}`}
+                          className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+                        >
+                          {account.isActive ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
+                        </button>
+                        <button
+                          type="button"
+                          title="Delete"
+                          onClick={() => void removeAccount(account)}
+                          disabled={actionLoading === `delete:${account.id}`}
+                          className="rounded border border-rose-400/40 p-1.5 text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            {accounts.map((account) => (
+              <article key={account.id} className="rounded-2xl border border-border bg-card p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-white">{account.name}</p>
+                    <p className="mt-1 text-xs leading-relaxed text-zinc-400">
+                      {account.fromEmail} · {account.providerLabel ?? "custom"} · {account.host}:{account.port} · {account.encryption.toUpperCase()}
+                    </p>
+                  </div>
+                  <StatusBadge
+                    label={!account.isActive ? "disabled" : account.isThrottled ? "throttled" : account.healthStatus === "error" ? "error" : "healthy"}
+                    tone={!account.isActive ? "muted" : account.isThrottled ? "warning" : account.healthStatus === "error" ? "danger" : "success"}
+                  />
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs text-zinc-300">
+                  <p>Target/Max RPS: {account.targetRatePerSecond}/{account.maxRatePerSecond ?? "-"}</p>
+                  <p>Warmup tier: {account.warmupTier ?? "-"}</p>
+                  <p>Sent/Failed today: {account.sentToday}/{account.failedToday}</p>
+                  <p>Last test: {account.lastTestAt ? new Date(account.lastTestAt).toLocaleString() : "-"}</p>
+                </div>
+                <p className="mt-3 text-xs text-zinc-500">Last error: {account.lastError ?? "-"}</p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => void toggleAccount(account)} disabled={actionLoading === `toggle:${account.id}`} className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 disabled:opacity-50">
+                    {account.isActive ? "Disable" : "Enable"}
+                  </button>
+                  <button type="button" onClick={() => void disableAccount(account)} disabled={actionLoading === `disable:${account.id}`} className="rounded-lg border border-amber-400/40 px-3 py-1.5 text-xs text-amber-200 disabled:opacity-50">
+                    Disable
+                  </button>
+                  <button type="button" onClick={() => void archiveAccount(account)} disabled={actionLoading === `archive:${account.id}`} className="rounded-lg border border-zinc-500/50 px-3 py-1.5 text-xs text-zinc-300 disabled:opacity-50">
+                    Archive
+                  </button>
+                  <button type="button" onClick={() => void editAccount(account)} className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200">
+                    Edit
+                  </button>
+                  <button type="button" onClick={() => void testConnection(account)} disabled={actionLoading === `test:${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 disabled:opacity-50">
+                    {actionLoading === `test:${account.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlugZap className="h-3.5 w-3.5" />}
+                    Test Connection
+                  </button>
+                  <button type="button" onClick={() => void resetThrottle(account)} disabled={actionLoading === `reset:${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-amber-400/40 px-3 py-1.5 text-xs text-amber-200 disabled:opacity-50">
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Reset Throttle
+                  </button>
+                  <Link href={`/logs?q=${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200">
+                    View Logs
+                  </Link>
+                  <button type="button" onClick={() => void removeAccount(account)} disabled={actionLoading === `delete:${account.id}`} className="inline-flex items-center gap-1 rounded-lg border border-rose-400/40 px-3 py-1.5 text-xs text-rose-300 disabled:opacity-50">
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete
+                  </button>
+                </div>
+                {account.cooldownUntil ? (
+                  <p className="mt-3 flex items-center gap-1 text-xs text-amber-300">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    Cooldown until {new Date(account.cooldownUntil).toLocaleTimeString()}
+                  </p>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
 
       {showModal ? (
         <OverlayPortal active={showModal} lockScroll>
@@ -1091,6 +1513,64 @@ export function SmtpManager({
                   ) : null}
                 </div>
               ) : null}
+            </div>
+          </div>
+        </OverlayPortal>
+      ) : null}
+
+      {bulkDeleteModalOpen ? (
+        <OverlayPortal active={bulkDeleteModalOpen} lockScroll>
+          <div
+            className="fixed inset-0 z-[55] bg-black/70 p-4 backdrop-blur-sm"
+            onClick={() => {
+              if (actionLoading !== "bulk_delete") {
+                setBulkDeleteModalOpen(false);
+                setBulkDeleteTyped("");
+              }
+            }}
+          >
+            <div
+              className="mx-auto mt-16 w-full max-w-md rounded-2xl border border-rose-500/40 bg-zinc-950 p-4 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <p className="text-sm font-semibold text-rose-200">Delete {selectedCount} SMTP account(s)?</p>
+              <p className="mt-2 text-xs leading-relaxed text-zinc-400">
+                Selected accounts will be archived (soft delete) and removed from this list. SMTP passwords are never sent to the browser. Type{" "}
+                <span className="font-mono text-zinc-200">DELETE</span> to confirm.
+              </p>
+              {selectedCount > 0 && selectedCount === accounts.length ? (
+                <p className="mt-2 text-xs text-amber-300">You have selected all {accounts.length} visible account(s).</p>
+              ) : null}
+              <input
+                value={bulkDeleteTyped}
+                onChange={(e) => setBulkDeleteTyped(e.target.value)}
+                className="mt-3 w-full rounded-lg border border-border bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                placeholder="Type DELETE"
+                autoComplete="off"
+                autoFocus
+              />
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkDeleteModalOpen(false);
+                    setBulkDeleteTyped("");
+                  }}
+                  disabled={actionLoading === "bulk_delete"}
+                  className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-300 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void executeBulkDelete()}
+                  disabled={actionLoading === "bulk_delete" || bulkDeleteTyped !== "DELETE" || selectedCount === 0}
+                  className="inline-flex items-center gap-1 rounded-lg border border-rose-500/50 bg-rose-500/20 px-3 py-2 text-xs text-rose-200 disabled:opacity-50"
+                >
+                  {actionLoading === "bulk_delete" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  Confirm delete
+                </button>
+              </div>
             </div>
           </div>
         </OverlayPortal>
