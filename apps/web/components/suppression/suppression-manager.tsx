@@ -46,6 +46,7 @@ type AlibabaSyncResult = {
   normalizedApiRange?: { startTime: string; endTime: string };
   timezone?: string;
   finalParams?: Array<{ startTime: string; endTime: string; timezone: string }>;
+  warnings?: string[];
   credentialsPresent: boolean;
   apiRequestMade: boolean;
   totalReportsReturned: number;
@@ -150,6 +151,24 @@ function computeSyncPresetRange(preset: Exclude<SyncPreset, "custom">): { from: 
   };
 }
 
+function dateKeyFromLocalInput(value: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function todayLocalKey(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export function SuppressionManager() {
   const toast = useToast();
   const confirm = useConfirm();
@@ -199,6 +218,12 @@ export function SuppressionManager() {
   const [syncRemoveFromLists, setSyncRemoveFromLists] = useState(true);
 
   const pageSizeOptions = [25, 50, 100];
+  const todayKey = useMemo(() => todayLocalKey(), []);
+  const todaySelectedForSync = useMemo(() => {
+    const fromKey = dateKeyFromLocalInput(syncFrom);
+    const toKey = dateKeyFromLocalInput(syncTo);
+    return fromKey === todayKey || toKey === todayKey;
+  }, [syncFrom, syncTo, todayKey]);
   const hasFilterInput = useMemo(
     () =>
       Boolean(filters.q || filters.reason || filters.source || filters.scope !== "all" || filters.range !== "7d" || filters.from || filters.to),
@@ -420,6 +445,9 @@ export function SuppressionManager() {
       toast.warning("Select at least one category");
       return;
     }
+    if (todaySelectedForSync) {
+      toast.warning("Alibaba DirectMail only supports completed days. Showing yesterday instead.");
+    }
     const accepted = await confirm({
       title: "Start Alibaba DirectMail sync?",
       message: "Temporary failures are ignored; permanent categories are added to suppression.",
@@ -447,6 +475,9 @@ export function SuppressionManager() {
       }
       setSyncSummary(payload);
       setSyncSummaryOpen(true);
+      if (Array.isArray(payload.warnings) && payload.warnings.length > 0) {
+        toast.warning(payload.warnings[0]);
+      }
       const statusText =
         payload.mode === "disabled"
           ? "Alibaba sync is disabled by configuration."
@@ -748,6 +779,11 @@ export function SuppressionManager() {
             className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
           />
         </div>
+        {todaySelectedForSync ? (
+          <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
+            Alibaba DirectMail only supports completed days. Showing yesterday instead.
+          </p>
+        ) : null}
         <div className="mt-2 flex flex-wrap gap-2">
           {[
             { id: "last24h" as const, label: "Last 24 hours" },
@@ -931,6 +967,14 @@ export function SuppressionManager() {
                     <p key={`${item.startTime}-${item.endTime}-${index}`}>
                       StartTime={item.startTime} | EndTime={item.endTime} | Timezone={item.timezone}
                     </p>
+                  ))}
+                </div>
+              ) : null}
+              {syncSummary.warnings && syncSummary.warnings.length > 0 ? (
+                <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
+                  <p className="font-medium">Warnings</p>
+                  {syncSummary.warnings.map((item) => (
+                    <p key={item}>- {item}</p>
                   ))}
                 </div>
               ) : null}

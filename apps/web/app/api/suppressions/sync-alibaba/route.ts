@@ -25,6 +25,8 @@ type NormalizedDateRange = {
   from: Date;
   to: Date;
   timezone: string;
+  todayDayKey: string;
+  yesterdayDayKey: string;
 };
 
 type AlibabaDayRange = {
@@ -110,34 +112,26 @@ function resolveAlibabaTimezone(): string {
   return "Asia/Singapore";
 }
 
-function formatAlibabaDate(date: Date, timezone: string): string {
-  const safeTimezone = timezone.trim() || "Asia/Singapore";
-  try {
-    const parts = toTimezoneParts(date, safeTimezone);
-    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
-  } catch {
-    const parts = toTimezoneParts(date, "Asia/Singapore");
-    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
-  }
-}
-
 function normalizeDateRange(rawFrom: string, rawTo: string): NormalizedDateRange | null {
   const parsedFrom = parseDateInput(rawFrom);
   const parsedTo = parseDateInput(rawTo);
   if (!parsedFrom || !parsedTo) return null;
 
-  const safeNow = new Date(Date.now() - 10 * 60 * 1000);
-  const to = parsedTo.getTime() > safeNow.getTime() ? safeNow : parsedTo;
+  const to = parsedTo;
   const from = parsedFrom;
   if (from.getTime() > to.getTime()) return null;
   const timezone = resolveAlibabaTimezone();
+  const todayDayKey = dayKeyInTimezone(new Date(), timezone);
+  const yesterdayDayKey = previousDayKey(todayDayKey);
 
   return {
     rawFrom,
     rawTo,
     from,
     to,
-    timezone
+    timezone,
+    todayDayKey,
+    yesterdayDayKey
   };
 }
 
@@ -156,31 +150,64 @@ function nextDayKey(dayKey: string): string {
   return `${y}-${m}-${d}`;
 }
 
+function previousDayKey(dayKey: string): string {
+  const [year, month, day] = dayKey.split("-").map(Number);
+  const prev = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+  prev.setUTCDate(prev.getUTCDate() - 1);
+  const y = prev.getUTCFullYear();
+  const m = String(prev.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(prev.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function compareDayKey(a: string, b: string): number {
   if (a === b) return 0;
   return a < b ? -1 : 1;
 }
 
-function buildAlibabaDailyRanges(from: Date, to: Date, timezone: string): AlibabaDayRange[] {
+function buildAlibabaDailyRanges(input: {
+  from: Date;
+  to: Date;
+  timezone: string;
+  todayDayKey: string;
+  fallbackDayKey: string;
+}): { ranges: AlibabaDayRange[]; warning: string | null } {
+  const { from, to, timezone, todayDayKey, fallbackDayKey } = input;
   const fromKey = dayKeyInTimezone(from, timezone);
   const toKey = dayKeyInTimezone(to, timezone);
-  const safeNow = new Date(Date.now() - 10 * 60 * 1000);
-  const safeNowKey = dayKeyInTimezone(safeNow, timezone);
-  const safeNowFormatted = formatAlibabaDate(safeNow, timezone);
-  const safeNowTimePart = safeNowFormatted.slice(11, 19);
 
   const ranges: AlibabaDayRange[] = [];
+  let selectedToday = false;
   let cursor = fromKey;
   while (compareDayKey(cursor, toKey) <= 0) {
-    const startTime = `${cursor} 00:00:00`;
-    let endTime = `${cursor} 23:59:59`;
-    if (cursor === safeNowKey) {
-      endTime = `${cursor} ${safeNowTimePart}`;
+    if (compareDayKey(cursor, todayDayKey) >= 0) {
+      if (cursor === todayDayKey) selectedToday = true;
+      cursor = nextDayKey(cursor);
+      continue;
     }
-    ranges.push({ day: cursor, startTime, endTime });
+    ranges.push({
+      day: cursor,
+      startTime: `${cursor} 00:00:00`,
+      endTime: `${cursor} 23:59:59`
+    });
     cursor = nextDayKey(cursor);
   }
-  return ranges;
+  if (ranges.length > 0) {
+    return {
+      ranges,
+      warning: selectedToday ? "Alibaba DirectMail only supports completed days. Showing yesterday instead." : null
+    };
+  }
+  return {
+    ranges: [
+      {
+        day: fallbackDayKey,
+        startTime: `${fallbackDayKey} 00:00:00`,
+        endTime: `${fallbackDayKey} 23:59:59`
+      }
+    ],
+    warning: "Alibaba DirectMail only supports completed days. Showing yesterday instead."
+  };
 }
 
 function buildSignedAlibabaUrl(
@@ -268,8 +295,15 @@ export async function POST(req: Request) {
   const mode = resolveMode();
   const credentials = resolveCredentials();
   const credentialsPresent = Boolean(credentials);
-  const alibabaDayRanges = buildAlibabaDailyRanges(from, to, normalizedRange.timezone);
+  const { ranges: alibabaDayRanges, warning: rangeWarning } = buildAlibabaDailyRanges({
+    from,
+    to,
+    timezone: normalizedRange.timezone,
+    todayDayKey: normalizedRange.todayDayKey,
+    fallbackDayKey: normalizedRange.yesterdayDayKey
+  });
   const errors: string[] = [];
+  const warnings: string[] = rangeWarning ? [rangeWarning] : [];
   let apiRequestMade = false;
   let totalReportsReturned = 0;
   let removedFromLists = 0;
@@ -287,6 +321,7 @@ export async function POST(req: Request) {
       mode,
       dateRange: { from: from.toISOString(), to: to.toISOString() },
       timezone: normalizedRange.timezone,
+      warnings,
       credentialsPresent,
       apiRequestMade,
       finalParams,
@@ -329,7 +364,8 @@ export async function POST(req: Request) {
                 endTime: invalidRange.endTime,
                 timezone: normalizedRange.timezone
               }
-            ]
+            ],
+            warnings
           },
           { status: 400 }
         );
@@ -541,6 +577,7 @@ export async function POST(req: Request) {
     },
     timezone: normalizedRange.timezone,
     finalParams,
+    warnings,
     credentialsPresent,
     apiRequestMade,
     totalReportsReturned,
@@ -562,6 +599,7 @@ export async function POST(req: Request) {
     normalizedApiRange: summary.normalizedApiRange,
     timezone: summary.timezone,
     finalParams: summary.finalParams,
+    warnings: summary.warnings,
     credentialsPresent,
     apiRequestMade,
     totalReportsReturned,
