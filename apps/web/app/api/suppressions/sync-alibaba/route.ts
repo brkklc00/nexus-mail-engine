@@ -24,8 +24,13 @@ type NormalizedDateRange = {
   rawTo: string;
   from: Date;
   to: Date;
-  fromAlibaba: string;
-  toAlibaba: string;
+  timezone: string;
+};
+
+type AlibabaDayRange = {
+  day: string;
+  startTime: string;
+  endTime: string;
 };
 
 function classify(providerCode: string | null, message: string | null): Category {
@@ -101,14 +106,17 @@ function toTimezoneParts(date: Date, timezone: string) {
   };
 }
 
-function formatAlibabaDate(date: Date): string {
-  const timezone = (process.env.ALIBABA_DM_REPORT_TIMEZONE ?? "UTC").trim() || "UTC";
-  const safeTimezone = timezone.toUpperCase() === "UTC" ? "UTC" : timezone;
+function resolveAlibabaTimezone(): string {
+  return "Asia/Singapore";
+}
+
+function formatAlibabaDate(date: Date, timezone: string): string {
+  const safeTimezone = timezone.trim() || "Asia/Singapore";
   try {
     const parts = toTimezoneParts(date, safeTimezone);
     return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
   } catch {
-    const parts = toTimezoneParts(date, "UTC");
+    const parts = toTimezoneParts(date, "Asia/Singapore");
     return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
   }
 }
@@ -120,24 +128,59 @@ function normalizeDateRange(rawFrom: string, rawTo: string): NormalizedDateRange
 
   const safeNow = new Date(Date.now() - 10 * 60 * 1000);
   const to = parsedTo.getTime() > safeNow.getTime() ? safeNow : parsedTo;
-  let from = parsedFrom;
-
-  if (from.getTime() >= to.getTime()) {
-    from = new Date(to.getTime() - 24 * 60 * 60 * 1000);
-  }
-  const maxRangeMs = 24 * 60 * 60 * 1000;
-  if (to.getTime() - from.getTime() > maxRangeMs) {
-    from = new Date(to.getTime() - maxRangeMs);
-  }
+  const from = parsedFrom;
+  if (from.getTime() > to.getTime()) return null;
+  const timezone = resolveAlibabaTimezone();
 
   return {
     rawFrom,
     rawTo,
     from,
     to,
-    fromAlibaba: formatAlibabaDate(from),
-    toAlibaba: formatAlibabaDate(to)
+    timezone
   };
+}
+
+function dayKeyInTimezone(date: Date, timezone: string): string {
+  const parts = toTimezoneParts(date, timezone);
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function nextDayKey(dayKey: string): string {
+  const [year, month, day] = dayKey.split("-").map(Number);
+  const next = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+  next.setUTCDate(next.getUTCDate() + 1);
+  const y = next.getUTCFullYear();
+  const m = String(next.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(next.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function compareDayKey(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+function buildAlibabaDailyRanges(from: Date, to: Date, timezone: string): AlibabaDayRange[] {
+  const fromKey = dayKeyInTimezone(from, timezone);
+  const toKey = dayKeyInTimezone(to, timezone);
+  const safeNow = new Date(Date.now() - 10 * 60 * 1000);
+  const safeNowKey = dayKeyInTimezone(safeNow, timezone);
+  const safeNowFormatted = formatAlibabaDate(safeNow, timezone);
+  const safeNowTimePart = safeNowFormatted.slice(11, 19);
+
+  const ranges: AlibabaDayRange[] = [];
+  let cursor = fromKey;
+  while (compareDayKey(cursor, toKey) <= 0) {
+    const startTime = `${cursor} 00:00:00`;
+    let endTime = `${cursor} 23:59:59`;
+    if (cursor === safeNowKey) {
+      endTime = `${cursor} ${safeNowTimePart}`;
+    }
+    ranges.push({ day: cursor, startTime, endTime });
+    cursor = nextDayKey(cursor);
+  }
+  return ranges;
 }
 
 function buildSignedAlibabaUrl(
@@ -225,11 +268,13 @@ export async function POST(req: Request) {
   const mode = resolveMode();
   const credentials = resolveCredentials();
   const credentialsPresent = Boolean(credentials);
+  const alibabaDayRanges = buildAlibabaDailyRanges(from, to, normalizedRange.timezone);
   const errors: string[] = [];
   let apiRequestMade = false;
   let totalReportsReturned = 0;
   let removedFromLists = 0;
   let listRemovalSkipped = 0;
+  const finalParams: Array<{ startTime: string; endTime: string; timezone: string }> = [];
 
   if (mode === "disabled") {
     await writeAuditLog(session.userId, "suppression.sync_alibaba", "suppression", {
@@ -241,8 +286,10 @@ export async function POST(req: Request) {
       ok: true,
       mode,
       dateRange: { from: from.toISOString(), to: to.toISOString() },
+      timezone: normalizedRange.timezone,
       credentialsPresent,
       apiRequestMade,
+      finalParams,
       totalReportsReturned,
       scanned: 0,
       matched: 0,
@@ -266,67 +313,92 @@ export async function POST(req: Request) {
   if (mode === "real_api" && credentialsPresent && credentials) {
     try {
       const action = process.env.ALIBABA_DM_SUPPRESSION_ACTION ?? "QueryInvalidAddress";
-      const signedUrl = buildSignedAlibabaUrl(credentials, action, normalizedRange.fromAlibaba, normalizedRange.toAlibaba);
-      apiRequestMade = true;
-      const debugUrl = new URL(signedUrl);
-      const debugQuery = {
-        Action: debugUrl.searchParams.get("Action"),
-        RegionId: debugUrl.searchParams.get("RegionId"),
-        StartTime: debugUrl.searchParams.get("StartTime"),
-        EndTime: debugUrl.searchParams.get("EndTime"),
-        PageNumber: debugUrl.searchParams.get("PageNumber"),
-        PageSize: debugUrl.searchParams.get("PageSize"),
-        Timestamp: debugUrl.searchParams.get("Timestamp")
-      };
-      console.info("[suppression.sync_alibaba] final_query_params", debugQuery);
-      console.info("[suppression.sync_alibaba] date_payload", {
-        rawStart: normalizedRange.rawFrom,
-        rawEnd: normalizedRange.rawTo,
-        alibabaStart: normalizedRange.fromAlibaba,
-        alibabaEnd: normalizedRange.toAlibaba
-      });
-      const response = await fetch(signedUrl, { method: "GET", cache: "no-store" });
-      const payload = (await response.json().catch(() => ({}))) as any;
-      const extracted = extractAlibabaReports(payload);
-      totalReportsReturned = extracted.length;
-      reportRows = extracted.map((item) => ({
-        email: item.email,
-        emailNormalized: item.email.toLowerCase(),
-        providerCode: item.providerCode,
-        message: item.message
-      }));
-      if (!response.ok) {
-        errors.push(payload?.Message ? String(payload.Message) : `Alibaba API request failed with status ${response.status}`);
+      const invalidRange = alibabaDayRanges.find(
+        (range) =>
+          range.startTime.slice(0, 10) !== range.endTime.slice(0, 10) ||
+          range.endTime <= range.startTime
+      );
+      if (invalidRange) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "Alibaba range validation failed: StartTime and EndTime must be same day and EndTime > StartTime",
+            finalParams: [
+              {
+                startTime: invalidRange.startTime,
+                endTime: invalidRange.endTime,
+                timezone: normalizedRange.timezone
+              }
+            ]
+          },
+          { status: 400 }
+        );
       }
-      const alibabaCode = payload?.Code ? String(payload.Code) : null;
-      const alibabaMessage = payload?.Message ? String(payload.Message) : null;
-      if (alibabaCode || alibabaMessage) {
-        errors.push([alibabaCode, alibabaMessage].filter(Boolean).join(": "));
-        if (
-          /invaliddate\.malformed/i.test(alibabaCode ?? "") ||
-          /invaliddate\.malformed/i.test(alibabaMessage ?? "") ||
-          /specified date is invalid/i.test(alibabaMessage ?? "")
-        ) {
-          errors.push(
-            `Final Alibaba params => StartTime=${normalizedRange.fromAlibaba}, EndTime=${normalizedRange.toAlibaba}`
-          );
+
+      for (const dayRange of alibabaDayRanges) {
+        finalParams.push({
+          startTime: dayRange.startTime,
+          endTime: dayRange.endTime,
+          timezone: normalizedRange.timezone
+        });
+        const signedUrl = buildSignedAlibabaUrl(credentials, action, dayRange.startTime, dayRange.endTime);
+        apiRequestMade = true;
+        const debugUrl = new URL(signedUrl);
+        const debugQuery = {
+          Action: debugUrl.searchParams.get("Action"),
+          RegionId: debugUrl.searchParams.get("RegionId"),
+          StartTime: debugUrl.searchParams.get("StartTime"),
+          EndTime: debugUrl.searchParams.get("EndTime"),
+          PageNumber: debugUrl.searchParams.get("PageNumber"),
+          PageSize: debugUrl.searchParams.get("PageSize"),
+          Timestamp: debugUrl.searchParams.get("Timestamp")
+        };
+        console.info("[suppression.sync_alibaba] final_query_params", debugQuery);
+
+        const response = await fetch(signedUrl, { method: "GET", cache: "no-store" });
+        const payload = (await response.json().catch(() => ({}))) as any;
+        const extracted = extractAlibabaReports(payload);
+        totalReportsReturned += extracted.length;
+        reportRows.push(
+          ...extracted.map((item) => ({
+            email: item.email,
+            emailNormalized: item.email.toLowerCase(),
+            providerCode: item.providerCode,
+            message: item.message
+          }))
+        );
+        if (!response.ok) {
+          errors.push(payload?.Message ? String(payload.Message) : `Alibaba API request failed with status ${response.status}`);
+        }
+        const alibabaCode = payload?.Code ? String(payload.Code) : null;
+        const alibabaMessage = payload?.Message ? String(payload.Message) : null;
+        if (alibabaCode || alibabaMessage) {
+          errors.push([alibabaCode, alibabaMessage].filter(Boolean).join(": "));
+          if (
+            /invaliddate\.malformed/i.test(alibabaCode ?? "") ||
+            /invaliddate\.malformed/i.test(alibabaMessage ?? "") ||
+            /specified date is invalid/i.test(alibabaMessage ?? "")
+          ) {
+            errors.push(
+              `Final Alibaba params => StartTime=${dayRange.startTime}, EndTime=${dayRange.endTime}, Timezone=${normalizedRange.timezone}`
+            );
+          }
         }
       }
+
       console.info("[suppression.sync_alibaba] request_diagnostics", {
         rawSelectedRange: { from: normalizedRange.rawFrom, to: normalizedRange.rawTo },
-        normalizedApiRange: { startTime: normalizedRange.fromAlibaba, endTime: normalizedRange.toAlibaba },
+        finalParams,
         mode,
         credentialsPresent,
         apiRequestMade,
-        totalReportsReturned,
-        alibabaCode,
-        alibabaMessage
+        totalReportsReturned
       });
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "Alibaba API request failed");
       console.error("[suppression.sync_alibaba] request_failed", {
         rawSelectedRange: { from: normalizedRange.rawFrom, to: normalizedRange.rawTo },
-        normalizedApiRange: { startTime: normalizedRange.fromAlibaba, endTime: normalizedRange.toAlibaba },
+        finalParams,
         mode,
         credentialsPresent,
         apiRequestMade,
@@ -464,9 +536,11 @@ export async function POST(req: Request) {
       to: to.toISOString()
     },
     normalizedApiRange: {
-      startTime: normalizedRange.fromAlibaba,
-      endTime: normalizedRange.toAlibaba
+      startTime: finalParams[0]?.startTime ?? "",
+      endTime: finalParams[0]?.endTime ?? ""
     },
+    timezone: normalizedRange.timezone,
+    finalParams,
     credentialsPresent,
     apiRequestMade,
     totalReportsReturned,
@@ -486,6 +560,8 @@ export async function POST(req: Request) {
     mode,
     dateRange: summary.dateRange,
     normalizedApiRange: summary.normalizedApiRange,
+    timezone: summary.timezone,
+    finalParams: summary.finalParams,
     credentialsPresent,
     apiRequestMade,
     totalReportsReturned,

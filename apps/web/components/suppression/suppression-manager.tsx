@@ -45,6 +45,7 @@ type AlibabaSyncResult = {
   dateRange: { from: string; to: string };
   normalizedApiRange?: { startTime: string; endTime: string };
   timezone?: string;
+  finalParams?: Array<{ startTime: string; endTime: string; timezone: string }>;
   credentialsPresent: boolean;
   apiRequestMade: boolean;
   totalReportsReturned: number;
@@ -454,7 +455,7 @@ export function SuppressionManager() {
             : !payload.credentialsPresent
               ? "Alibaba credentials are not configured."
               : payload.errors.some((item) => /specified date is invalid|invalid date/i.test(item))
-                ? "Alibaba date rejected. Check final StartTime/EndTime in sync summary."
+                ? "Alibaba date rejected. Check Alibaba Final Params in sync summary."
               : payload.apiRequestMade && payload.totalReportsReturned === 0
                 ? "Alibaba API connected, but no failed delivery reports were found for the selected date range."
                 : `Scanned ${payload.scanned}, matched ${payload.matched}, added ${payload.added}, removed from lists ${payload.removedFromLists}.`;
@@ -923,6 +924,16 @@ export function SuppressionManager() {
                   API range: StartTime={syncSummary.normalizedApiRange.startTime} | EndTime={syncSummary.normalizedApiRange.endTime}
                 </p>
               ) : null}
+              {syncSummary.finalParams && syncSummary.finalParams.length > 0 ? (
+                <div className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
+                  <p className="font-medium">Alibaba Final Params</p>
+                  {syncSummary.finalParams.map((item, index) => (
+                    <p key={`${item.startTime}-${item.endTime}-${index}`}>
+                      StartTime={item.startTime} | EndTime={item.endTime} | Timezone={item.timezone}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
               <p>Mode: {syncSummary.mode === "real_api" ? "Real API" : syncSummary.mode === "mock" ? "Mock" : "Disabled"}</p>
               <p>Credentials configured: {syncSummary.credentialsPresent ? "Yes" : "No"}</p>
               <p>Alibaba API request made: {syncSummary.apiRequestMade ? "Yes" : "No"}</p>
@@ -965,7 +976,7 @@ export function SuppressionManager() {
               syncSummary.apiRequestMade &&
               syncSummary.errors.some((item) => /specified date is invalid|invalid date/i.test(item)) ? (
                 <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
-                  Date format adjusted to Alibaba API requirements.
+                  Alibaba rejected date range. Verify Alibaba Final Params.
                 </p>
               ) : null}
               {syncSummary.errors.length > 0 ? (
