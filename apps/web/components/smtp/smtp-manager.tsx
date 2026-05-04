@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { OverlayPortal } from "@/components/ui/overlay-portal";
+import { getBulkAlibabaPreviewRows } from "@/lib/smtp-bulk-alibaba-parse";
 
 type Account = {
   id: string;
@@ -161,6 +162,8 @@ export function SmtpManager({
     invalid: number;
     errors: string[];
   } | null>(null);
+
+  const bulkAlibabaPreview = useMemo(() => getBulkAlibabaPreviewRows(bulkAlibabaLines), [bulkAlibabaLines]);
 
   async function refreshSmtpSnapshot() {
     try {
@@ -999,6 +1002,50 @@ export function SmtpManager({
                 placeholder={`email:password\nmarketing@example.com:SMTP_PASSWORD\nsender@example.com:SMTP_PASSWORD`}
                 className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100"
               />
+              {bulkAlibabaPreview.rows.length > 0 ? (
+                <div className="mt-3 rounded-lg border border-border bg-zinc-900/40 p-3">
+                  <p className="mb-2 text-[11px] text-zinc-500">
+                    Preview (passwords never shown) · valid {bulkAlibabaPreview.summary.valid} · invalid{" "}
+                    {bulkAlibabaPreview.summary.invalid} · duplicate lines {bulkAlibabaPreview.summary.duplicate}
+                  </p>
+                  <div className="max-h-48 overflow-auto rounded border border-border">
+                    <table className="w-full border-collapse text-left text-[11px] text-zinc-300">
+                      <thead className="sticky top-0 bg-zinc-900/90 text-zinc-500">
+                        <tr>
+                          <th className="border-b border-border px-2 py-1 font-medium">#</th>
+                          <th className="border-b border-border px-2 py-1 font-medium">email</th>
+                          <th className="border-b border-border px-2 py-1 font-medium">username</th>
+                          <th className="border-b border-border px-2 py-1 font-medium">fromEmail</th>
+                          <th className="border-b border-border px-2 py-1 font-medium">status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {bulkAlibabaPreview.rows.map((row) => (
+                          <tr key={`${row.lineNumber}-${row.email}-${row.status}`} className="border-b border-border/60 last:border-0">
+                            <td className="px-2 py-1 text-zinc-500">{row.lineNumber}</td>
+                            <td className="px-2 py-1 font-mono text-[10px]">{row.email}</td>
+                            <td className="px-2 py-1 font-mono text-[10px]">{row.username}</td>
+                            <td className="px-2 py-1 font-mono text-[10px]">{row.fromEmail}</td>
+                            <td className="px-2 py-1">
+                              <span
+                                className={
+                                  row.status === "ok"
+                                    ? "text-emerald-400"
+                                    : row.status === "duplicate"
+                                      ? "text-amber-300"
+                                      : "text-red-400"
+                                }
+                              >
+                                {row.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : null}
               <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
                 <input
                   type="checkbox"

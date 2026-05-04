@@ -4,66 +4,12 @@ import { prisma } from "@nexus/db";
 import { encryptSmtpSecret } from "@nexus/security";
 import { getSession } from "@/server/auth/session";
 import { writeAuditLog } from "@/server/auth/guard";
+import { parseBulkAlibabaLines } from "@/lib/smtp-bulk-alibaba-parse";
 
 const schema = z.object({
   lines: z.string(),
   updateExisting: z.boolean().default(false)
 });
-
-const emailSchema = z.string().email();
-
-type ParsedEntry = {
-  lineNumber: number;
-  fromEmail: string;
-  username: string;
-  password: string;
-};
-
-function parseInputLines(raw: string) {
-  const lines = raw.replace(/\r/g, "").split("\n");
-  const parsed: ParsedEntry[] = [];
-  const errors: string[] = [];
-  let scanned = 0;
-  let invalid = 0;
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    scanned += 1;
-    const colonIndex = line.indexOf(":");
-    if (colonIndex <= 0) {
-      invalid += 1;
-      errors.push(`Line ${i + 1}: invalid format (expected email:password)`);
-      continue;
-    }
-    const email = line.slice(0, colonIndex).trim().toLowerCase();
-    const password = line.slice(colonIndex + 1).trim();
-    if (!emailSchema.safeParse(email).success) {
-      invalid += 1;
-      errors.push(`Line ${i + 1}: invalid email`);
-      continue;
-    }
-    if (!password) {
-      invalid += 1;
-      errors.push(`Line ${i + 1}: password is required`);
-      continue;
-    }
-    const username = email.split("@")[0];
-    if (!username) {
-      invalid += 1;
-      errors.push(`Line ${i + 1}: username could not be derived`);
-      continue;
-    }
-    parsed.push({
-      lineNumber: i + 1,
-      fromEmail: email,
-      username,
-      password
-    });
-  }
-
-  return { scanned, invalid, parsed, errors };
-}
 
 function isUnknownSmtpFieldError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -81,7 +27,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Invalid payload" }, { status: 400 });
   }
 
-  const parsedLines = parseInputLines(parsedBody.data.lines);
+  const parsedLines = parseBulkAlibabaLines(parsedBody.data.lines);
   const errors = [...parsedLines.errors];
   let added = 0;
   let updated = 0;
@@ -106,14 +52,14 @@ export async function POST(req: Request) {
     seenInPayload.add(key);
 
     const fullData = {
-      name: `${entry.username} Alibaba`,
+      name: entry.email,
       host: "smtpdm-ap-southeast-1.aliyuncs.com",
       port: 465,
       encryption: "ssl",
       username: entry.username,
       passwordEncrypted: encryptSmtpSecret(entry.password),
       fromEmail: entry.fromEmail,
-      fromName: entry.username,
+      fromName: entry.fromName,
       providerLabel: "alibaba",
       isActive: true,
       isSoftDeleted: false,
@@ -153,7 +99,8 @@ export async function POST(req: Request) {
               providerLabel: fullData.providerLabel,
               isActive: true,
               isSoftDeleted: false,
-              targetRatePerSecond: 1
+              targetRatePerSecond: 1,
+              warmupEnabled: true
             }
           });
         }
@@ -177,7 +124,8 @@ export async function POST(req: Request) {
               fromName: fullData.fromName,
               providerLabel: fullData.providerLabel,
               isActive: true,
-              targetRatePerSecond: 1
+              targetRatePerSecond: 1,
+              warmupEnabled: true
             }
           });
         }
