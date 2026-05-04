@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSession } from "@/server/auth/session";
-import { deleteShortLink, getShortLink, updateShortLink } from "@/server/short-links/nxusurl.service";
+import { deleteShortLink, getShortLink, normalizeShortLinkPayload, updateShortLink } from "@/server/short-links/nxusurl.service";
 
 const updateSchema = z.object({
   location_url: z.string().optional(),
@@ -33,7 +33,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   try {
     const { id } = await params;
     const payload = await getShortLink(id);
-    return NextResponse.json({ ok: true, ...payload });
+    return NextResponse.json({ ok: true, ...normalizeShortLinkPayload(payload) });
   } catch (error) {
     const code = error instanceof Error ? error.message : "shortener_api_failed";
     return NextResponse.json({ ok: false, code, error: code }, { status: toHttpStatus(code) });
@@ -52,7 +52,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     const { id } = await params;
     const payload = await updateShortLink(id, parsed.data);
-    return NextResponse.json({ ok: true, ...payload });
+    return NextResponse.json({ ok: true, ...normalizeShortLinkPayload(payload) });
   } catch (error) {
     const code = error instanceof Error ? error.message : "shortener_api_failed";
     return NextResponse.json({ ok: false, code, error: code }, { status: toHttpStatus(code) });

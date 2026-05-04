@@ -16,6 +16,10 @@ type NxusurlConfig = {
   apiKey: string;
 };
 
+function shortenerBaseUrl(): string {
+  return (process.env.NXUSURL_API_BASE ?? "https://nxusurl.co").trim().replace(/\/+$/, "");
+}
+
 function readConfig(): NxusurlConfig | null {
   const baseUrl = (process.env.NXUSURL_API_BASE ?? "").trim().replace(/\/+$/, "");
   const apiKey = (process.env.NXUSURL_API_KEY ?? "").trim();
@@ -162,11 +166,67 @@ function normalizeShortLinkResponse(payload: any) {
   const data = payload?.data ?? payload;
   return {
     externalId: String(data?.id ?? data?.link_id ?? ""),
-    shortUrl: String(data?.url ?? data?.short_url ?? ""),
-    alias: data?.alias ? String(data.alias) : null,
+    shortUrl: buildFullShortUrl(data?.url ?? data?.short_url ?? ""),
+    alias: data?.alias ? String(data.alias) : normalizeAlias(data?.url ?? data?.short_url ?? ""),
     destinationUrl: String(data?.location_url ?? data?.destination_url ?? ""),
     clicks: Number(data?.clicks ?? 0)
   };
+}
+
+function normalizeAlias(raw: unknown): string | null {
+  const value = String(raw ?? "").trim();
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const parsed = new URL(value);
+      const token = parsed.pathname.replace(/^\/+/, "").trim();
+      return token || null;
+    } catch {
+      return null;
+    }
+  }
+  return value.replace(/^\/+/, "") || null;
+}
+
+export function buildFullShortUrl(raw: unknown): string {
+  const value = String(raw ?? "").trim();
+  const base = shortenerBaseUrl();
+  if (!value) return base;
+  if (/^https?:\/\//i.test(value)) return value;
+  const token = value.replace(/^\/+/, "");
+  const baseNoProtocol = base.replace(/^https?:\/\//i, "");
+  if (token.toLowerCase().startsWith(baseNoProtocol.toLowerCase())) {
+    const scheme = base.startsWith("https://") ? "https://" : "http://";
+    return `${scheme}${token}`;
+  }
+  return `${base}/${token}`;
+}
+
+function normalizeShortLinkObject(raw: any) {
+  const alias = raw?.alias ? String(raw.alias) : normalizeAlias(raw?.url ?? raw?.short_url ?? raw?.shortUrl ?? "");
+  return {
+    ...raw,
+    alias,
+    shortUrl: buildFullShortUrl(raw?.url ?? raw?.short_url ?? raw?.shortUrl ?? alias ?? "")
+  };
+}
+
+export function normalizeShortLinkPayload(payload: any) {
+  if (!payload || typeof payload !== "object") return payload;
+  const root = payload as any;
+  if (Array.isArray(root?.data?.results)) {
+    root.data.results = root.data.results.map(normalizeShortLinkObject);
+    return root;
+  }
+  if (Array.isArray(root?.results)) {
+    root.results = root.results.map(normalizeShortLinkObject);
+    return root;
+  }
+  if (root?.data && typeof root.data === "object" && !Array.isArray(root.data)) {
+    root.data = normalizeShortLinkObject(root.data);
+    return root;
+  }
+  return normalizeShortLinkObject(root);
 }
 
 export async function createShortLink(payload: LinkPayload, opts?: { campaignId?: string | null; templateId?: string | null }) {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Copy, Link2, Loader2, Pencil, RefreshCcw, Trash2 } from "lucide-react";
+import { Copy, Link2, Loader2, RefreshCcw, Trash2 } from "lucide-react";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { OverlayPortal } from "@/components/ui/overlay-portal";
@@ -14,8 +14,6 @@ type ShortLinkItem = {
   clicks: number;
   enabled: boolean;
   type: string | null;
-  createdAt: string | null;
-  lastActivityAt: string | null;
 };
 
 type FormState = {
@@ -38,19 +36,48 @@ const DEFAULT_FORM: FormState = {
   http_status_code: 302
 };
 
+const SHORT_BASE = (process.env.NEXT_PUBLIC_NXUSURL_API_BASE ?? process.env.NEXT_PUBLIC_NXUSURL_BASE ?? "https://nxusurl.co")
+  .trim()
+  .replace(/\/+$/, "");
+
+function composeFullShortUrl(input: string) {
+  const raw = (input ?? "").trim();
+  if (!raw) return SHORT_BASE;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `${SHORT_BASE}/${raw.replace(/^\/+/, "")}`;
+}
+
+function getAliasFromUrl(raw: string) {
+  const value = (raw ?? "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const parsed = new URL(value);
+      return parsed.pathname.replace(/^\/+/, "");
+    } catch {
+      return "";
+    }
+  }
+  return value.replace(/^\/+/, "");
+}
+
+function resolveDisplayAlias(item: Pick<ShortLinkItem, "alias" | "shortUrl">) {
+  if (item.alias) return item.alias;
+  const fromUrl = getAliasFromUrl(item.shortUrl);
+  return fromUrl || item.shortUrl;
+}
+
 function normalizeItem(raw: any): ShortLinkItem {
-  const created = raw?.created_at ?? raw?.createdAt ?? raw?.datetime_create ?? null;
-  const last = raw?.last_activity ?? raw?.lastActivityAt ?? raw?.datetime_last_click ?? null;
+  const alias = raw?.alias ? String(raw.alias) : getAliasFromUrl(String(raw?.url ?? raw?.short_url ?? raw?.shortUrl ?? ""));
+  const fullShortUrl = composeFullShortUrl(String(raw?.shortUrl ?? raw?.url ?? raw?.short_url ?? alias ?? ""));
   return {
     id: String(raw?.id ?? raw?.link_id ?? ""),
-    shortUrl: String(raw?.url ?? raw?.short_url ?? raw?.shortUrl ?? ""),
-    alias: raw?.alias ? String(raw.alias) : null,
+    shortUrl: fullShortUrl,
+    alias: alias || null,
     destinationUrl: String(raw?.location_url ?? raw?.destination_url ?? raw?.locationUrl ?? ""),
     clicks: Number(raw?.clicks ?? raw?.click_count ?? 0),
     enabled: raw?.is_enabled === false ? false : true,
-    type: raw?.type ? String(raw.type) : null,
-    createdAt: created ? String(created) : null,
-    lastActivityAt: last ? String(last) : null
+    type: raw?.type ? String(raw.type) : null
   };
 }
 
@@ -64,9 +91,8 @@ export function ShortLinksManager() {
   const [page, setPage] = useState(1);
   const [resultsPerPage, setResultsPerPage] = useState(25);
   const [openCreate, setOpenCreate] = useState(false);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [detailData, setDetailData] = useState<any>(null);
   const [editing, setEditing] = useState<ShortLinkItem | null>(null);
+  const [createdShortUrl, setCreatedShortUrl] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [filters, setFilters] = useState({
     search: "",
@@ -120,14 +146,10 @@ export function ShortLinksManager() {
   const stats = useMemo(() => {
     const totalClicks = items.reduce((sum, item) => sum + item.clicks, 0);
     const top = [...items].sort((a, b) => b.clicks - a.clicks)[0] ?? null;
-    const lastCreated = [...items]
-      .filter((item) => item.createdAt)
-      .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())[0] ?? null;
     return {
       totalLinks: total,
       totalClicks,
-      top,
-      lastCreated
+      top
     };
   }, [items, total]);
 
@@ -147,19 +169,23 @@ export function ShortLinksManager() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    const body = await response.json().catch(() => ({}));
+    const body = (await response.json().catch(() => ({}))) as any;
     if (!response.ok || body.ok === false) {
       throw new Error(body.code ?? body.error ?? "shortener_api_failed");
     }
+    return normalizeItem(body?.data ?? body);
   }
 
   async function onSubmit() {
     try {
-      await createOrUpdate();
+      const saved = await createOrUpdate();
       toast.success(editing ? "Short link updated" : "Short link created");
-      setOpenCreate(false);
+      setCreatedShortUrl(saved.shortUrl);
+      if (editing) {
+        setOpenCreate(false);
+      }
       setEditing(null);
-      setForm(DEFAULT_FORM);
+      setForm((prev) => ({ ...prev, location_url: "", url: "", utm_source: "", utm_medium: "", utm_campaign: "" }));
       await loadLinks();
     } catch (error) {
       toast.error("Short link action failed", error instanceof Error ? error.message : "shortener_api_failed");
@@ -201,14 +227,21 @@ export function ShortLinksManager() {
   }
 
   const topClicked = useMemo(() => [...items].sort((a, b) => b.clicks - a.clicks).slice(0, 5), [items]);
+  const aliasPreview = form.url.trim();
+  const previewShortUrl = composeFullShortUrl(aliasPreview);
+  const editingBaseUrl = editing ? composeFullShortUrl(editing.alias ?? getAliasFromUrl(editing.shortUrl)) : null;
 
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
         <Card title="Total links" value={stats.totalLinks} />
         <Card title="Total clicks" value={stats.totalClicks} />
-        <Card title="Last created" value={stats.lastCreated?.createdAt ? new Date(stats.lastCreated.createdAt).toLocaleString() : "-"} />
-        <Card title="Top clicked" value={stats.top ? `${stats.top.shortUrl} (${stats.top.clicks})` : "-"} />
+        <Card title="Shortener base" value={SHORT_BASE} />
+        <Card
+          title="Top clicked"
+          value={stats.top ? `${resolveDisplayAlias(stats.top)} (${stats.top.clicks})` : "-"}
+          tooltip={stats.top?.shortUrl ?? "-"}
+        />
       </div>
 
       <section className="rounded-2xl border border-border bg-card p-3">
@@ -249,6 +282,7 @@ export function ShortLinksManager() {
             <button
               className="inline-flex items-center gap-2 rounded bg-accent px-3 py-2 text-sm text-white"
               onClick={() => {
+                setCreatedShortUrl(null);
                 setEditing(null);
                 setForm(DEFAULT_FORM);
                 setOpenCreate(true);
@@ -280,8 +314,6 @@ export function ShortLinksManager() {
                   <th className="px-3 py-2">Short URL</th>
                   <th className="px-3 py-2">Destination</th>
                   <th className="px-3 py-2">Clicks</th>
-                  <th className="px-3 py-2">Created</th>
-                  <th className="px-3 py-2">Last activity</th>
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Actions</th>
                 </tr>
@@ -289,34 +321,25 @@ export function ShortLinksManager() {
               <tbody>
                 {items.map((item) => (
                   <tr key={item.id} className="border-t border-border hover:bg-zinc-900/30">
-                    <td className="px-3 py-2 text-zinc-100">{item.shortUrl}</td>
+                    <td className="max-w-[320px] truncate px-3 py-2 text-zinc-100" title={item.shortUrl}>
+                      {item.shortUrl}
+                    </td>
                     <td className="max-w-[420px] truncate px-3 py-2 text-zinc-300" title={item.destinationUrl}>{item.destinationUrl}</td>
                     <td className="px-3 py-2">{item.clicks}</td>
-                    <td className="px-3 py-2 text-xs text-zinc-400">{item.createdAt ? new Date(item.createdAt).toLocaleString() : "-"}</td>
-                    <td className="px-3 py-2 text-xs text-zinc-400">{item.lastActivityAt ? new Date(item.lastActivityAt).toLocaleString() : "-"}</td>
                     <td className="px-3 py-2">
                       <StatusBadge label={item.enabled ? "enabled" : "disabled"} tone={item.enabled ? "success" : "muted"} />
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-1">
                         <button className="rounded border border-border px-2 py-1 text-xs" onClick={async () => { await navigator.clipboard.writeText(item.shortUrl); toast.success("Short URL copied"); }}>
-                          <Copy className="h-3.5 w-3.5" />
+                          Copy
                         </button>
-                        <button className="rounded border border-border px-2 py-1 text-xs" onClick={() => { setEditing(item); setForm({ ...DEFAULT_FORM, location_url: item.destinationUrl, url: item.alias ?? "" }); setOpenCreate(true); }}>
-                          <Pencil className="h-3.5 w-3.5" />
+                        <button className="rounded border border-border px-2 py-1 text-xs" onClick={() => { setCreatedShortUrl(null); setEditing(item); setForm({ ...DEFAULT_FORM, location_url: item.destinationUrl, url: item.alias ?? getAliasFromUrl(item.shortUrl) }); setOpenCreate(true); }}>
+                          Edit
                         </button>
                         <button
                           className="rounded border border-border px-2 py-1 text-xs"
-                          onClick={async () => {
-                            const res = await fetch(`/api/short-links/${item.id}`, { cache: "no-store" });
-                            const body = await res.json().catch(() => ({}));
-                            if (!res.ok || body.ok === false) {
-                              toast.error("Link detail could not be loaded", body.code ?? body.error ?? "shortener_api_failed");
-                              return;
-                            }
-                            setDetailData(body?.data ?? body);
-                            setDetailOpen(true);
-                          }}
+                          onClick={() => window.open(item.shortUrl, "_blank", "noopener,noreferrer")}
                         >
                           View
                         </button>
@@ -347,10 +370,12 @@ export function ShortLinksManager() {
         <p className="text-xs uppercase tracking-wide text-zinc-400">Top clicked links</p>
         <div className="mt-2 grid gap-2 md:grid-cols-2">
           {topClicked.map((item) => (
-            <div key={item.id} className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
-              <p className="truncate text-zinc-100">{item.shortUrl}</p>
+            <div key={item.id} className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300" title={item.shortUrl}>
+              <p className="truncate text-zinc-100">
+                {resolveDisplayAlias(item)} ({item.clicks})
+              </p>
               <p className="truncate text-zinc-400">{item.destinationUrl}</p>
-              <p className="mt-1">Clicks: {item.clicks}</p>
+              <p className="mt-1 truncate text-zinc-500">{item.shortUrl}</p>
             </div>
           ))}
           {topClicked.length === 0 ? <p className="text-xs text-zinc-500">No links yet.</p> : null}
@@ -364,7 +389,33 @@ export function ShortLinksManager() {
               <p className="text-sm font-semibold text-white">{editing ? "Edit short link" : "Create short link"}</p>
               <div className="mt-3 grid gap-2">
                 <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Destination URL (required)" value={form.location_url} onChange={(e) => setForm((s) => ({ ...s, location_url: e.target.value }))} />
-                <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Custom alias (optional)" value={form.url} onChange={(e) => setForm((s) => ({ ...s, url: e.target.value }))} />
+                <label className="space-y-1">
+                  <span className="text-xs text-zinc-400">Short alias</span>
+                  <input className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Custom alias (optional)" value={form.url} onChange={(e) => setForm((s) => ({ ...s, url: e.target.value }))} />
+                </label>
+                <div className="rounded border border-border bg-zinc-900/40 px-3 py-2 text-xs text-zinc-300">
+                  <p className="text-zinc-400">Short URL preview</p>
+                  <p className="mt-1 truncate text-zinc-100" title={aliasPreview ? previewShortUrl : editingBaseUrl ?? previewShortUrl}>
+                    {aliasPreview ? previewShortUrl : editingBaseUrl ?? previewShortUrl}
+                  </p>
+                </div>
+                {!editing && createdShortUrl ? (
+                  <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                    <p>Created short URL</p>
+                    <div className="mt-1 flex items-center gap-2">
+                      <p className="truncate" title={createdShortUrl}>{createdShortUrl}</p>
+                      <button
+                        className="rounded border border-emerald-400/60 px-2 py-1 text-[11px]"
+                        onClick={async () => {
+                          await navigator.clipboard.writeText(createdShortUrl);
+                          toast.success("Short URL copied");
+                        }}
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="grid gap-2 md:grid-cols-3">
                   <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="UTM source" value={form.utm_source} onChange={(e) => setForm((s) => ({ ...s, utm_source: e.target.value }))} />
                   <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="UTM medium" value={form.utm_medium} onChange={(e) => setForm((s) => ({ ...s, utm_medium: e.target.value }))} />
@@ -385,24 +436,7 @@ export function ShortLinksManager() {
                 <button className="rounded bg-accent px-3 py-2 text-sm text-white" onClick={() => void onSubmit()}>
                   {editing ? "Save" : "Create"}
                 </button>
-                <button className="rounded border border-border px-3 py-2 text-sm text-zinc-300" onClick={() => setOpenCreate(false)}>
-                  Close
-                </button>
-              </div>
-            </div>
-          </div>
-        </OverlayPortal>
-      ) : null}
-      {detailOpen ? (
-        <OverlayPortal active={detailOpen} lockScroll>
-          <div className="fixed inset-0 z-50 bg-black/60 p-4" onClick={() => setDetailOpen(false)}>
-            <div className="mx-auto w-full max-w-2xl rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
-              <p className="text-sm font-semibold text-white">Short link detail</p>
-              <pre className="mt-2 overflow-auto rounded border border-border bg-zinc-900/40 p-3 text-xs text-zinc-300">
-                {JSON.stringify(detailData, null, 2)}
-              </pre>
-              <div className="mt-3">
-                <button className="rounded border border-border px-3 py-2 text-sm text-zinc-300" onClick={() => setDetailOpen(false)}>
+                <button className="rounded border border-border px-3 py-2 text-sm text-zinc-300" onClick={() => { setOpenCreate(false); setCreatedShortUrl(null); }}>
                   Close
                 </button>
               </div>
@@ -414,9 +448,9 @@ export function ShortLinksManager() {
   );
 }
 
-function Card({ title, value }: { title: string; value: string | number }) {
+function Card({ title, value, tooltip }: { title: string; value: string | number; tooltip?: string }) {
   return (
-    <div className="rounded-2xl border border-border bg-card p-3">
+    <div className="rounded-2xl border border-border bg-card p-3" title={tooltip}>
       <p className="text-xs text-zinc-400">{title}</p>
       <p className="mt-1 truncate text-sm font-semibold text-white">{value}</p>
     </div>
