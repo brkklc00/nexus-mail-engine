@@ -6,6 +6,8 @@ import { createCampaign, startCampaign } from "@/server/campaigns/orchestration.
 const poolDefaults = {
   sendingMode: "pool",
   rotateEvery: 500,
+  rotateEveryN: 500,
+  parallelSmtpCount: 1,
   parallelSmtpLanes: 1
 } as const;
 
@@ -124,8 +126,12 @@ export async function getSmtpPoolSummary() {
   const settings = ((poolRow?.value as any) ?? poolDefaults) as {
     sendingMode?: "single" | "pool";
     rotateEvery?: number;
+    rotateEveryN?: number;
+    parallelSmtpCount?: number;
     parallelSmtpLanes?: number;
   };
+  const rotateEvery = Math.max(1, Number(settings.rotateEveryN ?? settings.rotateEvery ?? 500));
+  const parallelSmtpCount = Math.max(1, Number(settings.parallelSmtpCount ?? settings.parallelSmtpLanes ?? 1));
   return {
     smtpRows,
     summary: {
@@ -138,15 +144,15 @@ export async function getSmtpPoolSummary() {
     },
     poolSettings: {
       mode: settings.sendingMode ?? "pool",
-      rotateEvery: Math.max(1, Number(settings.rotateEvery ?? 500)),
-      parallelSmtpCount: Math.max(1, Number(settings.parallelSmtpLanes ?? 1))
+      rotateEvery,
+      parallelSmtpCount
     },
     defaults: {
       targetType: "list",
       smtpMode: "pool",
       strategy: "round_robin",
-      rotateEvery: Math.max(1, Number(settings.rotateEvery ?? 500)),
-      parallelSmtpCount: Math.max(1, Number(settings.parallelSmtpLanes ?? 1))
+      rotateEvery,
+      parallelSmtpCount
     }
   };
 }

@@ -5,7 +5,7 @@ import type { DeliveryJob } from "@nexus/queue";
 import { MailTemplateRenderer } from "@nexus/mailer";
 import { decryptSmtpSecret } from "@nexus/security";
 import nodemailer from "nodemailer";
-import { getEffectiveRateForSmtp } from "../rate/effective-rate-runtime.service.js";
+import { getEffectiveSendRate } from "../rate/effective-rate-runtime.service.js";
 import { canDispatch } from "../rate/pacing-engine.js";
 import { applySafetyToRate, recordDeliveryOutcome } from "../safety/distributed-safety.service.js";
 import { transitionCampaignRecipientStatus } from "../state/campaign-recipient-state.service.js";
@@ -205,15 +205,36 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     return;
   }
 
-  const decision = await getEffectiveRateForSmtp(selectedSmtp.id);
+  const decision = await getEffectiveSendRate({
+    smtpAccountId: selectedSmtp.id,
+    campaignId: campaign.id,
+    activePoolSmtpCount: Math.max(1, activePool.length)
+  });
   const safetyRate = await applySafetyToRate(selectedSmtp.id, decision.effectiveRatePerSecond);
   const enforcedRate = Math.max(0.01, safetyRate.rate);
-  for (let i = 0; i < 30; i += 1) {
+  const dynamicDelayMs = Math.max(10, Math.min(1000, Math.round(1000 / enforcedRate)));
+  const maxWaitMs = 3_000;
+  await prisma.campaignLog.create({
+    data: {
+      campaignId: campaign.id,
+      eventType: "campaign_rate_debug",
+      status: "success",
+      idempotencyKey: `campaign_rate_debug:${campaign.id}:${selectedSmtp.id}`,
+      message: "Resolved effective send rate for SMTP lane.",
+      metadata: {
+        globalRate: decision.globalRatePerSecond,
+        parallelSMTP: decision.parallelSmtpCount,
+        perSMTPRate: decision.perSmtpRate,
+        effectiveRate: enforcedRate
+      }
+    }
+  }).catch(() => undefined);
+  for (let waitedMs = 0; waitedMs <= maxWaitMs; waitedMs += dynamicDelayMs) {
     if (canDispatch(`smtp:${selectedSmtp.id}`, enforcedRate)) {
       break;
     }
-    await sleep(100);
-    if (i === 29) {
+    await sleep(dynamicDelayMs);
+    if (waitedMs + dynamicDelayMs > maxWaitMs) {
       throw new Error("rate_limited_wait_timeout");
     }
   }
@@ -272,7 +293,10 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
           message: `Delivered via ${selectedSmtp.host}`,
           metadata: {
             smtpAccountId: selectedSmtp.id,
-            effectiveRate: decision.effectiveRatePerSecond,
+            effectiveRate: enforcedRate,
+            globalRate: decision.globalRatePerSecond,
+            parallelSMTP: decision.parallelSmtpCount,
+            perSMTPRate: decision.perSmtpRate,
             reasons: safetyRate.reason ? [...decision.reasons, safetyRate.reason] : decision.reasons,
             warmupTier: decision.warmupTierName
           }

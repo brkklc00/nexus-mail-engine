@@ -126,6 +126,8 @@ export async function createCampaign(input: {
   const globalPool = ((poolSetting?.value as any) ?? {}) as {
     useAllActiveByDefault?: boolean;
     rotateEvery?: number;
+    rotateEveryN?: number;
+    parallelSmtpCount?: number;
     parallelSmtpLanes?: number;
     sendingMode?: "single" | "pool";
   };
@@ -140,8 +142,8 @@ export async function createCampaign(input: {
     smtpMode: input.smtpMode ?? globalPool.sendingMode ?? "pool",
     smtpIds: input.smtpIds?.length ? input.smtpIds : smtpIdsFromAll,
     smtpAccountId: input.smtpAccountId,
-    parallelSmtpCount: input.parallelSmtpCount ?? globalPool.parallelSmtpLanes ?? 1,
-    rotateEvery: input.rotateEvery ?? globalPool.rotateEvery ?? 500,
+    parallelSmtpCount: input.parallelSmtpCount ?? globalPool.parallelSmtpCount ?? globalPool.parallelSmtpLanes ?? 1,
+    rotateEvery: input.rotateEvery ?? globalPool.rotateEveryN ?? globalPool.rotateEvery ?? 500,
     strategy: input.strategy
   });
   const targetMode: TargetMode = input.targetMode ?? (input.segmentId ? "saved_segment" : input.segmentQueryConfig ? "ad_hoc_segment" : "list");

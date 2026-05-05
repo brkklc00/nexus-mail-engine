@@ -10,6 +10,9 @@ const defaultPoolSettings = {
   sendingMode: "pool",
   useAllActiveByDefault: true,
   rotateEvery: 500,
+  rotateEveryN: 500,
+  globalRatePerSecond: 1,
+  parallelSmtpCount: 1,
   parallelSmtpLanes: 1,
   perSmtpConcurrency: 1,
   skipThrottled: true,
@@ -137,15 +140,23 @@ export async function GET() {
     const poolSettings = ((poolSettingsRaw?.value as any) ?? defaultPoolSettings) as {
       sendingMode?: "single" | "pool";
       rotateEvery?: number;
+      rotateEveryN?: number;
+      globalRatePerSecond?: number;
+      parallelSmtpCount?: number;
       parallelSmtpLanes?: number;
       useAllActiveByDefault?: boolean;
     };
+    const rotateEvery = Math.max(1, Number(poolSettings.rotateEveryN ?? poolSettings.rotateEvery ?? 500));
+    const parallelSmtpCount = Math.max(
+      1,
+      Math.min(Number(poolSettings.parallelSmtpCount ?? poolSettings.parallelSmtpLanes ?? 1), Math.max(1, smtpAccounts.length))
+    );
     const defaults = {
       targetType: "list" as const,
       smtpMode: (poolSettings.sendingMode ?? "pool") as "single" | "pool",
       strategy: "round_robin" as const,
-      rotateEvery: Math.max(1, Number(poolSettings.rotateEvery ?? 500)),
-      parallelSmtpCount: Math.max(1, Math.min(Number(poolSettings.parallelSmtpLanes ?? 1), Math.max(1, smtpAccounts.length)))
+      rotateEvery,
+      parallelSmtpCount
     };
 
     return NextResponse.json({
@@ -157,7 +168,11 @@ export async function GET() {
       campaigns: campaignsRaw,
       poolSettings: {
         ...defaultPoolSettings,
-        ...(poolSettingsRaw?.value as any)
+        ...(poolSettingsRaw?.value as any),
+        rotateEvery,
+        rotateEveryN: rotateEvery,
+        parallelSmtpCount,
+        parallelSmtpLanes: parallelSmtpCount
       },
       defaults,
       queue: {

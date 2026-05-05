@@ -77,6 +77,9 @@ type PoolSettings = {
   sendingMode: "single" | "pool";
   useAllActiveByDefault: boolean;
   rotateEvery: number;
+  rotateEveryN?: number;
+  globalRatePerSecond: number;
+  parallelSmtpCount: number;
   parallelSmtpLanes: number;
   perSmtpConcurrency: number;
   skipThrottled: boolean;
@@ -91,6 +94,9 @@ const defaultPoolSettings: PoolSettings = {
   sendingMode: "pool",
   useAllActiveByDefault: true,
   rotateEvery: 500,
+  rotateEveryN: 500,
+  globalRatePerSecond: 1,
+  parallelSmtpCount: 2,
   parallelSmtpLanes: 2,
   perSmtpConcurrency: 1,
   skipThrottled: true,
@@ -121,7 +127,26 @@ export function SmtpManager({
   const confirm = useConfirm();
   const [accounts, setAccounts] = useState(initialAccounts);
   const [baselineMetrics, setBaselineMetrics] = useState(initialMetrics);
-  const [poolSettings, setPoolSettings] = useState<PoolSettings>({ ...defaultPoolSettings, ...(initialPoolSettings ?? {}) });
+  const [poolSettings, setPoolSettings] = useState<PoolSettings>(() => {
+    const initial = (initialPoolSettings ?? {}) as Partial<PoolSettings>;
+    const parallelSmtpCount = Math.max(
+      1,
+      Number(initial.parallelSmtpCount ?? initial.parallelSmtpLanes ?? defaultPoolSettings.parallelSmtpCount)
+    );
+    const rotateEvery = Math.max(10, Number(initial.rotateEveryN ?? initial.rotateEvery ?? defaultPoolSettings.rotateEvery));
+    return {
+      ...defaultPoolSettings,
+      ...initial,
+      rotateEvery,
+      rotateEveryN: rotateEvery,
+      parallelSmtpCount,
+      parallelSmtpLanes: parallelSmtpCount,
+      globalRatePerSecond:
+        typeof initial.globalRatePerSecond === "number" && Number.isFinite(initial.globalRatePerSecond)
+          ? Math.max(0.01, Number(initial.globalRatePerSecond))
+          : defaultPoolSettings.globalRatePerSecond
+    };
+  });
   const [poolSaving, setPoolSaving] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
@@ -143,9 +168,15 @@ export function SmtpManager({
     message: ""
   });
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [rateTargetDaily, setRateTargetDaily] = useState(100000);
+  const [rateTargetDaily, setRateTargetDaily] = useState(() => {
+    const initialGlobalRate = Number((initialPoolSettings as any)?.globalRatePerSecond ?? 100000 / 86400);
+    if (!Number.isFinite(initialGlobalRate) || initialGlobalRate <= 0) return 100000;
+    return Math.max(1, Math.floor(initialGlobalRate * 86400));
+  });
   const [rateMode, setRateMode] = useState<"automatic" | "manual">("automatic");
-  const [manualRps, setManualRps] = useState(1);
+  const [manualRps, setManualRps] = useState(() =>
+    Math.max(0.01, Number((initialPoolSettings as any)?.globalRatePerSecond ?? defaultPoolSettings.globalRatePerSecond))
+  );
   const [form, setForm] = useState({
     name: "",
     providerLabel: "",
@@ -384,15 +415,43 @@ export function SmtpManager({
   async function savePoolSettings() {
     setPoolSaving(true);
     try {
+      const requestBody = {
+        ...poolSettings,
+        globalRatePerSecond: plannedRps,
+        parallelSmtpCount: poolSettings.parallelSmtpCount,
+        parallelSmtpLanes: poolSettings.parallelSmtpCount,
+        rotateEvery: poolSettings.rotateEvery,
+        rotateEveryN: poolSettings.rotateEvery,
+        skipThrottled: poolSettings.skipThrottled,
+        skipUnhealthy: poolSettings.skipUnhealthy
+      };
       const response = await fetch("/api/smtp/pool-settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(poolSettings)
+        body: JSON.stringify(requestBody)
       });
-      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Pool settings could not be saved");
+      const responsePayload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        settings?: Partial<PoolSettings>;
+      };
+      if (!response.ok || !responsePayload.ok) {
+        throw new Error(responsePayload.error ?? "Pool settings could not be saved");
       }
+      setPoolSettings((prev) => ({
+        ...prev,
+        globalRatePerSecond: plannedRps,
+        parallelSmtpCount: Number(
+          responsePayload.settings?.parallelSmtpCount ??
+          responsePayload.settings?.parallelSmtpLanes ??
+          prev.parallelSmtpCount
+        ),
+        parallelSmtpLanes: Number(
+          responsePayload.settings?.parallelSmtpLanes ??
+          responsePayload.settings?.parallelSmtpCount ??
+          prev.parallelSmtpLanes
+        )
+      }));
       toast.success("Pool settings saved");
     } catch (error) {
       toast.error("Pool settings could not be saved", error instanceof Error ? error.message : "Unexpected error");
@@ -942,8 +1001,8 @@ export function SmtpManager({
             <option value="single">Sending mode: single SMTP</option>
             <option value="pool">Sending mode: SMTP pool</option>
           </select>
-          <input type="number" value={poolSettings.rotateEvery} onChange={(e) => setPoolSettings((s) => ({ ...s, rotateEvery: Number(e.target.value || 500) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
-          <input type="number" value={poolSettings.parallelSmtpLanes} onChange={(e) => setPoolSettings((s) => ({ ...s, parallelSmtpLanes: Number(e.target.value || 1) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          <input type="number" value={poolSettings.rotateEvery} onChange={(e) => setPoolSettings((s) => ({ ...s, rotateEvery: Number(e.target.value || 500), rotateEveryN: Number(e.target.value || 500) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          <input type="number" value={poolSettings.parallelSmtpCount} onChange={(e) => setPoolSettings((s) => ({ ...s, parallelSmtpCount: Number(e.target.value || 1), parallelSmtpLanes: Number(e.target.value || 1) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
           <input type="number" value={poolSettings.perSmtpConcurrency} onChange={(e) => setPoolSettings((s) => ({ ...s, perSmtpConcurrency: Number(e.target.value || 1) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
           <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs"><input type="checkbox" checked={poolSettings.useAllActiveByDefault} onChange={(e) => setPoolSettings((s) => ({ ...s, useAllActiveByDefault: e.target.checked }))} />Use all active SMTPs</label>
           <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs"><input type="checkbox" checked={poolSettings.skipThrottled} onChange={(e) => setPoolSettings((s) => ({ ...s, skipThrottled: e.target.checked }))} />Skip throttled SMTPs</label>

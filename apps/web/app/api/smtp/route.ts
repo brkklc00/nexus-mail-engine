@@ -9,6 +9,9 @@ const poolSettingsDefaults = {
   sendingMode: "pool",
   useAllActiveByDefault: true,
   rotateEvery: 500,
+  rotateEveryN: 500,
+  globalRatePerSecond: 1,
+  parallelSmtpCount: 2,
   parallelSmtpLanes: 2,
   perSmtpConcurrency: 1,
   skipThrottled: true,
@@ -228,6 +231,23 @@ export async function GET() {
       .reduce((sum: number, account: any) => sum + Number(account.effectiveRps ?? account.targetRatePerSecond ?? 0), 0);
     const estimatedDailyCapacity = Math.floor(effectiveTotalRps * 86400);
 
+    const existingSettings = ((poolSetting?.value as any) ?? {}) as {
+      rotateEvery?: number;
+      rotateEveryN?: number;
+      parallelSmtpCount?: number;
+      parallelSmtpLanes?: number;
+      globalRatePerSecond?: number;
+    };
+    const rotateEvery = Math.max(10, Number(existingSettings.rotateEveryN ?? existingSettings.rotateEvery ?? poolSettingsDefaults.rotateEvery));
+    const parallelSmtpCount = Math.max(
+      1,
+      Number(existingSettings.parallelSmtpCount ?? existingSettings.parallelSmtpLanes ?? poolSettingsDefaults.parallelSmtpCount)
+    );
+    const globalRatePerSecond =
+      typeof existingSettings.globalRatePerSecond === "number" && Number.isFinite(existingSettings.globalRatePerSecond)
+        ? Math.max(0.01, Number(existingSettings.globalRatePerSecond))
+        : poolSettingsDefaults.globalRatePerSecond;
+
     return NextResponse.json({
       ok: true,
       accounts: enriched,
@@ -241,7 +261,15 @@ export async function GET() {
         effectiveTotalRps: Number(effectiveTotalRps.toFixed(2)),
         estimatedDailyCapacity
       },
-      poolSettings: (poolSetting?.value as any) ?? poolSettingsDefaults
+      poolSettings: {
+        ...poolSettingsDefaults,
+        ...(poolSetting?.value as any),
+        rotateEvery,
+        rotateEveryN: rotateEvery,
+        parallelSmtpCount,
+        parallelSmtpLanes: parallelSmtpCount,
+        globalRatePerSecond
+      }
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "SMTP accounts could not be loaded";
