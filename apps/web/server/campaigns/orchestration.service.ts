@@ -125,19 +125,28 @@ export async function createCampaign(input: {
   const poolSetting = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } });
   const globalPool = ((poolSetting?.value as any) ?? {}) as {
     useAllActiveByDefault?: boolean;
+    skipThrottled?: boolean;
+    skipUnhealthy?: boolean;
     rotateEvery?: number;
     rotateEveryN?: number;
     parallelSmtpCount?: number;
     parallelSmtpLanes?: number;
     sendingMode?: "single" | "pool";
   };
-  const smtpIdsFromAll = globalPool.useAllActiveByDefault
-    ? (await prisma.smtpAccount.findMany({
-        where: { isActive: true, isSoftDeleted: false },
-        select: { id: true },
-        orderBy: { createdAt: "asc" }
-      })).map((item: { id: string }) => item.id)
-    : [];
+  const skipThrottled = globalPool.skipThrottled ?? true;
+  const skipUnhealthy = globalPool.skipUnhealthy ?? true;
+  const smtpIdsFromAll = (
+    await prisma.smtpAccount.findMany({
+      where: {
+        isActive: true,
+        isSoftDeleted: false,
+        ...(skipThrottled ? { isThrottled: false } : {}),
+        ...(skipUnhealthy ? { NOT: { healthStatus: "error" } } : {})
+      },
+      select: { id: true },
+      orderBy: { createdAt: "asc" }
+    })
+  ).map((item: { id: string }) => item.id);
   const normalizedConfig = normalizeSmtpConfig({
     smtpMode: input.smtpMode ?? globalPool.sendingMode ?? "pool",
     smtpIds: input.smtpIds?.length ? input.smtpIds : smtpIdsFromAll,

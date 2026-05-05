@@ -14,7 +14,7 @@ const createSchema = z.object({
   segmentQueryConfig: z.any().optional(),
   targetMode: z.enum(["list", "saved_segment", "ad_hoc_segment"]).optional(),
   smtpAccountId: z.string().uuid().optional(),
-  smtpMode: z.enum(["single", "pool"]).default("single"),
+  smtpMode: z.enum(["single", "pool"]).default("pool"),
   smtpIds: z.array(z.string().uuid()).optional(),
   parallelSmtpCount: z.number().int().min(1).max(50).optional(),
   rotateEvery: z.number().int().min(1).max(50000).optional(),
