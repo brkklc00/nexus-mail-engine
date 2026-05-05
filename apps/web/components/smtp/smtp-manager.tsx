@@ -17,7 +17,8 @@ import {
   RefreshCw,
   Save,
   ShieldAlert,
-  Trash2
+  Trash2,
+  Info
 } from "lucide-react";
 import Link from "next/link";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -92,6 +93,9 @@ type PoolSettings = {
   parallelSmtpCount: number;
   parallelSmtpLanes: number;
   perSmtpConcurrency: number;
+  minDelayBetweenSendsMs: number;
+  maxEmailsPerSmtpSession: number;
+  connectionTimeoutSec: number;
   skipThrottled: boolean;
   skipUnhealthy: boolean;
   fallbackToNextOnError: boolean;
@@ -109,6 +113,9 @@ const defaultPoolSettings: PoolSettings = {
   parallelSmtpCount: 2,
   parallelSmtpLanes: 2,
   perSmtpConcurrency: 1,
+  minDelayBetweenSendsMs: 5,
+  maxEmailsPerSmtpSession: 2000,
+  connectionTimeoutSec: 60,
   skipThrottled: true,
   skipUnhealthy: true,
   fallbackToNextOnError: true,
@@ -1088,21 +1095,124 @@ export function SmtpManager({
             {poolSaving ? <Loader2 className="inline h-3.5 w-3.5 animate-spin" /> : <Save className="inline h-3.5 w-3.5" />} Save Pool Settings
           </button>
         </div>
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-          <select value={poolSettings.sendingMode} onChange={(e) => setPoolSettings((s) => ({ ...s, sendingMode: e.target.value as "single" | "pool" }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100">
-            <option value="single">Sending mode: single SMTP</option>
-            <option value="pool">Sending mode: SMTP pool</option>
-          </select>
-          <input type="number" value={poolSettings.rotateEvery} onChange={(e) => setPoolSettings((s) => ({ ...s, rotateEvery: Number(e.target.value || 500), rotateEveryN: Number(e.target.value || 500) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
-          <input type="number" value={poolSettings.parallelSmtpCount} onChange={(e) => setPoolSettings((s) => ({ ...s, parallelSmtpCount: Number(e.target.value || 1), parallelSmtpLanes: Number(e.target.value || 1) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
-          <input type="number" value={poolSettings.perSmtpConcurrency} onChange={(e) => setPoolSettings((s) => ({ ...s, perSmtpConcurrency: Number(e.target.value || 1) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
-          <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs"><input type="checkbox" checked={poolSettings.useAllActiveByDefault} onChange={(e) => setPoolSettings((s) => ({ ...s, useAllActiveByDefault: e.target.checked }))} />Use all active SMTPs</label>
-          <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs"><input type="checkbox" checked={poolSettings.skipThrottled} onChange={(e) => setPoolSettings((s) => ({ ...s, skipThrottled: e.target.checked }))} />Skip throttled SMTPs</label>
-          <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs"><input type="checkbox" checked={poolSettings.skipUnhealthy} onChange={(e) => setPoolSettings((s) => ({ ...s, skipUnhealthy: e.target.checked }))} />Skip unhealthy SMTPs</label>
-          <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs"><input type="checkbox" checked={poolSettings.fallbackToNextOnError} onChange={(e) => setPoolSettings((s) => ({ ...s, fallbackToNextOnError: e.target.checked }))} />Fallback to next SMTP on error</label>
-          <input type="number" value={poolSettings.retryCount} onChange={(e) => setPoolSettings((s) => ({ ...s, retryCount: Number(e.target.value || 0) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
-          <input type="number" value={poolSettings.retryDelayMs} onChange={(e) => setPoolSettings((s) => ({ ...s, retryDelayMs: Number(e.target.value || 0) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
-          <input type="number" value={poolSettings.cooldownAfterErrorSec} onChange={(e) => setPoolSettings((s) => ({ ...s, cooldownAfterErrorSec: Number(e.target.value || 0) }))} className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <SettingField
+            label="Sending mode"
+            helper="Choose how emails are sent. SMTP pool uses multiple SMTP accounts in rotation for better distribution."
+          >
+            <select value={poolSettings.sendingMode} onChange={(e) => setPoolSettings((s) => ({ ...s, sendingMode: e.target.value as "single" | "pool" }))} className="w-full rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100">
+              <option value="single">Single SMTP</option>
+              <option value="pool">SMTP pool</option>
+            </select>
+          </SettingField>
+
+          <SettingField
+            label="Rotate every N recipients per SMTP"
+            helper="After sending this many emails, system switches to the next SMTP. Lower = better distribution, higher = fewer switches."
+            tooltip="Recommended: 300–1000"
+            badge="Recommended"
+          >
+            <input type="number" value={poolSettings.rotateEvery} onChange={(e) => setPoolSettings((s) => ({ ...s, rotateEvery: Number(e.target.value || 500), rotateEveryN: Number(e.target.value || 500) }))} className="w-full rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          </SettingField>
+
+          <SettingField
+            label="Parallel SMTP count"
+            helper="How many SMTP accounts are used at the same time. Higher = faster sending, but increases risk."
+            tooltip="Recommended: 5–20 depending on SMTP pool size"
+            badge="Recommended"
+          >
+            <input type="number" value={poolSettings.parallelSmtpCount} onChange={(e) => setPoolSettings((s) => ({ ...s, parallelSmtpCount: Number(e.target.value || 1), parallelSmtpLanes: Number(e.target.value || 1) }))} className="w-full rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          </SettingField>
+
+          <SettingField
+            label="Max retries"
+            helper="Number of retry attempts if sending fails before marking as failed."
+          >
+            <input type="number" value={poolSettings.retryCount} onChange={(e) => setPoolSettings((s) => ({ ...s, retryCount: Number(e.target.value || 0) }))} className="w-full rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          </SettingField>
+
+          <SettingField
+            label="Min delay between sends (ms)"
+            helper="Minimum delay in milliseconds between send operations per SMTP."
+          >
+            <input type="number" value={poolSettings.minDelayBetweenSendsMs} onChange={(e) => setPoolSettings((s) => ({ ...s, minDelayBetweenSendsMs: Number(e.target.value || 0) }))} className="w-full rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          </SettingField>
+
+          <SettingField
+            label="Max emails per SMTP session"
+            helper="Maximum number of emails sent before reconnecting SMTP."
+            badge="Recommended"
+          >
+            <input type="number" value={poolSettings.maxEmailsPerSmtpSession} onChange={(e) => setPoolSettings((s) => ({ ...s, maxEmailsPerSmtpSession: Number(e.target.value || 0) }))} className="w-full rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          </SettingField>
+
+          <SettingField
+            label="Connection timeout (seconds)"
+            helper="Timeout in seconds before SMTP connection is considered failed."
+          >
+            <input type="number" value={poolSettings.connectionTimeoutSec} onChange={(e) => setPoolSettings((s) => ({ ...s, connectionTimeoutSec: Number(e.target.value || 0) }))} className="w-full rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          </SettingField>
+
+          <SettingField
+            label="Use all active SMTPs"
+            helper="If enabled, all active SMTPs are included in sending pool automatically."
+          >
+            <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs">
+              <input type="checkbox" checked={poolSettings.useAllActiveByDefault} onChange={(e) => setPoolSettings((s) => ({ ...s, useAllActiveByDefault: e.target.checked }))} />
+              Enabled
+            </label>
+          </SettingField>
+
+          <SettingField
+            label="Skip throttled SMTPs"
+            helper="Temporarily exclude SMTPs that are currently rate limited or blocked."
+          >
+            <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs">
+              <input type="checkbox" checked={poolSettings.skipThrottled} onChange={(e) => setPoolSettings((s) => ({ ...s, skipThrottled: e.target.checked }))} />
+              Enabled
+            </label>
+          </SettingField>
+
+          <SettingField
+            label="Skip unhealthy SMTPs"
+            helper="Exclude SMTPs that failed recent health checks."
+          >
+            <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs">
+              <input type="checkbox" checked={poolSettings.skipUnhealthy} onChange={(e) => setPoolSettings((s) => ({ ...s, skipUnhealthy: e.target.checked }))} />
+              Enabled
+            </label>
+          </SettingField>
+
+          <SettingField
+            label="Fallback to next SMTP on error"
+            helper="If sending fails on one SMTP, automatically retry using another SMTP."
+          >
+            <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs">
+              <input type="checkbox" checked={poolSettings.fallbackToNextOnError} onChange={(e) => setPoolSettings((s) => ({ ...s, fallbackToNextOnError: e.target.checked }))} />
+              Enabled
+            </label>
+          </SettingField>
+
+          <SettingField
+            label="Per SMTP concurrency"
+            helper="How many jobs can run in parallel on the same SMTP lane."
+          >
+            <input type="number" value={poolSettings.perSmtpConcurrency} onChange={(e) => setPoolSettings((s) => ({ ...s, perSmtpConcurrency: Number(e.target.value || 1) }))} className="w-full rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          </SettingField>
+
+          <SettingField
+            label="Retry delay (ms)"
+            helper="Delay before each retry attempt after a failed send."
+          >
+            <input type="number" value={poolSettings.retryDelayMs} onChange={(e) => setPoolSettings((s) => ({ ...s, retryDelayMs: Number(e.target.value || 0) }))} className="w-full rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          </SettingField>
+
+          <SettingField
+            label="Cooldown after error (seconds)"
+            helper="How long an SMTP stays in cooldown after an error occurs."
+          >
+            <input type="number" value={poolSettings.cooldownAfterErrorSec} onChange={(e) => setPoolSettings((s) => ({ ...s, cooldownAfterErrorSec: Number(e.target.value || 0) }))} className="w-full rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+          </SettingField>
         </div>
         <p className="mt-2 text-xs text-zinc-400">Rotate every N recipients per SMTP. Lower = better distribution, higher = less switching. {warmupHelper}</p>
       </section>
@@ -1817,6 +1927,36 @@ function Field({ label, children, helper }: { label: string; children: React.Rea
       <p className="mb-1 text-[11px] text-zinc-500">{label}</p>
       {children}
       {helper ? <p className="mt-1 text-[11px] text-zinc-500">{helper}</p> : null}
+    </div>
+  );
+}
+
+function SettingField({
+  label,
+  helper,
+  tooltip,
+  badge,
+  children
+}: {
+  label: string;
+  helper: string;
+  tooltip?: string;
+  badge?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-zinc-900/30 p-3">
+      <div className="mb-1 flex items-center gap-2">
+        <p className="text-[11px] text-zinc-400">{label}</p>
+        {badge ? <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300">{badge}</span> : null}
+        {tooltip ? (
+          <span title={tooltip} className="inline-flex items-center text-zinc-500 hover:text-zinc-300">
+            <Info className="h-3.5 w-3.5" />
+          </span>
+        ) : null}
+      </div>
+      {children}
+      <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">{helper}</p>
     </div>
   );
 }
