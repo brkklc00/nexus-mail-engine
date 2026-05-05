@@ -1,5 +1,6 @@
 import { prisma } from "@nexus/db";
 import { PageHeader } from "@/components/ui/page-header";
+import { LiveSmtpFlowCard } from "@/components/smtp/live-smtp-flow-card";
 import { SmtpManager } from "@/components/smtp/smtp-manager";
 
 export const dynamic = "force-dynamic";
@@ -72,6 +73,7 @@ export default async function SmtpSettingsPage() {
         title="SMTP Accounts"
         description="SMTP Pool + Rate Control + Warmup + Rotation Engine merkezi."
       />
+      <LiveSmtpFlowCard />
       <SmtpManager
         initialAccounts={enriched as any}
         initialMetrics={{

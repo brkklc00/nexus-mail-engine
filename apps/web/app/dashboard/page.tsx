@@ -3,6 +3,7 @@ import { prisma } from "@nexus/db";
 import { DeliveryChart } from "@/components/dashboard/delivery-chart";
 import { PerformanceCharts } from "@/components/dashboard/performance-charts";
 import { QueueObservabilityWidget } from "@/components/dashboard/queue-observability-widget";
+import { LiveSmtpFlowCard } from "@/components/smtp/live-smtp-flow-card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -217,6 +218,7 @@ export default async function DashboardPage({
 
         <div className="space-y-4">
           <QueueObservabilityWidget />
+          <LiveSmtpFlowCard compact />
           <div className="rounded-2xl border border-border bg-card p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
