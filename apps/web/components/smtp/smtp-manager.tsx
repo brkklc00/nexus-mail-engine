@@ -73,6 +73,16 @@ type Metrics = {
   estimatedDailyCapacity: number;
 };
 
+type PlannerPreview = {
+  usableCount: number;
+  dailyTarget: number;
+  globalRps: number;
+  perSmtpRps: number;
+  perSmtpDailyCap: number;
+  perSmtpHourlyCap: number;
+  perSmtpMinuteCap: number;
+};
+
 type PoolSettings = {
   sendingMode: "single" | "pool";
   useAllActiveByDefault: boolean;
@@ -221,6 +231,9 @@ export function SmtpManager({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkDeleteModalOpen, setBulkDeleteModalOpen] = useState(false);
   const [bulkDeleteTyped, setBulkDeleteTyped] = useState("");
+  const [plannerModalOpen, setPlannerModalOpen] = useState(false);
+  const [plannerIncludeUnhealthy, setPlannerIncludeUnhealthy] = useState(false);
+  const [plannerIncludeThrottled, setPlannerIncludeThrottled] = useState(false);
 
   useEffect(() => {
     try {
@@ -290,6 +303,44 @@ export function SmtpManager({
   const plannedMinute = Number((plannedRps * 60).toFixed(2));
   const plannedHour = Number((plannedRps * 3600).toFixed(2));
   const plannedDay = Math.floor(plannedRps * 86400);
+  const plannerDailyTarget = Math.max(1, plannedDay);
+
+  useEffect(() => {
+    setPlannerIncludeThrottled(!(poolSettings.skipThrottled ?? true));
+    setPlannerIncludeUnhealthy(!(poolSettings.skipUnhealthy ?? true));
+  }, [poolSettings.skipThrottled, poolSettings.skipUnhealthy]);
+
+  function buildPlannerPreview(
+    includeUnhealthy: boolean,
+    includeThrottled: boolean
+  ): PlannerPreview {
+    const usable = accounts.filter((item) => {
+      if (!item.isActive || item.healthStatus === "archived") return false;
+      if (!includeThrottled && item.isThrottled) return false;
+      if (!includeUnhealthy && item.healthStatus === "error") return false;
+      return true;
+    });
+    const usableCount = usable.length;
+    const globalRps = Number((plannerDailyTarget / 86400).toFixed(6));
+    const perSmtpRps = usableCount > 0 ? Number((globalRps / usableCount).toFixed(6)) : 0;
+    const perSmtpDailyCap = usableCount > 0 ? Math.max(1, Math.ceil(plannerDailyTarget / usableCount)) : 0;
+    const perSmtpHourlyCap = perSmtpDailyCap > 0 ? Math.max(1, Math.ceil(perSmtpDailyCap / 24)) : 0;
+    const perSmtpMinuteCap = perSmtpHourlyCap > 0 ? Math.max(1, Math.ceil(perSmtpHourlyCap / 60)) : 0;
+    return {
+      usableCount,
+      dailyTarget: plannerDailyTarget,
+      globalRps,
+      perSmtpRps,
+      perSmtpDailyCap,
+      perSmtpHourlyCap,
+      perSmtpMinuteCap
+    };
+  }
+
+  const plannerPreview = useMemo(
+    () => buildPlannerPreview(plannerIncludeUnhealthy, plannerIncludeThrottled),
+    [accounts, plannerDailyTarget, plannerIncludeUnhealthy, plannerIncludeThrottled]
+  );
 
   const warmupHelper = useMemo(() => {
     if (poolSettings.rotateEvery <= 250) return "100-250 is recommended for warmup SMTP accounts.";
@@ -457,6 +508,47 @@ export function SmtpManager({
       toast.error("Pool settings could not be saved", error instanceof Error ? error.message : "Unexpected error");
     } finally {
       setPoolSaving(false);
+    }
+  }
+
+  async function applyPlannerToAllSmtps() {
+    if (plannerPreview.usableCount <= 0) {
+      toast.warning("No usable SMTP account", "Enable SMTP accounts or relax planner filters first.");
+      return;
+    }
+    setActionLoading("apply_rate_planner");
+    try {
+      const response = await fetch("/api/smtp/apply-rate-planner", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dailyTarget: plannerPreview.dailyTarget,
+          includeUnhealthy: plannerIncludeUnhealthy,
+          includeThrottled: plannerIncludeThrottled
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        smtpUpdated?: number;
+        dailyTarget?: number;
+        globalRps?: number;
+        perSmtpRps?: number;
+        perSmtpDailyCap?: number;
+      };
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Rate planner could not be applied");
+      }
+      setPlannerModalOpen(false);
+      toast.success(
+        "Rate planner applied",
+        `${payload.smtpUpdated ?? 0} SMTP updated · ${payload.perSmtpRps ?? 0} RPS/SMTP · ${payload.perSmtpDailyCap ?? 0} daily cap/SMTP`
+      );
+      await refreshSmtpSnapshot();
+    } catch (error) {
+      toast.error("Rate planner apply failed", error instanceof Error ? error.message : "Unexpected error");
+    } finally {
+      setActionLoading(null);
     }
   }
 
@@ -1041,6 +1133,17 @@ export function SmtpManager({
             </button>
           ))}
         </div>
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setPlannerModalOpen(true)}
+            disabled={actionLoading === "apply_rate_planner"}
+            className="rounded-lg border border-emerald-400/40 px-3 py-2 text-xs text-emerald-200 disabled:opacity-50"
+          >
+            {actionLoading === "apply_rate_planner" ? <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin" /> : null}
+            Apply planner to all SMTPs
+          </button>
+        </div>
       </section>
 
       <section className="rounded-2xl border border-border bg-card p-4">
@@ -1572,6 +1675,76 @@ export function SmtpManager({
                   ) : null}
                 </div>
               ) : null}
+            </div>
+          </div>
+        </OverlayPortal>
+      ) : null}
+
+      {plannerModalOpen ? (
+        <OverlayPortal active={plannerModalOpen} lockScroll>
+          <div
+            className="fixed inset-0 z-[55] bg-black/70 p-4 backdrop-blur-sm"
+            onClick={() => {
+              if (actionLoading !== "apply_rate_planner") {
+                setPlannerModalOpen(false);
+              }
+            }}
+          >
+            <div
+              className="mx-auto mt-16 w-full max-w-lg rounded-2xl border border-emerald-500/40 bg-zinc-950 p-4 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <p className="text-sm font-semibold text-emerald-200">
+                This will update rate limits for {plannerPreview.usableCount} SMTP accounts.
+              </p>
+              <p className="mt-2 text-xs text-zinc-400">
+                Inactive and soft-deleted SMTP accounts are always excluded.
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-200">
+                <p>Daily target: {plannerPreview.dailyTarget.toLocaleString()}</p>
+                <p>Total usable SMTPs: {plannerPreview.usableCount}</p>
+                <p>Per SMTP daily cap: {plannerPreview.perSmtpDailyCap.toLocaleString()}</p>
+                <p>Per SMTP RPS: {plannerPreview.perSmtpRps.toLocaleString()}</p>
+                <p>Global RPS: {plannerPreview.globalRps.toLocaleString()}</p>
+                <p>Per SMTP hourly/minute: {plannerPreview.perSmtpHourlyCap}/{plannerPreview.perSmtpMinuteCap}</p>
+              </div>
+              <div className="mt-3 space-y-2 rounded-lg border border-border bg-zinc-900/50 p-3 text-xs text-zinc-300">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={plannerIncludeThrottled}
+                    onChange={(e) => setPlannerIncludeThrottled(e.target.checked)}
+                  />
+                  Include throttled SMTPs
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={plannerIncludeUnhealthy}
+                    onChange={(e) => setPlannerIncludeUnhealthy(e.target.checked)}
+                  />
+                  Include unhealthy SMTPs
+                </label>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPlannerModalOpen(false)}
+                  disabled={actionLoading === "apply_rate_planner"}
+                  className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-300 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void applyPlannerToAllSmtps()}
+                  disabled={actionLoading === "apply_rate_planner" || plannerPreview.usableCount === 0}
+                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/50 bg-emerald-500/20 px-3 py-2 text-xs text-emerald-200 disabled:opacity-50"
+                >
+                  {actionLoading === "apply_rate_planner" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  Apply planner
+                </button>
+              </div>
             </div>
           </div>
         </OverlayPortal>

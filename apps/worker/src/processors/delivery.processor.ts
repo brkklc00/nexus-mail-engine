@@ -22,6 +22,39 @@ function beginOfDay(date = new Date()) {
   return d;
 }
 
+async function readSmtpQuotaUsage(smtpAccountId: string) {
+  const [dailyWarmup, hourlyRows, minuteRows] = await Promise.all([
+    prisma.smtpWarmupStat.findUnique({
+      where: {
+        smtpAccountId_date: {
+          smtpAccountId,
+          date: beginOfDay()
+        }
+      },
+      select: { successfulDeliveries: true }
+    }),
+    prisma.$queryRaw<Array<{ total: bigint }>>`
+      SELECT COUNT(*)::bigint AS total
+      FROM "CampaignLog" cl
+      WHERE cl."eventType" = 'sent'
+        AND (cl.metadata->>'smtpAccountId') = ${smtpAccountId}
+        AND cl."createdAt" >= NOW() - INTERVAL '1 hour'
+    `,
+    prisma.$queryRaw<Array<{ total: bigint }>>`
+      SELECT COUNT(*)::bigint AS total
+      FROM "CampaignLog" cl
+      WHERE cl."eventType" = 'sent'
+        AND (cl.metadata->>'smtpAccountId') = ${smtpAccountId}
+        AND cl."createdAt" >= NOW() - INTERVAL '1 minute'
+    `
+  ]);
+  return {
+    dailySent: Number(dailyWarmup?.successfulDeliveries ?? 0),
+    hourlySent: Number(hourlyRows[0]?.total ?? 0),
+    minuteSent: Number(minuteRows[0]?.total ?? 0)
+  };
+}
+
 function signTrackingToken(payload: {
   campaignId: string;
   recipientId: string;
@@ -200,6 +233,50 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
         where: { id: campaign.id },
         data: { totalSkipped: { increment: 1 } }
       });
+    }
+    await finalizeCampaignIfDone(campaign.id);
+    return;
+  }
+
+  const quotaUsage = await readSmtpQuotaUsage(selectedSmtp.id);
+  const dailyCap = Number(selectedSmtp.dailyCap ?? 0);
+  const hourlyCap = Number(selectedSmtp.hourlyCap ?? 0);
+  const minuteCap = Number(selectedSmtp.minuteCap ?? 0);
+  const capReached =
+    (dailyCap > 0 && quotaUsage.dailySent >= dailyCap) ||
+    (hourlyCap > 0 && quotaUsage.hourlySent >= hourlyCap) ||
+    (minuteCap > 0 && quotaUsage.minuteSent >= minuteCap);
+  if (capReached) {
+    const skipped = await transitionCampaignRecipientStatus({
+      campaignId: campaign.id,
+      recipientId: recipient.id,
+      to: "skipped"
+    });
+    if (skipped) {
+      await prisma.$transaction([
+        prisma.campaign.update({
+          where: { id: campaign.id },
+          data: { totalSkipped: { increment: 1 } }
+        }),
+        prisma.campaignLog.create({
+          data: {
+            campaignId: campaign.id,
+            recipientId: recipient.id,
+            eventType: "smtp_quota_reached",
+            status: "skipped",
+            message: `SMTP quota reached for ${selectedSmtp.id}`,
+            metadata: {
+              smtpAccountId: selectedSmtp.id,
+              dailyCap,
+              hourlyCap,
+              minuteCap,
+              dailySent: quotaUsage.dailySent,
+              hourlySent: quotaUsage.hourlySent,
+              minuteSent: quotaUsage.minuteSent
+            }
+          }
+        })
+      ]);
     }
     await finalizeCampaignIfDone(campaign.id);
     return;
