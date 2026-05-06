@@ -1,5 +1,13 @@
 import { prisma } from "@nexus/db";
-import { campaignQueue, getRedisClient, QUEUE_NAMES, safeJobId, withDistributedLock } from "@nexus/queue";
+import {
+  campaignQueue,
+  deliveryQueue,
+  getRedisClient,
+  QUEUE_NAMES,
+  retryQueue,
+  safeJobId,
+  withDistributedLock
+} from "@nexus/queue";
 import { listSegmentRecipientIds, type SegmentQueryInput } from "@/server/segments/segment-query.service";
 import { autoShortenHtmlLinks } from "@/server/short-links/nxusurl.service";
 
@@ -8,6 +16,10 @@ const DEFAULT_ROTATE_EVERY = 500;
 const DEFAULT_PARALLEL_SMTP = 1;
 const DEFAULT_RECIPIENT_CHUNK_SIZE = Number(process.env.CAMPAIGN_START_FETCH_CHUNK_SIZE ?? 1000);
 const DEFAULT_INSERT_CHUNK_SIZE = Number(process.env.CAMPAIGN_START_INSERT_CHUNK_SIZE ?? 1000);
+const CANCEL_CLEANUP_BATCH_SIZE = Math.max(
+  5000,
+  Math.min(10000, Number(process.env.CAMPAIGN_CANCEL_BATCH_SIZE ?? 5000))
+);
 
 async function withCampaignLock<T>(campaignId: string, action: string, callback: () => Promise<T>) {
   return withDistributedLock(`lock:campaign:${action}:${campaignId}`, CAMPAIGN_LOCK_TTL_MS, callback);
@@ -104,6 +116,59 @@ function serializeError(error: unknown) {
     message: String(error),
     stack: undefined
   };
+}
+
+async function cleanupCampaignRecipientsInBatches(campaignId: string, batchSize = CANCEL_CLEANUP_BATCH_SIZE) {
+  let totalUpdated = 0;
+  while (true) {
+    const rows = (await prisma.campaignRecipient.findMany({
+      where: {
+        campaignId,
+        sendStatus: { in: ["pending", "queued"] }
+      },
+      select: { id: true },
+      orderBy: { id: "asc" },
+      take: batchSize
+    })) as Array<{ id: string }>;
+    if (rows.length === 0) break;
+    const ids = rows.map((row) => row.id);
+    const result = await prisma.campaignRecipient.updateMany({
+      where: {
+        id: { in: ids },
+        sendStatus: { in: ["pending", "queued"] }
+      },
+      data: { sendStatus: "skipped" }
+    });
+    totalUpdated += result.count;
+    console.info(`[campaign.cancel] recipient cleanup batch updated ${result.count}`);
+  }
+  return totalUpdated;
+}
+
+async function cleanupQueuedJobsForCampaign(campaignId: string) {
+  const removeJobs = async (jobs: any[]) => {
+    let removed = 0;
+    for (const job of jobs) {
+      if ((job as any)?.data?.campaignId !== campaignId) continue;
+      if (typeof (job as any)?.remove !== "function") continue;
+      try {
+        await (job as any).remove();
+        removed += 1;
+      } catch {
+        // Best effort cleanup only.
+      }
+    }
+    return removed;
+  };
+  const [deliveryJobs, retryJobs] = await Promise.all([
+    deliveryQueue.getJobs(["waiting", "delayed", "prioritized"], 0, 5000, true) as Promise<any[]>,
+    retryQueue.getJobs(["waiting", "delayed", "prioritized"], 0, 5000, true) as Promise<any[]>
+  ]);
+  const [removedDelivery, removedRetry] = await Promise.all([
+    removeJobs(deliveryJobs),
+    removeJobs(retryJobs)
+  ]);
+  return removedDelivery + removedRetry;
 }
 
 export async function createCampaign(input: {
@@ -585,26 +650,72 @@ export async function resumeCampaign(campaignId: string) {
   });
 }
 
-export async function cancelCampaign(campaignId: string) {
-  return prisma.$transaction(async (tx: any) => {
-    const result = await tx.campaign.updateMany({
-      where: { id: campaignId, status: { in: ["queued", "running", "paused", "pending"] } },
-      data: { status: "canceled", finishedAt: new Date(), stoppedEarly: true }
+export async function cancelCampaign(campaignId: string): Promise<{
+  campaignId: string;
+  status: "canceled";
+  recipientCleanup: "running" | "completed";
+}> {
+  return withCampaignLock(campaignId, "cancel", async () => {
+    const existing = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select: { id: true, status: true }
     });
-    if (result.count === 0) {
+    if (!existing) {
       throw new Error("campaign_cancel_failed");
     }
 
-    await tx.campaignRecipient.updateMany({
-      where: { campaignId, sendStatus: { in: ["pending", "queued", "failed"] } },
-      data: { sendStatus: "skipped" }
-    });
-    await tx.campaignLog.create({
-      data: {
-        campaignId,
-        eventType: "campaign_canceled",
-        status: "success"
+    if (existing.status !== "canceled") {
+      const result = await prisma.campaign.updateMany({
+        where: {
+          id: campaignId,
+          status: { in: ["queued", "running", "paused", "pending"] }
+        },
+        data: {
+          status: "canceled",
+          finishedAt: new Date(),
+          stoppedEarly: true
+        }
+      });
+      if (result.count === 0) {
+        throw new Error("campaign_cancel_failed");
       }
+      console.info("[campaign.cancel] status updated");
+      await prisma.campaignLog.create({
+        data: {
+          campaignId,
+          eventType: "campaign_canceled",
+          status: "success"
+        }
+      });
+    }
+
+    await cleanupQueuedJobsForCampaign(campaignId).catch(() => 0);
+    const pendingCount = await prisma.campaignRecipient.count({
+      where: { campaignId, sendStatus: { in: ["pending", "queued"] } }
     });
+    if (pendingCount === 0) {
+      return {
+        campaignId,
+        status: "canceled",
+        recipientCleanup: "completed"
+      };
+    }
+    if (pendingCount <= CANCEL_CLEANUP_BATCH_SIZE) {
+      await cleanupCampaignRecipientsInBatches(campaignId);
+      return {
+        campaignId,
+        status: "canceled",
+        recipientCleanup: "completed"
+      };
+    }
+
+    void cleanupCampaignRecipientsInBatches(campaignId).catch((error) => {
+      console.error("[campaign.cancel] recipient cleanup failed", serializeError(error));
+    });
+    return {
+      campaignId,
+      status: "canceled",
+      recipientCleanup: "running"
+    };
   });
 }

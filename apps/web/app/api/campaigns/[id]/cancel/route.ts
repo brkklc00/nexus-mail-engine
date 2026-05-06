@@ -10,9 +10,14 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   }
   const { id } = await params;
   try {
-    await cancelCampaign(id);
+    const result = await cancelCampaign(id);
     await writeAuditLog(session.userId, "campaign.cancel", "campaign", { campaignId: id });
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({
+      ok: true,
+      campaignId: result.campaignId,
+      status: result.status,
+      recipientCleanup: result.recipientCleanup
+    });
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 400 });
   }

@@ -330,11 +330,18 @@ export function CampaignOperations() {
       const endpoint = action === "delete" ? `/api/campaigns/${campaignId}` : `/api/campaigns/${campaignId}/${action}`;
       const method = action === "delete" ? "DELETE" : "POST";
       const response = await fetch(endpoint, { method });
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        recipientCleanup?: "running" | "completed";
+      };
       if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string };
         throw new Error(payload.error ?? `${action} failed`);
       }
-      toast.success(`Campaign ${action} succeeded`);
+      if (action === "cancel") {
+        toast.info("Campaign canceled. Pending recipients will stop processing.");
+      } else {
+        toast.success(`Campaign ${action} succeeded`);
+      }
       await fetchCampaigns();
       if (detailData?.id === campaignId) {
         await fetchCampaignDetail(campaignId);

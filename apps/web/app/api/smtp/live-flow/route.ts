@@ -21,6 +21,33 @@ function maskEmail(email: string | null | undefined): string {
   return `${visible}${"*".repeat(Math.max(1, local.length - 2))}@${domain}`;
 }
 
+type WarmupRow = {
+  smtpAccountId: string;
+  successfulDeliveries: number | null;
+  failedDeliveries: number | null;
+  updatedAt: Date | null;
+};
+
+type ActiveSmtpRow = {
+  id: string;
+  fromEmail: string | null;
+  isThrottled: boolean | null;
+  healthStatus: string | null;
+};
+
+type RecentLogRow = {
+  createdAt: Date;
+  eventType: string;
+  status: string;
+  message: string | null;
+  metadata: unknown;
+  campaign: {
+    name: string;
+    smtpAccount: { fromEmail: string | null } | null;
+  } | null;
+  recipient: { email: string | null } | null;
+};
+
 export async function GET() {
   const session = await getSession();
   if (!session) {
@@ -97,7 +124,7 @@ export async function GET() {
     string,
     { successfulDeliveries: number; failedDeliveries: number; updatedAt: string | null }
   >(
-    warmupRows.map((row) => [
+    (warmupRows as WarmupRow[]).map((row) => [
       row.smtpAccountId,
       {
         successfulDeliveries: Number(row.successfulDeliveries ?? 0),
@@ -107,7 +134,7 @@ export async function GET() {
     ])
   );
 
-  const smtpActivity = activeSmtps.map((smtp) => {
+  const smtpActivity = (activeSmtps as ActiveSmtpRow[]).map((smtp) => {
     const warm = warmupMap.get(smtp.id);
     const sentPerMinute = Number(throughputMap.get(smtp.id) ?? 0);
     const status =
@@ -123,10 +150,10 @@ export async function GET() {
     };
   });
 
-  const recentEvents = recentLogs.map((log) => {
+  const recentEvents = (recentLogs as RecentLogRow[]).map((log) => {
     const metadata = (log.metadata ?? {}) as { smtpAccountId?: string };
     const smtpFromEmail =
-      activeSmtps.find((smtp) => smtp.id === metadata.smtpAccountId)?.fromEmail ??
+      (activeSmtps as ActiveSmtpRow[]).find((smtp) => smtp.id === metadata.smtpAccountId)?.fromEmail ??
       log.campaign?.smtpAccount?.fromEmail ??
       "-";
     const isSuccess = log.eventType === "sent" && log.status !== "failed";

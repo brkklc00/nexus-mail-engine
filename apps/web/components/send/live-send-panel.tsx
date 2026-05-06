@@ -141,11 +141,12 @@ export function LiveSendPanel() {
           parallelSmtpCount: Math.max(
             1,
             Number(
-              usableSmtpPool.length ||
-                data.defaults?.parallelSmtpCount ??
-                data.poolSettings?.parallelSmtpCount ??
-                data.poolSettings?.parallelSmtpLanes ??
-                1
+              usableSmtpPool.length > 0
+                ? usableSmtpPool.length
+                : (data.defaults?.parallelSmtpCount ??
+                  data.poolSettings?.parallelSmtpCount ??
+                  data.poolSettings?.parallelSmtpLanes ??
+                  1)
             )
           ),
           strategy: data.defaults?.strategy ?? "round_robin"
@@ -314,11 +315,17 @@ export function LiveSendPanel() {
     setActionLoading(kind);
     try {
       const res = await fetch(`/api/campaigns/${campaignId}/${kind}`, { method: "POST" });
+      const payload = (await res.json().catch(() => ({}))) as {
+        error?: string;
+      };
       if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(err.error ?? `${kind} failed`);
+        throw new Error(payload.error ?? `${kind} failed`);
       }
-      toast.info(`Campaign ${kind} request accepted`);
+      if (kind === "cancel") {
+        toast.info("Campaign canceled. Pending recipients will stop processing.");
+      } else {
+        toast.info(`Campaign ${kind} request accepted`);
+      }
     } catch (error) {
       toast.error(`Campaign ${kind} failed`, error instanceof Error ? error.message : `${kind} failed`);
     } finally {
