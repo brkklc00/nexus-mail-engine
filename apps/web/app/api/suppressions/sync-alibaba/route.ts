@@ -24,13 +24,11 @@ type NormalizedDateRange = {
   rawTo: string;
   from: Date;
   to: Date;
-  timezone: string;
   todayDayKey: string;
   yesterdayDayKey: string;
 };
 
-type AlibabaDayRange = {
-  day: string;
+type AlibabaApiRange = {
   startTime: string;
   endTime: string;
 };
@@ -85,31 +83,19 @@ function parseDateInput(value: string): Date | null {
   return parsed;
 }
 
-function toTimezoneParts(date: Date, timezone: string) {
-  const formatter = new Intl.DateTimeFormat("en-GB", {
-    timeZone: timezone,
+function toDateParts(date: Date) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
     year: "numeric",
     month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
+    day: "2-digit"
   });
   const parts = formatter.formatToParts(date);
   const valueOf = (type: string) => parts.find((item) => item.type === type)?.value ?? "";
   return {
     year: valueOf("year"),
     month: valueOf("month"),
-    day: valueOf("day"),
-    hour: valueOf("hour"),
-    minute: valueOf("minute"),
-    second: valueOf("second")
+    day: valueOf("day")
   };
-}
-
-function resolveAlibabaTimezone(): string {
-  return "Asia/Singapore";
 }
 
 function normalizeDateRange(rawFrom: string, rawTo: string): NormalizedDateRange | null {
@@ -120,8 +106,7 @@ function normalizeDateRange(rawFrom: string, rawTo: string): NormalizedDateRange
   const to = parsedTo;
   const from = parsedFrom;
   if (from.getTime() > to.getTime()) return null;
-  const timezone = resolveAlibabaTimezone();
-  const todayDayKey = dayKeyInTimezone(new Date(), timezone);
+  const todayDayKey = dayKey(new Date());
   const yesterdayDayKey = previousDayKey(todayDayKey);
 
   return {
@@ -129,25 +114,14 @@ function normalizeDateRange(rawFrom: string, rawTo: string): NormalizedDateRange
     rawTo,
     from,
     to,
-    timezone,
     todayDayKey,
     yesterdayDayKey
   };
 }
 
-function dayKeyInTimezone(date: Date, timezone: string): string {
-  const parts = toTimezoneParts(date, timezone);
+function dayKey(date: Date): string {
+  const parts = toDateParts(date);
   return `${parts.year}-${parts.month}-${parts.day}`;
-}
-
-function nextDayKey(dayKey: string): string {
-  const [year, month, day] = dayKey.split("-").map(Number);
-  const next = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
-  next.setUTCDate(next.getUTCDate() + 1);
-  const y = next.getUTCFullYear();
-  const m = String(next.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(next.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
 }
 
 function previousDayKey(dayKey: string): string {
@@ -160,53 +134,77 @@ function previousDayKey(dayKey: string): string {
   return `${y}-${m}-${d}`;
 }
 
+function dayKeyDaysAgo(fromDayKey: string, days: number): string {
+  const [year, month, day] = fromDayKey.split("-").map(Number);
+  const value = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+  value.setUTCDate(value.getUTCDate() - Math.max(0, days));
+  const y = value.getUTCFullYear();
+  const m = String(value.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(value.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function daySpanInclusive(startDayKey: string, endDayKey: string): number {
+  const [sy, sm, sd] = startDayKey.split("-").map(Number);
+  const [ey, em, ed] = endDayKey.split("-").map(Number);
+  const startMs = Date.UTC(sy, sm - 1, sd, 0, 0, 0);
+  const endMs = Date.UTC(ey, em - 1, ed, 0, 0, 0);
+  if (endMs < startMs) return 0;
+  return Math.floor((endMs - startMs) / 86_400_000) + 1;
+}
+
 function compareDayKey(a: string, b: string): number {
   if (a === b) return 0;
   return a < b ? -1 : 1;
 }
 
-function buildAlibabaDailyRanges(input: {
+function resolveAlibabaApiRange(input: {
   from: Date;
   to: Date;
-  timezone: string;
   todayDayKey: string;
-  fallbackDayKey: string;
-}): { ranges: AlibabaDayRange[]; warning: string | null } {
-  const { from, to, timezone, todayDayKey, fallbackDayKey } = input;
-  const fromKey = dayKeyInTimezone(from, timezone);
-  const toKey = dayKeyInTimezone(to, timezone);
+  yesterdayDayKey: string;
+}): { range: AlibabaApiRange; warnings: string[] } {
+  const { from, to, todayDayKey, yesterdayDayKey } = input;
+  const warnings: string[] = [];
+  let startKey = dayKey(from);
+  let endKey = dayKey(to);
 
-  const ranges: AlibabaDayRange[] = [];
-  let selectedToday = false;
-  let cursor = fromKey;
-  while (compareDayKey(cursor, toKey) <= 0) {
-    if (compareDayKey(cursor, todayDayKey) >= 0) {
-      if (cursor === todayDayKey) selectedToday = true;
-      cursor = nextDayKey(cursor);
-      continue;
+  if (compareDayKey(endKey, todayDayKey) >= 0) {
+    endKey = yesterdayDayKey;
+    warnings.push("Alibaba DirectMail only supports completed days. Showing yesterday instead.");
+  }
+  if (compareDayKey(startKey, todayDayKey) >= 0) {
+    startKey = endKey;
+    if (!warnings.includes("Alibaba DirectMail only supports completed days. Showing yesterday instead.")) {
+      warnings.push("Alibaba DirectMail only supports completed days. Showing yesterday instead.");
     }
-    ranges.push({
-      day: cursor,
-      startTime: `${cursor} 00:00:00`,
-      endTime: `${cursor} 23:59:59`
-    });
-    cursor = nextDayKey(cursor);
   }
-  if (ranges.length > 0) {
-    return {
-      ranges,
-      warning: selectedToday ? "Alibaba DirectMail only supports completed days. Showing yesterday instead." : null
-    };
+  if (compareDayKey(startKey, endKey) > 0) {
+    startKey = endKey;
   }
+
+  const minStartKey = dayKeyDaysAgo(todayDayKey, 30);
+  if (compareDayKey(startKey, minStartKey) < 0) {
+    startKey = minStartKey;
+    warnings.push("Alibaba DirectMail supports max 30-day lookback. Start date was clamped.");
+  }
+  if (compareDayKey(endKey, minStartKey) < 0) {
+    endKey = minStartKey;
+    warnings.push("Alibaba DirectMail supports max 30-day lookback. End date was clamped.");
+  }
+
+  const span = daySpanInclusive(startKey, endKey);
+  if (span > 30) {
+    startKey = dayKeyDaysAgo(endKey, 29);
+    warnings.push("Alibaba DirectMail supports max 30-day range. Date range was clamped.");
+  }
+
   return {
-    ranges: [
-      {
-        day: fallbackDayKey,
-        startTime: `${fallbackDayKey} 00:00:00`,
-        endTime: `${fallbackDayKey} 23:59:59`
-      }
-    ],
-    warning: "Alibaba DirectMail only supports completed days. Showing yesterday instead."
+    range: {
+      startTime: startKey,
+      endTime: endKey
+    },
+    warnings
   };
 }
 
@@ -214,7 +212,9 @@ function buildSignedAlibabaUrl(
   credentials: AlibabaCredentials,
   action: string,
   fromAlibaba: string,
-  toAlibaba: string
+  toAlibaba: string,
+  length: number,
+  nextStart: number | null
 ): string {
   const endpoint = process.env.ALIBABA_DM_API_ENDPOINT ?? `https://dm.${credentials.region}.aliyuncs.com/`;
   const nonce = crypto.randomUUID();
@@ -231,9 +231,11 @@ function buildSignedAlibabaUrl(
     RegionId: credentials.region,
     StartTime: fromAlibaba,
     EndTime: toAlibaba,
-    PageNumber: "1",
-    PageSize: String(Math.max(1, Number(process.env.ALIBABA_DM_SYNC_PAGE_SIZE ?? 100)))
+    Length: String(Math.max(1, Math.floor(length)))
   });
+  if (typeof nextStart === "number" && Number.isFinite(nextStart) && nextStart >= 0) {
+    params.set("NextStart", String(Math.floor(nextStart)));
+  }
   const sorted = [...params.entries()].sort(([a], [b]) => a.localeCompare(b));
   const canonicalized = sorted.map(([k, v]) => `${percentEncode(k)}=${percentEncode(v)}`).join("&");
   const stringToSign = `GET&${percentEncode("/")}&${percentEncode(canonicalized)}`;
@@ -295,20 +297,19 @@ export async function POST(req: Request) {
   const mode = resolveMode();
   const credentials = resolveCredentials();
   const credentialsPresent = Boolean(credentials);
-  const { ranges: alibabaDayRanges, warning: rangeWarning } = buildAlibabaDailyRanges({
+  const { range: alibabaApiRange, warnings: rangeWarnings } = resolveAlibabaApiRange({
     from,
     to,
-    timezone: normalizedRange.timezone,
     todayDayKey: normalizedRange.todayDayKey,
-    fallbackDayKey: normalizedRange.yesterdayDayKey
+    yesterdayDayKey: normalizedRange.yesterdayDayKey
   });
   const errors: string[] = [];
-  const warnings: string[] = rangeWarning ? [rangeWarning] : [];
+  const warnings: string[] = [...rangeWarnings];
   let apiRequestMade = false;
   let totalReportsReturned = 0;
   let removedFromLists = 0;
   let listRemovalSkipped = 0;
-  const finalParams: Array<{ startTime: string; endTime: string; timezone: string }> = [];
+  const finalParams: Array<{ startTime: string; endTime: string }> = [];
 
   if (mode === "disabled") {
     await writeAuditLog(session.userId, "suppression.sync_alibaba", "suppression", {
@@ -320,7 +321,6 @@ export async function POST(req: Request) {
       ok: true,
       mode,
       dateRange: { from: from.toISOString(), to: to.toISOString() },
-      timezone: normalizedRange.timezone,
       warnings,
       credentialsPresent,
       apiRequestMade,
@@ -348,48 +348,32 @@ export async function POST(req: Request) {
   if (mode === "real_api" && credentialsPresent && credentials) {
     try {
       const action = process.env.ALIBABA_DM_SUPPRESSION_ACTION ?? "QueryInvalidAddress";
-      const invalidRange = alibabaDayRanges.find(
-        (range) =>
-          range.startTime.slice(0, 10) !== range.endTime.slice(0, 10) ||
-          range.endTime <= range.startTime
-      );
-      if (invalidRange) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "Alibaba range validation failed: StartTime and EndTime must be same day and EndTime > StartTime",
-            finalParams: [
-              {
-                startTime: invalidRange.startTime,
-                endTime: invalidRange.endTime,
-                timezone: normalizedRange.timezone
-              }
-            ],
-            warnings
-          },
-          { status: 400 }
-        );
-      }
+      const requestLength = Math.max(1, Number(process.env.ALIBABA_DM_SYNC_PAGE_SIZE ?? 100));
+      let nextStart: number | null = null;
+      finalParams.push({
+        startTime: alibabaApiRange.startTime,
+        endTime: alibabaApiRange.endTime
+      });
 
-      for (const dayRange of alibabaDayRanges) {
-        finalParams.push({
-          startTime: dayRange.startTime,
-          endTime: dayRange.endTime,
-          timezone: normalizedRange.timezone
-        });
-        const signedUrl = buildSignedAlibabaUrl(credentials, action, dayRange.startTime, dayRange.endTime);
+      do {
+        const signedUrl = buildSignedAlibabaUrl(
+          credentials,
+          action,
+          alibabaApiRange.startTime,
+          alibabaApiRange.endTime,
+          requestLength,
+          nextStart
+        );
         apiRequestMade = true;
         const debugUrl = new URL(signedUrl);
         const debugQuery = {
           Action: debugUrl.searchParams.get("Action"),
-          RegionId: debugUrl.searchParams.get("RegionId"),
           StartTime: debugUrl.searchParams.get("StartTime"),
           EndTime: debugUrl.searchParams.get("EndTime"),
-          PageNumber: debugUrl.searchParams.get("PageNumber"),
-          PageSize: debugUrl.searchParams.get("PageSize"),
-          Timestamp: debugUrl.searchParams.get("Timestamp")
+          Length: debugUrl.searchParams.get("Length"),
+          NextStart: debugUrl.searchParams.get("NextStart")
         };
-        console.info("[suppression.sync_alibaba] final_query_params", debugQuery);
+        console.info("[alibaba.sync] QueryInvalidAddress params", debugQuery);
 
         const response = await fetch(signedUrl, { method: "GET", cache: "no-store" });
         const payload = (await response.json().catch(() => ({}))) as any;
@@ -415,12 +399,21 @@ export async function POST(req: Request) {
             /invaliddate\.malformed/i.test(alibabaMessage ?? "") ||
             /specified date is invalid/i.test(alibabaMessage ?? "")
           ) {
-            errors.push(
-              `Final Alibaba params => StartTime=${dayRange.startTime}, EndTime=${dayRange.endTime}, Timezone=${normalizedRange.timezone}`
-            );
+            errors.push("Alibaba rejected StartTime/EndTime. Expected format is YYYY-MM-DD.");
           }
         }
-      }
+        const payloadNextStart =
+          typeof payload?.Data?.NextStart === "number"
+            ? payload.Data.NextStart
+            : typeof payload?.NextStart === "number"
+              ? payload.NextStart
+              : null;
+        if (typeof payloadNextStart === "number" && Number.isFinite(payloadNextStart) && payloadNextStart >= 0) {
+          nextStart = payloadNextStart;
+        } else {
+          nextStart = null;
+        }
+      } while (nextStart !== null);
 
       console.info("[suppression.sync_alibaba] request_diagnostics", {
         rawSelectedRange: { from: normalizedRange.rawFrom, to: normalizedRange.rawTo },
@@ -575,7 +568,6 @@ export async function POST(req: Request) {
       startTime: finalParams[0]?.startTime ?? "",
       endTime: finalParams[0]?.endTime ?? ""
     },
-    timezone: normalizedRange.timezone,
     finalParams,
     warnings,
     credentialsPresent,
@@ -597,7 +589,6 @@ export async function POST(req: Request) {
     mode,
     dateRange: summary.dateRange,
     normalizedApiRange: summary.normalizedApiRange,
-    timezone: summary.timezone,
     finalParams: summary.finalParams,
     warnings: summary.warnings,
     credentialsPresent,

@@ -44,8 +44,7 @@ type AlibabaSyncResult = {
   mode: "real_api" | "mock" | "disabled";
   dateRange: { from: string; to: string };
   normalizedApiRange?: { startTime: string; endTime: string };
-  timezone?: string;
-  finalParams?: Array<{ startTime: string; endTime: string; timezone: string }>;
+  finalParams?: Array<{ startTime: string; endTime: string }>;
   warnings?: string[];
   credentialsPresent: boolean;
   apiRequestMade: boolean;
@@ -485,8 +484,8 @@ export function SuppressionManager() {
             ? "Alibaba sync is not connected to the real API yet."
             : !payload.credentialsPresent
               ? "Alibaba credentials are not configured."
-              : payload.errors.some((item) => /specified date is invalid|invalid date/i.test(item))
-                ? "Alibaba date rejected. Check Alibaba Final Params in sync summary."
+              : payload.errors.some((item) => /invaliddate\.malformed|specified date is invalid|starttime\/endtime/i.test(item))
+                ? "Alibaba rejected StartTime/EndTime. Expected format is YYYY-MM-DD."
               : payload.apiRequestMade && payload.totalReportsReturned === 0
                 ? "Alibaba API connected, but no failed delivery reports were found for the selected date range."
                 : `Scanned ${payload.scanned}, matched ${payload.matched}, added ${payload.added}, removed from lists ${payload.removedFromLists}.`;
@@ -965,7 +964,7 @@ export function SuppressionManager() {
                   <p className="font-medium">Alibaba Final Params</p>
                   {syncSummary.finalParams.map((item, index) => (
                     <p key={`${item.startTime}-${item.endTime}-${index}`}>
-                      StartTime={item.startTime} | EndTime={item.endTime} | Timezone={item.timezone}
+                      StartTime={item.startTime} | EndTime={item.endTime}
                     </p>
                   ))}
                 </div>
@@ -1013,14 +1012,6 @@ export function SuppressionManager() {
               syncSummary.totalReportsReturned === 0 ? (
                 <p className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
                   Alibaba API connected, but no failed delivery reports were found for the selected date range.
-                </p>
-              ) : null}
-              {syncSummary.mode === "real_api" &&
-              syncSummary.credentialsPresent &&
-              syncSummary.apiRequestMade &&
-              syncSummary.errors.some((item) => /specified date is invalid|invalid date/i.test(item)) ? (
-                <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
-                  Alibaba rejected date range. Verify Alibaba Final Params.
                 </p>
               ) : null}
               {syncSummary.errors.length > 0 ? (
