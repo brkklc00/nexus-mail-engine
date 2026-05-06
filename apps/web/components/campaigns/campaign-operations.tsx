@@ -92,6 +92,23 @@ type CampaignListResponse = {
   filters: FilterOptions;
 };
 
+type QueueAdminAction = "pause" | "resume" | "clean_stale_campaign_jobs" | "clean_failed" | "clean_completed";
+
+type QueueAdminResponse = {
+  ok: boolean;
+  action?: QueueAdminAction;
+  cleaned?: number;
+  skippedActive?: number;
+  skippedUnknown?: number;
+  queueCounts?: {
+    campaign?: Record<string, number>;
+    delivery?: Record<string, number>;
+    retry?: Record<string, number>;
+    dead?: Record<string, number>;
+  };
+  error?: string;
+};
+
 type CampaignDetailResponse = {
   campaign: {
     id: string;
@@ -238,6 +255,10 @@ export function CampaignOperations() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; status: CampaignStatus } | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [queueActionLoading, setQueueActionLoading] = useState<QueueAdminAction | null>(null);
+  const [queueSummary, setQueueSummary] = useState<QueueAdminResponse | null>(null);
+  const [queueConfirmAction, setQueueConfirmAction] = useState<QueueAdminAction | null>(null);
+  const [queueConfirmText, setQueueConfirmText] = useState("");
 
   const listsAndSegments = useMemo(() => {
     if (!data) return [];
@@ -419,6 +440,42 @@ export function CampaignOperations() {
     setPage(1);
   }, []);
 
+  async function runQueueAction(action: QueueAdminAction) {
+    setQueueActionLoading(action);
+    try {
+      const response = await fetch("/api/queue/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action })
+      });
+      const payload = (await response.json().catch(() => ({}))) as QueueAdminResponse;
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Kuyruk islemi basarisiz");
+      }
+      setQueueSummary(payload);
+      toast.success(
+        "Kuyruk işlemi tamamlandı",
+        `Temizlenen: ${payload.cleaned ?? 0} · Korunan aktif: ${payload.skippedActive ?? 0} · Atlanan: ${payload.skippedUnknown ?? 0}`
+      );
+      setQueueConfirmAction(null);
+      setQueueConfirmText("");
+      await fetchCampaigns();
+    } catch (err) {
+      toast.error("Kuyruk islemi basarisiz", err instanceof Error ? err.message : "Beklenmeyen hata");
+    } finally {
+      setQueueActionLoading(null);
+    }
+  }
+
+  function requestQueueAction(action: QueueAdminAction) {
+    if (action === "clean_stale_campaign_jobs" || action === "clean_failed" || action === "clean_completed") {
+      setQueueConfirmAction(action);
+      setQueueConfirmText("");
+      return;
+    }
+    void runQueueAction(action);
+  }
+
   return (
     <div className="space-y-4">
       <section className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -451,6 +508,46 @@ export function CampaignOperations() {
               <RefreshCw className="h-3.5 w-3.5" />
               Yenile
             </button>
+            <button
+              type="button"
+              onClick={() => requestQueueAction("pause")}
+              disabled={queueActionLoading !== null}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
+            >
+              Kuyrugu Duraklat
+            </button>
+            <button
+              type="button"
+              onClick={() => requestQueueAction("resume")}
+              disabled={queueActionLoading !== null}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
+            >
+              Kuyrugu Devam Ettir
+            </button>
+            <button
+              type="button"
+              onClick={() => requestQueueAction("clean_stale_campaign_jobs")}
+              disabled={queueActionLoading !== null}
+              className="rounded-lg border border-amber-500/40 px-3 py-1.5 text-xs text-amber-200 hover:bg-amber-500/10 disabled:opacity-50"
+            >
+              Eski/Iptal Edilmis Isleri Temizle
+            </button>
+            <button
+              type="button"
+              onClick={() => requestQueueAction("clean_failed")}
+              disabled={queueActionLoading !== null}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
+            >
+              Basarisiz Isleri Temizle
+            </button>
+            <button
+              type="button"
+              onClick={() => requestQueueAction("clean_completed")}
+              disabled={queueActionLoading !== null}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
+            >
+              Tamamlanan Isleri Temizle
+            </button>
             <select
               value={`${autoRefresh}`}
               onChange={(event) => setAutoRefresh(Number(event.target.value) as 0 | 5 | 10)}
@@ -470,6 +567,17 @@ export function CampaignOperations() {
           <QueuePill label="Retry Bekleyen" value={stats?.queue.retryWaiting ?? 0} />
           <QueuePill label="Dead Bekleyen" value={stats?.queue.deadWaiting ?? 0} />
         </div>
+        {queueSummary ? (
+          <div className="mt-3 rounded-lg border border-border bg-zinc-900/50 p-3 text-xs text-zinc-300">
+            <p>Temizlenen is: {queueSummary.cleaned ?? 0}</p>
+            <p>Korunan aktif kampanya isi: {queueSummary.skippedActive ?? 0}</p>
+            <p>Bilinmeyen/atlanmis is: {queueSummary.skippedUnknown ?? 0}</p>
+            <p>
+              Guncel kuyruk bekleyen:{" "}
+              {Number(queueSummary.queueCounts?.delivery?.waiting ?? 0) + Number(queueSummary.queueCounts?.retry?.waiting ?? 0)}
+            </p>
+          </div>
+        ) : null}
       </section>
 
       <section className="rounded-2xl border border-border bg-card p-4">
@@ -979,6 +1087,45 @@ export function CampaignOperations() {
                 className="rounded-lg border border-rose-500/60 px-3 py-2 text-xs text-rose-200 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {pendingAction === `${deleteTarget.id}:delete` ? "Siliniyor..." : "Kampanyayi sil"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {queueConfirmAction ? (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-2xl border border-border bg-zinc-950 p-4">
+            <p className="text-base font-semibold text-white">Kuyruk temizleme onayi</p>
+            <p className="mt-2 text-sm text-zinc-300">
+              Bu işlem yalnızca iptal edilmiş, tamamlanmış, başarısız veya silinmiş kampanyalara ait kuyruk işlerini temizler.
+              Aktif kampanyaların kuyrukları korunur.
+            </p>
+            <p className="mt-2 text-xs text-zinc-500">Onaylamak icin TEMIZLE yazin.</p>
+            <input
+              value={queueConfirmText}
+              onChange={(event) => setQueueConfirmText(event.target.value)}
+              className="mt-2 w-full rounded-lg border border-border bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-400"
+              placeholder="TEMIZLE"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setQueueConfirmAction(null);
+                  setQueueConfirmText("");
+                }}
+                className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
+              >
+                Vazgec
+              </button>
+              <button
+                type="button"
+                disabled={queueConfirmText.trim().toUpperCase() !== "TEMIZLE" || queueActionLoading !== null}
+                onClick={() => void runQueueAction(queueConfirmAction)}
+                className="rounded-lg border border-amber-500/50 px-3 py-2 text-xs text-amber-200 hover:bg-amber-500/10 disabled:opacity-50"
+              >
+                {queueActionLoading ? "Calisiyor..." : "Temizlemeyi Onayla"}
               </button>
             </div>
           </div>
