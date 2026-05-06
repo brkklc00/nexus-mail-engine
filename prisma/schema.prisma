@@ -198,6 +198,8 @@ model Campaign {
   startedAt           DateTime?
   finishedAt          DateTime?
   stoppedEarly        Boolean        @default(false)
+  isDeleted           Boolean        @default(false)
+  deletedAt           DateTime?
   effectiveRate       Float?
   throttled           Boolean        @default(false)
   throttleReason      String?
@@ -228,6 +230,7 @@ model Campaign {
   recipients          CampaignRecipient[]
 
   @@index([status, createdAt])
+  @@index([isDeleted, createdAt])
   @@index([smtpAccountId, status])
   @@index([provider, status])
   @@index([startedAt, finishedAt])

@@ -135,6 +135,7 @@ export async function GET(req: Request) {
   const templateId = (url.searchParams.get("templateId") ?? "").trim();
   const listSegmentId = (url.searchParams.get("listSegmentId") ?? "").trim();
   const smtpAccountId = (url.searchParams.get("smtpAccountId") ?? "").trim();
+  const includeDeleted = (url.searchParams.get("includeDeleted") ?? "").trim().toLowerCase() === "true";
   const dateWindow = resolveDateRange(
     url.searchParams.get("range"),
     url.searchParams.get("from"),
@@ -142,6 +143,7 @@ export async function GET(req: Request) {
   );
 
   const where: any = {
+    ...(includeDeleted ? {} : { isDeleted: false }),
     ...(search
       ? {
           OR: [{ name: { contains: search, mode: "insensitive" } }, { subject: { contains: search, mode: "insensitive" } }]
@@ -176,6 +178,7 @@ export async function GET(req: Request) {
     }),
     prisma.campaign.count({ where }),
     prisma.campaign.findMany({
+      where,
       select: {
         id: true,
         status: true,

@@ -172,17 +172,40 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
 
   const campaign = await prisma.campaign.findUnique({
     where: { id },
-    select: { status: true }
+    select: { status: true, id: true }
   });
   if (!campaign) {
     return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
   }
 
-  if (!["pending", "failed", "canceled", "completed"].includes(campaign.status)) {
-    return NextResponse.json({ error: "Campaign cannot be deleted in current state" }, { status: 400 });
+  if (campaign.status === "running" || campaign.status === "queued") {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Running campaigns must be canceled before deletion.",
+        code: "campaign_must_be_canceled_first"
+      },
+      { status: 400 }
+    );
+  }
+  if (!["completed", "canceled", "failed", "partially_completed"].includes(campaign.status)) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Campaign cannot be deleted in current state.",
+        code: "campaign_delete_not_allowed"
+      },
+      { status: 400 }
+    );
   }
 
-  await prisma.campaign.delete({ where: { id } });
+  await prisma.campaign.update({
+    where: { id },
+    data: {
+      isDeleted: true,
+      deletedAt: new Date()
+    } as any
+  } as any);
   await writeAuditLog(session.userId, "campaign.delete", "campaign", { campaignId: id });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, campaignId: id, deleted: true });
 }

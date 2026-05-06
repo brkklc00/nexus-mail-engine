@@ -180,10 +180,11 @@ function toneForStatus(status: string): "success" | "danger" | "warning" | "info
 }
 
 function availableActions(status: CampaignStatus): Array<"start" | "pause" | "resume" | "cancel" | "report" | "delete" | "view"> {
-  if (status === "running") return ["pause", "cancel", "view", "report"];
+  if (status === "running") return ["pause", "cancel", "view", "report", "delete"];
   if (status === "paused") return ["resume", "cancel", "view", "report"];
-  if (status === "pending" || status === "queued") return ["start", "cancel", "view"];
-  if (status === "completed") return ["view", "report"];
+  if (status === "pending") return ["start", "cancel", "view"];
+  if (status === "queued") return ["start", "cancel", "view", "delete"];
+  if (status === "completed" || status === "partially_completed") return ["view", "report", "delete"];
   if (status === "canceled") return ["view", "delete"];
   if (status === "failed") return ["view", "report", "delete"];
   return ["view"];
@@ -214,6 +215,9 @@ export function CampaignOperations() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailData, setDetailData] = useState<CampaignDetailResponse["campaign"] | null>(null);
   const [reportSummary, setReportSummary] = useState<SummaryReport | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; status: CampaignStatus } | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
   const listsAndSegments = useMemo(() => {
     if (!data) return [];
@@ -303,7 +307,13 @@ export function CampaignOperations() {
     return () => window.clearInterval(timer);
   }, [autoRefresh, fetchCampaigns]);
 
-  async function runAction(campaignId: string, action: "start" | "pause" | "resume" | "cancel" | "delete") {
+  async function runAction(
+    campaignId: string,
+    action: "start" | "pause" | "resume" | "cancel" | "delete",
+    campaignStatus?: CampaignStatus,
+    campaignName?: string,
+    forceDelete = false
+  ) {
     if (action === "cancel") {
       const ok = await confirm({
         title: "Campaign iptal edilsin mi?",
@@ -314,15 +324,19 @@ export function CampaignOperations() {
       });
       if (!ok) return;
     }
-    if (action === "delete") {
-      const ok = await confirm({
-        title: "Campaign silinsin mi?",
-        message: "This action is irreversible. It can be deleted only in safe statuses.",
-        confirmLabel: "Sil",
-        cancelLabel: "Cancel",
-        tone: "danger"
+    if (action === "delete" && !forceDelete) {
+      if (campaignStatus === "running" || campaignStatus === "queued") {
+        toast.warning("Running campaigns must be canceled before deletion.");
+        return;
+      }
+      setDeleteTarget({
+        id: campaignId,
+        name: campaignName ?? campaignId,
+        status: campaignStatus ?? "unknown"
       });
-      if (!ok) return;
+      setDeleteConfirmText("");
+      setDeleteDialogOpen(true);
+      return;
     }
 
     setPendingAction(`${campaignId}:${action}`);
@@ -335,15 +349,24 @@ export function CampaignOperations() {
         recipientCleanup?: "running" | "completed";
       };
       if (!response.ok) {
+        if (payload.error && /campaign_must_be_canceled_first/i.test(payload.error)) {
+          throw new Error("Running campaigns must be canceled before deletion.");
+        }
         throw new Error(payload.error ?? `${action} failed`);
       }
       if (action === "cancel") {
         toast.info("Campaign canceled. Pending recipients will stop processing.");
+      } else if (action === "delete") {
+        toast.success("Campaign deleted successfully.");
+        if (detailData?.id === campaignId) {
+          setDetailOpen(false);
+          setDetailData(null);
+        }
       } else {
         toast.success(`Campaign ${action} succeeded`);
       }
       await fetchCampaigns();
-      if (detailData?.id === campaignId) {
+      if (action !== "delete" && detailData?.id === campaignId) {
         await fetchCampaignDetail(campaignId);
       }
     } catch (err) {
@@ -354,6 +377,7 @@ export function CampaignOperations() {
   }
 
   const stats = data?.stats;
+  const deleteReady = deleteConfirmText.trim().toUpperCase() === "DELETE";
 
   return (
     <div className="space-y-4">
@@ -659,7 +683,7 @@ export function CampaignOperations() {
                                 icon={Trash2}
                                 intent="danger"
                                 loading={pendingAction === `${row.id}:delete`}
-                                onClick={() => void runAction(row.id, "delete")}
+                                onClick={() => void runAction(row.id, "delete", row.status, row.name)}
                               />
                             ) : null}
                           </div>
@@ -882,6 +906,54 @@ export function CampaignOperations() {
                 ) : null}
               </div>
             )}
+          </div>
+        </div>
+      ) : null}
+
+      {deleteDialogOpen && deleteTarget ? (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-border bg-zinc-950 p-4">
+            <p className="text-base font-semibold text-white">Delete campaign?</p>
+            <p className="mt-2 text-sm text-zinc-300">
+              This will remove the campaign from the campaign list. Delivery logs and reports will be preserved.
+            </p>
+            <p className="mt-2 text-xs text-zinc-500">Campaign: {deleteTarget.name}</p>
+            <div className="mt-3">
+              <label className="text-xs text-zinc-400">Type DELETE to confirm</label>
+              <input
+                value={deleteConfirmText}
+                onChange={(event) => setDeleteConfirmText(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-rose-400"
+                placeholder="DELETE"
+              />
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteDialogOpen(false);
+                  setDeleteTarget(null);
+                  setDeleteConfirmText("");
+                }}
+                className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!deleteReady || pendingAction === `${deleteTarget.id}:delete`}
+                onClick={async () => {
+                  const targetId = deleteTarget.id;
+                  setDeleteDialogOpen(false);
+                  await runAction(targetId, "delete", deleteTarget.status, deleteTarget.name, true);
+                  setDeleteTarget(null);
+                  setDeleteConfirmText("");
+                }}
+                className="rounded-lg border border-rose-500/60 px-3 py-2 text-xs text-rose-200 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {pendingAction === `${deleteTarget.id}:delete` ? "Deleting..." : "Delete campaign"}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
