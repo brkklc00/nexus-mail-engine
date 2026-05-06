@@ -4,9 +4,11 @@ import { campaignQueue, deadLetterQueue, deliveryQueue, retryQueue } from "@nexu
 import { getSession } from "@/server/auth/session";
 
 const ACTIVE_CAMPAIGN_STATUSES = new Set(["running", "queued", "processing", "sending", "paused", "pending"]);
-const STALE_CAMPAIGN_STATUSES = new Set(["canceled", "completed", "failed", "partially_completed"]);
-const SCAN_BATCH_SIZE = 500;
-const MAX_SCAN_PER_QUEUE = 20000;
+const STALE_CAMPAIGN_STATUSES = new Set(["canceled", "completed", "failed", "partially_completed", "deleted"]);
+const JOB_SCAN_CHUNK_SIZE = 2000;
+const CAMPAIGN_LOOKUP_CHUNK_SIZE = 2000;
+const REMOVE_CONCURRENCY = 4;
+const MAX_SCAN_PER_QUEUE = 1_500_000;
 const FAILED_CLEAN_AGE_MS = 24 * 60 * 60 * 1000;
 const COMPLETED_CLEAN_AGE_MS = 60 * 60 * 1000;
 
@@ -23,6 +25,19 @@ type CampaignLookup = {
   status: string;
   isDeleted: boolean;
   deletedAt: Date | null;
+};
+
+type QueueJobLike = {
+  id?: string | number;
+  data?: { campaignId?: string };
+  remove?: () => Promise<void>;
+};
+
+type CleanupProgress = {
+  scanned: number;
+  cleaned: number;
+  skippedActive: number;
+  skippedUnknown: number;
 };
 
 function createQueues() {
@@ -54,15 +69,69 @@ async function collectJobs(
   for (const state of states) {
     let start = 0;
     while (start < MAX_SCAN_PER_QUEUE) {
-      const end = Math.min(start + SCAN_BATCH_SIZE - 1, MAX_SCAN_PER_QUEUE - 1);
+      const end = Math.min(start + JOB_SCAN_CHUNK_SIZE - 1, MAX_SCAN_PER_QUEUE - 1);
       const jobs = (await queue.getJobs([state], start, end, true)) as any[];
       if (!jobs.length) break;
       all.push(...jobs);
-      if (jobs.length < SCAN_BATCH_SIZE) break;
-      start += SCAN_BATCH_SIZE;
+      if (jobs.length < JOB_SCAN_CHUNK_SIZE) break;
+      start += JOB_SCAN_CHUNK_SIZE;
     }
   }
   return all;
+}
+
+function isStaleCampaign(campaign: CampaignLookup): boolean {
+  return STALE_CAMPAIGN_STATUSES.has(campaign.status) || campaign.isDeleted || Boolean(campaign.deletedAt);
+}
+
+function isActiveCampaign(campaign: CampaignLookup): boolean {
+  return ACTIVE_CAMPAIGN_STATUSES.has(campaign.status) && !campaign.isDeleted && !campaign.deletedAt;
+}
+
+async function lookupCampaignsByIds(campaignIds: string[]): Promise<Map<string, CampaignLookup>> {
+  const uniqueCampaignIds = Array.from(new Set(campaignIds));
+  const campaignMap = new Map<string, CampaignLookup>();
+  for (let index = 0; index < uniqueCampaignIds.length; index += CAMPAIGN_LOOKUP_CHUNK_SIZE) {
+    const batchIds = uniqueCampaignIds.slice(index, index + CAMPAIGN_LOOKUP_CHUNK_SIZE);
+    const campaigns = await prisma.campaign.findMany({
+      where: { id: { in: batchIds } },
+      select: { id: true, status: true, isDeleted: true, deletedAt: true }
+    });
+    for (const campaign of campaigns as CampaignLookup[]) {
+      campaignMap.set(campaign.id, campaign);
+    }
+  }
+  return campaignMap;
+}
+
+async function removeJobsInParallel(
+  jobs: QueueJobLike[],
+  progress: CleanupProgress
+): Promise<void> {
+  if (!jobs.length) {
+    return;
+  }
+
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(REMOVE_CONCURRENCY, jobs.length) }, async () => {
+    while (cursor < jobs.length) {
+      const current = cursor;
+      cursor += 1;
+      const job = jobs[current];
+      if (typeof job.remove !== "function") {
+        progress.skippedUnknown += 1;
+        continue;
+      }
+      try {
+        await job.remove();
+        progress.cleaned += 1;
+      } catch {
+        progress.skippedUnknown += 1;
+      }
+    }
+  });
+
+  await Promise.all(workers);
 }
 
 export async function POST(req: Request) {
@@ -80,9 +149,12 @@ export async function POST(req: Request) {
   }
 
   const queues = createQueues();
-  let cleaned = 0;
-  let skippedActive = 0;
-  let skippedUnknown = 0;
+  const progress: CleanupProgress = {
+    scanned: 0,
+    cleaned: 0,
+    skippedActive: 0,
+    skippedUnknown: 0
+  };
   const protectedActiveCampaigns = new Set<string>();
 
   try {
@@ -98,7 +170,7 @@ export async function POST(req: Request) {
         queues.retryQueue.clean(FAILED_CLEAN_AGE_MS, 5000, "failed"),
         queues.deadQueue.clean(FAILED_CLEAN_AGE_MS, 5000, "failed")
       ]);
-      cleaned = deliveryIds.length + retryIds.length + deadIds.length;
+      progress.cleaned = deliveryIds.length + retryIds.length + deadIds.length;
     } else if (action === "clean_completed") {
       const [deliveryIds, retryIds, deadIds, campaignIds] = await Promise.all([
         queues.deliveryQueue.clean(COMPLETED_CLEAN_AGE_MS, 5000, "completed"),
@@ -106,7 +178,7 @@ export async function POST(req: Request) {
         queues.deadQueue.clean(COMPLETED_CLEAN_AGE_MS, 5000, "completed"),
         queues.campaignQueue.clean(COMPLETED_CLEAN_AGE_MS, 5000, "completed")
       ]);
-      cleaned = deliveryIds.length + retryIds.length + deadIds.length + campaignIds.length;
+      progress.cleaned = deliveryIds.length + retryIds.length + deadIds.length + campaignIds.length;
     } else if (action === "clean_campaign_jobs") {
       if (!campaignId) {
         return NextResponse.json({ ok: false, error: "campaign_id_required" }, { status: 400 });
@@ -141,64 +213,72 @@ export async function POST(req: Request) {
         if (typeof (job as any)?.remove !== "function") continue;
         try {
           await (job as any).remove();
-          cleaned += 1;
+          progress.cleaned += 1;
         } catch {
-          skippedUnknown += 1;
+          progress.skippedUnknown += 1;
         }
       }
     } else if (action === "clean_stale_campaign_jobs") {
-      const jobs = [
-        ...(await collectJobs(queues.campaignQueue, ["waiting", "delayed", "prioritized"])),
-        ...(await collectJobs(queues.deliveryQueue, ["waiting", "delayed", "prioritized"])),
-        ...(await collectJobs(queues.retryQueue, ["waiting", "delayed", "prioritized"]))
-      ];
-      const campaignIds = Array.from(
-        new Set(jobs.map((job) => (job as any)?.data?.campaignId).filter((id): id is string => typeof id === "string" && id.length > 0))
-      );
-      const campaigns = campaignIds.length
-        ? await prisma.campaign.findMany({
-            where: { id: { in: campaignIds } },
-            select: { id: true, status: true, isDeleted: true, deletedAt: true }
-          })
-        : [];
-      const campaignMap = new Map<string, CampaignLookup>(
-        campaigns.map((campaign: CampaignLookup) => [campaign.id, campaign])
-      );
+      const queueTargets = [queues.campaignQueue, queues.deliveryQueue, queues.retryQueue];
+      const states: Array<"waiting" | "delayed" | "prioritized"> = ["waiting", "delayed", "prioritized"];
 
-      for (const job of jobs) {
-        const jobCampaignId = (job as any)?.data?.campaignId;
-        if (!jobCampaignId || typeof jobCampaignId !== "string") {
-          skippedUnknown += 1;
-          continue;
-        }
-        const campaign = campaignMap.get(jobCampaignId);
-        if (!campaign) {
-          skippedUnknown += 1;
-          continue;
-        }
+      for (const targetQueue of queueTargets) {
+        for (const state of states) {
+          for (let start = 0; start < MAX_SCAN_PER_QUEUE; start += JOB_SCAN_CHUNK_SIZE) {
+            const end = Math.min(start + JOB_SCAN_CHUNK_SIZE - 1, MAX_SCAN_PER_QUEUE - 1);
+            const jobs = (await targetQueue.getJobs([state], start, end, true)) as QueueJobLike[];
+            if (!jobs.length) {
+              break;
+            }
+            progress.scanned += jobs.length;
 
-        const isActive = ACTIVE_CAMPAIGN_STATUSES.has(campaign.status);
-        const isSoftDeleted = campaign.isDeleted || Boolean(campaign.deletedAt);
-        const isStale = STALE_CAMPAIGN_STATUSES.has(campaign.status) || isSoftDeleted;
+            const batchCampaignIds = jobs
+              .map((job) => job.data?.campaignId)
+              .filter((id): id is string => typeof id === "string" && id.length > 0);
+            const campaignMap = await lookupCampaignsByIds(batchCampaignIds);
+            const removableJobs: QueueJobLike[] = [];
 
-        if (isActive && !isSoftDeleted && !isStale) {
-          skippedActive += 1;
-          protectedActiveCampaigns.add(campaign.id);
-          continue;
-        }
-        if (!isStale) {
-          skippedUnknown += 1;
-          continue;
-        }
-        if (typeof (job as any)?.remove !== "function") {
-          skippedUnknown += 1;
-          continue;
-        }
-        try {
-          await (job as any).remove();
-          cleaned += 1;
-        } catch {
-          skippedUnknown += 1;
+            for (const job of jobs) {
+              const jobCampaignId = job.data?.campaignId;
+              if (!jobCampaignId || typeof jobCampaignId !== "string") {
+                progress.skippedUnknown += 1;
+                continue;
+              }
+
+              const campaign = campaignMap.get(jobCampaignId);
+              if (!campaign) {
+                progress.skippedUnknown += 1;
+                continue;
+              }
+
+              if (isActiveCampaign(campaign)) {
+                progress.skippedActive += 1;
+                protectedActiveCampaigns.add(campaign.id);
+                continue;
+              }
+
+              if (!isStaleCampaign(campaign)) {
+                progress.skippedUnknown += 1;
+                continue;
+              }
+
+              removableJobs.push(job);
+            }
+
+            await removeJobsInParallel(removableJobs, progress);
+
+            console.info("[queue.admin] stale cleanup batch", {
+              state,
+              scanned: progress.scanned,
+              cleaned: progress.cleaned,
+              skippedActive: progress.skippedActive,
+              skippedUnknown: progress.skippedUnknown
+            });
+
+            if (jobs.length < JOB_SCAN_CHUNK_SIZE) {
+              break;
+            }
+          }
         }
       }
     } else {
@@ -206,17 +286,36 @@ export async function POST(req: Request) {
     }
 
     const queueCounts = await getQueueCounts(queues);
-    console.info("[queue.admin] cleaned", cleaned);
-    console.info("[queue.admin] skipped active", skippedActive);
-    console.info("[queue.admin] skipped unknown", skippedUnknown);
+    const remaining =
+      Number(queueCounts.campaign.waiting ?? 0) +
+      Number(queueCounts.campaign.delayed ?? 0) +
+      Number(queueCounts.campaign.prioritized ?? 0) +
+      Number(queueCounts.delivery.waiting ?? 0) +
+      Number(queueCounts.delivery.delayed ?? 0) +
+      Number(queueCounts.delivery.prioritized ?? 0) +
+      Number(queueCounts.retry.waiting ?? 0) +
+      Number(queueCounts.retry.delayed ?? 0) +
+      Number(queueCounts.retry.prioritized ?? 0);
+    console.info("[queue.admin] cleaned", progress.cleaned);
+    console.info("[queue.admin] skipped active", progress.skippedActive);
+    console.info("[queue.admin] skipped unknown", progress.skippedUnknown);
 
     return NextResponse.json({
       ok: true,
       action,
-      cleaned,
-      skippedActive,
-      skippedUnknown,
+      scanned: progress.scanned,
+      cleaned: progress.cleaned,
+      skippedActive: progress.skippedActive,
+      skippedUnknown: progress.skippedUnknown,
+      remaining,
       protectedActiveCampaigns: Array.from(protectedActiveCampaigns),
+      progress: {
+        scanned: progress.scanned,
+        cleaned: progress.cleaned,
+        skippedActive: progress.skippedActive,
+        skippedUnknown: progress.skippedUnknown,
+        remaining
+      },
       queueCounts
     });
   } catch (error) {

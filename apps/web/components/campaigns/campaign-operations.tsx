@@ -97,9 +97,18 @@ type QueueAdminAction = "pause" | "resume" | "clean_stale_campaign_jobs" | "clea
 type QueueAdminResponse = {
   ok: boolean;
   action?: QueueAdminAction;
+  scanned?: number;
   cleaned?: number;
   skippedActive?: number;
   skippedUnknown?: number;
+  remaining?: number;
+  progress?: {
+    scanned: number;
+    cleaned: number;
+    skippedActive: number;
+    skippedUnknown: number;
+    remaining: number;
+  };
   queueCounts?: {
     campaign?: Record<string, number>;
     delivery?: Record<string, number>;
@@ -455,7 +464,7 @@ export function CampaignOperations() {
       setQueueSummary(payload);
       toast.success(
         "Kuyruk işlemi tamamlandı",
-        `Temizlenen: ${payload.cleaned ?? 0} · Korunan aktif: ${payload.skippedActive ?? 0} · Atlanan: ${payload.skippedUnknown ?? 0}`
+        `Taranan: ${payload.scanned ?? 0} · Temizlenen: ${payload.cleaned ?? 0} · Korunan aktif: ${payload.skippedActive ?? 0}`
       );
       setQueueConfirmAction(null);
       setQueueConfirmText("");
@@ -475,6 +484,11 @@ export function CampaignOperations() {
     }
     void runQueueAction(action);
   }
+
+  const isCleanupRunning =
+    queueActionLoading === "clean_stale_campaign_jobs" ||
+    queueActionLoading === "clean_failed" ||
+    queueActionLoading === "clean_completed";
 
   return (
     <div className="space-y-4">
@@ -569,9 +583,11 @@ export function CampaignOperations() {
         </div>
         {queueSummary ? (
           <div className="mt-3 rounded-lg border border-border bg-zinc-900/50 p-3 text-xs text-zinc-300">
+            <p>Taranan is: {queueSummary.scanned ?? queueSummary.progress?.scanned ?? 0}</p>
             <p>Temizlenen is: {queueSummary.cleaned ?? 0}</p>
             <p>Korunan aktif kampanya isi: {queueSummary.skippedActive ?? 0}</p>
             <p>Bilinmeyen/atlanmis is: {queueSummary.skippedUnknown ?? 0}</p>
+            <p>Kalan (waiting/delayed): {queueSummary.remaining ?? queueSummary.progress?.remaining ?? 0}</p>
             <p>
               Guncel kuyruk bekleyen:{" "}
               {Number(queueSummary.queueCounts?.delivery?.waiting ?? 0) + Number(queueSummary.queueCounts?.retry?.waiting ?? 0)}
@@ -1128,6 +1144,20 @@ export function CampaignOperations() {
                 {queueActionLoading ? "Calisiyor..." : "Temizlemeyi Onayla"}
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isCleanupRunning ? (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-zinc-950 p-5 text-center">
+            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10">
+              <Loader2 className="h-5 w-5 animate-spin text-amber-300" />
+            </div>
+            <p className="text-base font-semibold text-white">Kuyruk temizliği devam ediyor</p>
+            <p className="mt-2 text-sm text-zinc-400">
+              Bekleyen ve gecikmeli işler taranıyor, aktif kampanyalar korunarak eski işler siliniyor.
+            </p>
           </div>
         </div>
       ) : null}
