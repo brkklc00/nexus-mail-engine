@@ -120,6 +120,22 @@ function resolveDateRange(range: string | null, from: string | null, to: string 
   return {};
 }
 
+const ALLOWED_CAMPAIGN_STATUSES = new Set([
+  "running",
+  "paused",
+  "completed",
+  "canceled",
+  "failed",
+  "queued",
+  "pending",
+  "partially_completed"
+]);
+
+function normalizeStatusFilter(status: string): string {
+  if (status === "all") return "all";
+  return ALLOWED_CAMPAIGN_STATUSES.has(status) ? status : "all";
+}
+
 export async function GET(req: Request) {
   const session = await getSession();
   if (!session) {
@@ -131,7 +147,7 @@ export async function GET(req: Request) {
   const pageSize = normalizePageSize(url.searchParams.get("pageSize"));
   const offset = (page - 1) * pageSize;
   const search = (url.searchParams.get("search") ?? "").trim();
-  const status = (url.searchParams.get("status") ?? "all").trim();
+  const status = normalizeStatusFilter((url.searchParams.get("status") ?? "all").trim());
   const templateId = (url.searchParams.get("templateId") ?? "").trim();
   const listSegmentId = (url.searchParams.get("listSegmentId") ?? "").trim();
   const smtpAccountId = (url.searchParams.get("smtpAccountId") ?? "").trim();
@@ -163,34 +179,72 @@ export async function GET(req: Request) {
       : {})
   };
 
-  const [campaigns, total, allCampaignsForStats, templates, lists, segments, smtps, queueObs] = await Promise.all([
-    prisma.campaign.findMany({
-      where,
-      include: {
-        template: { select: { id: true, title: true } },
-        list: { select: { id: true, name: true } },
-        segment: { select: { id: true, name: true } },
-        smtpAccount: { select: { id: true, name: true } }
-      },
-      orderBy: { createdAt: "desc" },
-      skip: offset,
-      take: pageSize
-    }),
-    prisma.campaign.count({ where }),
-    prisma.campaign.findMany({
-      where,
-      select: {
-        id: true,
-        status: true,
-        totalTargeted: true,
-        totalSent: true,
-        totalFailed: true,
-        totalSkipped: true,
-        totalOpened: true,
-        totalClicked: true,
-        effectiveRate: true
+  const loadCampaignList = async (allowDeletedFilter: boolean) => {
+    const effectiveWhere = allowDeletedFilter ? where : { ...where, isDeleted: undefined };
+    return Promise.all([
+      prisma.campaign.findMany({
+        where: effectiveWhere,
+        include: {
+          template: { select: { id: true, title: true } },
+          list: { select: { id: true, name: true } },
+          segment: { select: { id: true, name: true } },
+          smtpAccount: { select: { id: true, name: true } }
+        },
+        orderBy: { createdAt: "desc" },
+        skip: offset,
+        take: pageSize
+      }),
+      prisma.campaign.count({ where: effectiveWhere }),
+      prisma.campaign.findMany({
+        where: effectiveWhere,
+        select: {
+          id: true,
+          status: true,
+          totalTargeted: true,
+          totalSent: true,
+          totalFailed: true,
+          totalSkipped: true,
+          totalOpened: true,
+          totalClicked: true,
+          effectiveRate: true
+        }
+      })
+    ]);
+  };
+
+  let campaigns: any[] = [];
+  let total = 0;
+  let allCampaignsForStats: any[] = [];
+  try {
+    [campaigns, total, allCampaignsForStats] = await loadCampaignList(true);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/isdeleted|column .*isdeleted|unknown arg .*isdeleted/i.test(message)) {
+      try {
+        [campaigns, total, allCampaignsForStats] = await loadCampaignList(false);
+      } catch (fallbackError) {
+        console.error("[campaigns.list] failed", {
+          errorName: fallbackError instanceof Error ? fallbackError.name : "UnknownError",
+          message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+        });
+        return NextResponse.json(
+          { error: "Kampanya listesi su anda yuklenemiyor. Lutfen tekrar deneyin." },
+          { status: 500 }
+        );
       }
-    }),
+    } else {
+      console.error("[campaigns.list] failed", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        message
+      });
+      return NextResponse.json(
+        { error: "Kampanya listesi su anda yuklenemiyor. Lutfen tekrar deneyin." },
+        { status: 500 }
+      );
+    }
+  }
+
+  const [templates, lists, segments, smtps, queueObs] = await Promise.all([
     prisma.mailTemplate.findMany({ select: { id: true, title: true }, orderBy: { title: "asc" } }),
     prisma.recipientList.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
     prisma.segment.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),

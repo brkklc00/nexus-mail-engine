@@ -25,27 +25,13 @@ type SmtpSummary = {
   providerLabel: string | null;
 };
 
-type RecentActivityLog = {
-  id: string;
-  createdAt: Date;
-  eventType: string;
-  status: string;
-  message: string | null;
-  campaign: { name: string } | null;
-};
-
 export default async function DashboardPage({
   searchParams
 }: {
-  searchParams?: Promise<{ activityPage?: string; activityPageSize?: string; analyticsRange?: string }>;
+  searchParams?: Promise<{ analyticsRange?: string }>;
 }) {
   const params = (await searchParams) ?? {};
   const analyticsRange = params.analyticsRange === "today" || params.analyticsRange === "30d" ? params.analyticsRange : "7d";
-  const requestedPageSize = Number(params.activityPageSize ?? 20);
-  const recentPageSize = requestedPageSize === 10 ? 10 : 20;
-  const requestedPage = Number(params.activityPage ?? 1);
-  const recentPage = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.floor(requestedPage) : 1;
-  const recentSkip = (recentPage - 1) * recentPageSize;
   const smtpPreviewLimit = 5;
   const dayStart = startOfToday();
   const analyticsStart = new Date();
@@ -67,8 +53,6 @@ export default async function DashboardPage({
     failedToday,
     opensToday,
     clicksToday,
-    recentLogs,
-    totalRecentLogs,
     analyticsLogs,
     analyticsOpenEvents,
     analyticsClickEvents,
@@ -90,13 +74,6 @@ export default async function DashboardPage({
     }),
     prisma.openEvent.count({ where: { createdAt: { gte: dayStart } } }),
     prisma.clickEvent.count({ where: { createdAt: { gte: dayStart } } }),
-    prisma.campaignLog.findMany({
-      orderBy: { createdAt: "desc" },
-      skip: recentSkip,
-      take: recentPageSize,
-      include: { campaign: { select: { name: true } } }
-    }) as Promise<RecentActivityLog[]>,
-    prisma.campaignLog.count(),
     prisma.campaignLog.findMany({
       where: {
         createdAt: { gte: analyticsStart },
@@ -230,8 +207,6 @@ export default async function DashboardPage({
     { label: "Bugun Tiklama", value: clicksToday, icon: MousePointerClick, tone: "warning" as const }
   ];
 
-  const recentTotalPages = Math.max(1, Math.ceil(totalRecentLogs / recentPageSize));
-
   const smtpTotals = {
     total: smtpTotalCount,
     healthy: smtpHealthyCount,
@@ -274,10 +249,13 @@ export default async function DashboardPage({
         range={analyticsRange}
       />
 
+      <section>
+        <LiveSmtpFlowCard />
+      </section>
+
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <div className="space-y-4 xl:col-span-1">
           <QueueObservabilityWidget />
-          <LiveSmtpFlowCard compact />
         </div>
         <div className="space-y-4 xl:col-span-2">
           <div className="rounded-2xl border border-border bg-card p-4">
@@ -322,79 +300,6 @@ export default async function DashboardPage({
             </div>
           </div>
         </div>
-      </section>
-
-      <section className="rounded-2xl border border-border bg-card p-4">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-zinc-200">Son Aktivite</h3>
-          <div className="flex items-center gap-2 text-xs text-zinc-400">
-            <span>Sayfa boyutu:</span>
-            <Link
-              href={`/dashboard?activityPage=1&activityPageSize=10`}
-              className={`rounded border px-2 py-1 ${recentPageSize === 10 ? "border-indigo-500/60 text-indigo-200" : "border-border text-zinc-300"}`}
-            >
-              10
-            </Link>
-            <Link
-              href={`/dashboard?activityPage=1&activityPageSize=20`}
-              className={`rounded border px-2 py-1 ${recentPageSize === 20 ? "border-indigo-500/60 text-indigo-200" : "border-border text-zinc-300"}`}
-            >
-              20
-            </Link>
-            <Link href="/logs" className="rounded border border-border px-2 py-1 text-zinc-300">
-              Daha fazla yukle
-            </Link>
-          </div>
-        </div>
-        {recentLogs.length === 0 ? (
-          <EmptyState
-            icon="chart-bar"
-            title="Aktivite kaydi yok"
-            description="Kampanya aktivitesi basladiginda son etkinlikler burada listelenir."
-          />
-        ) : (
-          <div className="space-y-2">
-            {recentLogs.map((log: RecentActivityLog) => (
-              <div key={log.id} className="rounded-xl border border-border bg-zinc-900/60 px-3 py-2 text-xs text-zinc-300">
-                <span className="text-zinc-400">{new Date(log.createdAt).toLocaleString()} · </span>
-                <span className="font-medium text-zinc-100">{log.campaign?.name ?? "Kampanya"}</span>
-                <span className="mx-1">·</span>
-                <span>{log.eventType}</span>
-                <span className="mx-1">·</span>
-                <span className={log.status === "failed" ? "text-rose-300" : "text-emerald-300"}>{log.status}</span>
-                {log.message ? <span className="mx-1 text-zinc-500">— {log.message}</span> : null}
-              </div>
-            ))}
-          </div>
-        )}
-        {totalRecentLogs > recentPageSize ? (
-          <div className="mt-3 flex items-center justify-between">
-            <p className="text-xs text-zinc-400">
-              Page {Math.min(recentPage, recentTotalPages)} / {recentTotalPages}
-            </p>
-            <div className="flex items-center gap-2">
-              <Link
-                href={`/dashboard?activityPage=${Math.max(1, recentPage - 1)}&activityPageSize=${recentPageSize}`}
-                className={`rounded border px-2 py-1 text-xs ${
-                  recentPage <= 1 ? "pointer-events-none border-border text-zinc-500" : "border-border text-zinc-300"
-                }`}
-              >
-                Onceki
-              </Link>
-              <Link
-                href={`/dashboard?activityPage=${Math.min(recentTotalPages, recentPage + 1)}&activityPageSize=${recentPageSize}`}
-                className={`rounded border px-2 py-1 text-xs ${
-                  recentPage >= recentTotalPages ? "pointer-events-none border-border text-zinc-500" : "border-border text-zinc-300"
-                }`}
-              >
-                Sonraki
-              </Link>
-              <Link href="/logs" className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
-                Tumunu gor ({totalRecentLogs})
-              </Link>
-            </div>
-          </div>
-        ) : null}
       </section>
     </div>
   );

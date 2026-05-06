@@ -42,6 +42,8 @@ export function LoginForm() {
   const search = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
   const { register, handleSubmit, formState } = useForm<FormValues>({
     defaultValues: { email: "", password: "" }
   });
@@ -85,25 +87,42 @@ export function LoginForm() {
         <label className="mb-1 block text-xs uppercase tracking-wider text-zinc-400">E-posta</label>
         <input
           type="email"
-          className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm text-white"
+          className="w-full rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-indigo-400"
+          placeholder="ornek@firma.com"
           {...register("email", { required: true })}
         />
       </div>
       <div>
-        <label className="mb-1 block text-xs uppercase tracking-wider text-zinc-400">Sifre</label>
-        <input
-          type="password"
-          className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm text-white"
-          {...register("password", { required: true })}
-        />
+        <label className="mb-1 block text-xs uppercase tracking-wider text-zinc-400">Şifre</label>
+        <div className="flex gap-2">
+          <input
+            type={showPassword ? "text" : "password"}
+            className="w-full rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-indigo-400"
+            placeholder="Şifrenizi girin"
+            {...register("password", { required: true })}
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword((prev) => !prev)}
+            className="shrink-0 rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 text-xs text-zinc-300 hover:text-white"
+          >
+            {showPassword ? "Şifreyi gizle" : "Şifreyi göster"}
+          </button>
+        </div>
       </div>
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      <label className="flex items-center gap-2 text-xs text-zinc-400">
+        <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
+        Beni hatirla
+      </label>
+      {error ? (
+        <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{error}</p>
+      ) : null}
       <button
         type="submit"
         disabled={formState.isSubmitting || isPending}
-        className="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+        className="w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {formState.isSubmitting || isPending ? "Giris yapiliyor..." : "Giris Yap"}
+        {formState.isSubmitting || isPending ? "Giriş yapılıyor..." : "Giriş Yap"}
       </button>
     </form>
   );

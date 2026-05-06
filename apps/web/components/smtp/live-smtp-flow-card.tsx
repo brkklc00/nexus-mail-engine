@@ -37,6 +37,17 @@ type Props = {
   compact?: boolean;
 };
 
+const EVENT_STATUS_LABELS: Record<"success" | "failed", string> = {
+  success: "Basarili",
+  failed: "Basarisiz"
+};
+
+const SMTP_STATUS_LABELS: Record<string, string> = {
+  active: "Aktif",
+  throttled: "Sinirlandi",
+  unhealthy: "Sagliksiz"
+};
+
 export function LiveSmtpFlowCard({ compact = false }: Props) {
   const [data, setData] = useState<FlowPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -142,7 +153,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
         <FlowStat label="Aktif kampanya" value={data?.metrics.activeCampaigns ?? 0} />
       </div>
 
-      <div className="mt-3 grid gap-3 xl:grid-cols-2">
+      <div className={`mt-3 grid gap-3 ${compact ? "xl:grid-cols-2" : "grid-cols-1"}`}>
         <div className="rounded-xl border border-border bg-zinc-900/40 p-2">
           <p className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">Son olaylar (son 20)</p>
           <div className="max-h-64 overflow-auto">
@@ -168,7 +179,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
                     <td className="border-b border-border/50 px-2 py-1">{event.smtpFromEmail}</td>
                     <td className="border-b border-border/50 px-2 py-1">{event.recipientEmail}</td>
                     <td className="border-b border-border/50 px-2 py-1">
-                      <StatusBadge label={event.status} tone={event.status === "failed" ? "danger" : "success"} />
+                      <StatusBadge label={EVENT_STATUS_LABELS[event.status]} tone={event.status === "failed" ? "danger" : "success"} />
                     </td>
                     <td className="border-b border-border/50 px-2 py-1 text-rose-300">
                       {event.status === "failed" ? event.error ?? "-" : "-"}
@@ -180,7 +191,8 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
           </div>
         </div>
 
-        <div className="space-y-2 rounded-xl border border-border bg-zinc-900/40 p-2">
+        <div className={`space-y-2 rounded-xl border border-border bg-zinc-900/40 p-2 ${compact ? "" : "grid grid-cols-1 gap-3 md:grid-cols-2"}`}>
+          <div>
           <p className="text-[11px] uppercase tracking-wide text-zinc-500">SMTP aktivitesi</p>
           <div className="max-h-36 space-y-1 overflow-auto">
             {(data?.smtpActivity ?? []).map((item) => (
@@ -188,7 +200,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
                 <div className="flex items-center justify-between gap-2">
                   <p className="truncate">{item.fromEmail}</p>
                   <StatusBadge
-                    label={item.status}
+                    label={SMTP_STATUS_LABELS[item.status] ?? item.status}
                     tone={item.status === "active" ? "success" : item.status === "throttled" ? "warning" : "danger"}
                   />
                 </div>
@@ -197,6 +209,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
                 </p>
               </div>
             ))}
+          </div>
           </div>
           <div className="rounded border border-border px-2 py-2">
             <p className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">SMTP donusum aktivitesi</p>

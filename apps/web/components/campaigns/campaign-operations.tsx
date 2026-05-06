@@ -151,7 +151,7 @@ type SummaryReport = {
   };
 };
 
-const statusOptions = ["all", "pending", "queued", "running", "paused", "completed", "failed", "canceled"];
+const statusOptions = ["all", "pending", "queued", "running", "paused", "completed", "partially_completed", "failed", "canceled"];
 const rangeOptions = [
   { id: "all", label: "All time" },
   { id: "24h", label: "Last 24h" },
@@ -159,6 +159,17 @@ const rangeOptions = [
   { id: "30d", label: "Last 30d" },
   { id: "custom", label: "Custom" }
 ];
+
+const CAMPAIGN_STATUS_LABELS: Record<string, string> = {
+  pending: "Bekliyor",
+  queued: "Kuyrukta",
+  running: "Calisiyor",
+  paused: "Duraklatildi",
+  completed: "Tamamlandi",
+  partially_completed: "Kismen Tamamlandi",
+  failed: "Basarisiz",
+  canceled: "Iptal Edildi"
+};
 
 function fmtDate(input: string | null): string {
   if (!input) return "-";
@@ -180,17 +191,7 @@ function toneForStatus(status: string): "success" | "danger" | "warning" | "info
 }
 
 function getCampaignStatusLabel(status: string): string {
-  const map: Record<string, string> = {
-    pending: "Bekliyor",
-    queued: "Kuyrukta",
-    running: "Calisiyor",
-    paused: "Duraklatildi",
-    completed: "Tamamlandi",
-    partially_completed: "Kismen Tamamlandi",
-    failed: "Basarisiz",
-    canceled: "Iptal Edildi"
-  };
-  return map[status] ?? status;
+  return CAMPAIGN_STATUS_LABELS[status] ?? status;
 }
 
 function availableActions(status: CampaignStatus): Array<"start" | "pause" | "resume" | "cancel" | "report" | "delete" | "view"> {
