@@ -460,7 +460,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       list?: { summary: ListSummary };
     };
     if (!response.ok || !payload.ok || !payload.list) {
-      toast.error("List summary could not be loaded", payload.error ?? "Operation failed");
+      toast.error("Liste ozeti yuklenemedi", payload.error ?? "Islem basarisiz oldu");
       return null;
     }
     return payload.list.summary;
@@ -496,7 +496,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       list?: { id: string; name: string; notes: string | null; tags: string[]; maxSize: number; createdAt: string };
     };
     if (!response.ok || !payload.ok || !payload.list) {
-      toast.error("List could not be created", payload.error ?? "Operation failed");
+      toast.error("Liste olusturulamadi", payload.error ?? "Islem basarisiz oldu");
       setActionState(null);
       return;
     }
@@ -513,7 +513,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     setLists((prev) => [nextList, ...prev]);
     setListForm({ name: "", notes: "", tags: "", capacityLimit: "" });
     setCreateOpen(false);
-    toast.success("List created");
+    toast.success("Liste olusturuldu");
     setActionState(null);
     await selectList(nextList.id);
     router.refresh();
@@ -544,7 +544,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       list?: { name: string; notes: string | null; tags: string[]; maxSize: number };
     };
     if (!response.ok || !payload.ok || !payload.list) {
-      toast.error("List could not be updated", payload.error ?? "Operation failed");
+      toast.error("Liste guncellenemedi", payload.error ?? "Islem basarisiz oldu");
       setActionState(null);
       return;
     }
@@ -562,7 +562,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       )
     );
     setEditOpen(false);
-    toast.success("List updated");
+    toast.success("Liste guncellendi");
     setActionState(null);
     router.refresh();
   }
@@ -570,10 +570,10 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   async function deleteList() {
     if (!selected) return;
     const accepted = await confirm({
-      title: "Delete this list?",
+      title: "Bu liste silinsin mi?",
       message: `The "${selected.name}" list and its memberships will be removed.`,
-      confirmLabel: "Delete",
-      cancelLabel: "Cancel",
+      confirmLabel: "Sil",
+      cancelLabel: "Iptal",
       tone: "danger"
     });
     if (!accepted) return;
@@ -582,7 +582,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     const response = await fetch(`/api/lists/${selected.id}`, { method: "DELETE" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      toast.error("List could not be deleted", payload.error ?? "Operation failed");
+      toast.error("Liste silinemedi", payload.error ?? "Islem basarisiz oldu");
       setActionState(null);
       return;
     }
@@ -592,7 +592,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     setSelectedId(next[0]?.id ?? "");
     setSelectedSummary(next[0]?.summary ?? EMPTY_SUMMARY);
     setActionState(null);
-    toast.success("List deleted");
+    toast.success("Liste silindi");
     router.refresh();
   }
 
@@ -685,14 +685,14 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
           `Scanned ${aggregate.totalProcessed}, imported ${aggregate.added}, invalid ${aggregate.invalidSkipped}, duplicate ${aggregate.duplicateSkipped}, suppressed ${aggregate.alreadySuppressedSkipped}, global duplicate ${aggregate.alreadyInOtherListsSkipped}`
         );
         setResultModal({
-          title: "Import result",
+          title: "Ice aktarma sonucu",
           body: `Total scanned: ${aggregate.totalProcessed}\nValid imported: ${aggregate.added}\nInvalid skipped: ${aggregate.invalidSkipped}\nDuplicate skipped: ${aggregate.duplicateSkipped}\nSuppressed skipped: ${aggregate.alreadySuppressedSkipped}\nGlobal duplicate skipped: ${aggregate.alreadyInOtherListsSkipped}\nCapacity skipped: ${aggregate.capacitySkipped}\nErrors: ${aggregate.errors}`
         });
         pushProgress(aggregate, true);
       } else {
         const rawEmails = extractEmailsFromText(importForm.text);
         if (rawEmails.length === 0) {
-          toast.warning("No valid input found for import");
+          toast.warning("Ice aktarma icin gecerli girdi bulunamadi");
           setActionState(null);
           return;
         }
@@ -736,11 +736,11 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
 
         setImportForm((prev) => ({ ...prev, text: "" }));
         toast.success(
-          "Import completed",
+          "Ice aktarma tamamlandi",
           `Scanned ${aggregate.totalProcessed}, imported ${aggregate.added}, invalid ${aggregate.invalidSkipped}, duplicate ${aggregate.duplicateSkipped}, suppressed ${aggregate.alreadySuppressedSkipped}, global duplicate ${aggregate.alreadyInOtherListsSkipped}`
         );
         setResultModal({
-          title: "Import result",
+          title: "Ice aktarma sonucu",
           body: `Total scanned: ${aggregate.totalProcessed}\nValid imported: ${aggregate.added}\nInvalid skipped: ${aggregate.invalidSkipped}\nDuplicate skipped: ${aggregate.duplicateSkipped}\nSuppressed skipped: ${aggregate.alreadySuppressedSkipped}\nGlobal duplicate skipped: ${aggregate.alreadyInOtherListsSkipped}\nCapacity skipped: ${aggregate.capacitySkipped}\nErrors: ${aggregate.errors}`
         });
         pushProgress(aggregate, true);
@@ -752,7 +752,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         running: false,
         errors: prev.errors + 1
       }));
-      toast.error("Import failed", message);
+      toast.error("Ice aktarma basarisiz", message);
       setActionState(null);
       return;
     }
@@ -775,7 +775,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         ? "Emails will be removed from all lists."
         : "Emails will be removed only from the selected list.",
       confirmLabel: "Apply",
-      cancelLabel: "Cancel",
+      cancelLabel: "Iptal",
       tone: "warning"
     });
     if (!accepted) return;
@@ -797,7 +797,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       };
     };
     if (!response.ok || !payload.ok || !payload.result) {
-      toast.error("Bulk remove failed", payload.error ?? "Operation failed");
+      toast.error("Toplu silme basarisiz", payload.error ?? "Islem basarisiz oldu");
       setActionState(null);
       return;
     }
@@ -831,7 +831,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       title,
       message,
       confirmLabel: "Apply",
-      cancelLabel: "Cancel",
+      cancelLabel: "Iptal",
       tone
     });
     if (!accepted) return;
@@ -848,7 +848,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       result?: ActionResultSummary;
     };
     if (!response.ok || !payload.ok) {
-      toast.error("List action failed", payload.error ?? "Operation failed");
+      toast.error("Liste islemi basarisiz", payload.error ?? "Islem basarisiz oldu");
       setActionState(null);
       return;
     }
@@ -862,7 +862,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       removed: 0
     };
     setLastActionSummary(result);
-    toast.success("List action completed", formatActionSummary(result));
+    toast.success("Liste islemi tamamlandi", formatActionSummary(result));
     setResultModal({
       title: "Validation tool result",
       body: formatActionSummary(result)
@@ -881,7 +881,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     setActionState(status === "valid" ? "exportValid" : "exportInvalid");
     const response = await fetch(`/api/lists/${selected.id}/export?status=${status}`);
     if (!response.ok) {
-      toast.error("Export failed");
+      toast.error("Disa aktarma basarisiz");
       setActionState(null);
       return;
     }
@@ -1130,7 +1130,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         )}
       </section>
 
-      <ModalShell open={createOpen} title="Create List" onClose={() => setCreateOpen(false)}>
+      <ModalShell open={createOpen} title="Liste Olustur" onClose={() => setCreateOpen(false)}>
         <ListForm listForm={listForm} setListForm={setListForm} />
         <div className="mt-3 flex justify-end">
           <button
@@ -1145,7 +1145,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         </div>
       </ModalShell>
 
-      <ModalShell open={editOpen} title="Edit List" onClose={() => setEditOpen(false)}>
+      <ModalShell open={editOpen} title="Listeyi Duzenle" onClose={() => setEditOpen(false)}>
         <ListForm listForm={listForm} setListForm={setListForm} />
         <div className="mt-3 flex justify-end">
           <button
@@ -1248,17 +1248,17 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
             loading={actionState === "clear"}
             danger
             onClick={() =>
-              void runListAction("clear", "clear", "Clear this list completely?", "All memberships in the selected list will be removed.", "danger")
+              void runListAction("clear", "clear", "Bu liste tamamen temizlensin mi?", "Secilen listedeki tum uyelikler kaldirilacak.", "danger")
             }
           />
           <ActionBtn
-            label="Export valid emails"
+            label="Gecerli e-postalari disa aktar"
             loading={actionState === "exportValid"}
             icon={<Download className="h-3.5 w-3.5" />}
             onClick={() => void exportCsv("valid")}
           />
           <ActionBtn
-            label="Export invalid emails"
+            label="Gecersiz e-postalari disa aktar"
             loading={actionState === "exportInvalid"}
             icon={<Download className="h-3.5 w-3.5" />}
             onClick={() => void exportCsv("invalid")}
@@ -1317,7 +1317,7 @@ function ListForm({
     <div className="space-y-2">
       <input
         className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100"
-        placeholder="List name"
+        placeholder="Liste adi"
         value={listForm.name}
         onChange={(e) => setListForm((s) => ({ ...s, name: e.target.value }))}
       />

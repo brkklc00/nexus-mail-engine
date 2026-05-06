@@ -111,14 +111,14 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       const response = await fetch(`/api/templates?${params.toString()}`, { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as TemplateListResponse & { error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Templates could not be loaded");
+        throw new Error(payload.error ?? "Sablonlar yuklenemedi");
       }
       setTemplates(payload.items ?? []);
       setTotal(payload.total ?? 0);
       setTotalPages(payload.totalPages ?? 1);
       setCategories(payload.categories ?? []);
     } catch (error) {
-      toast.error("Templates could not be loaded", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Sablonlar yuklenemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
       setTemplates([]);
       setTotal(0);
       setTotalPages(1);
@@ -149,15 +149,15 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
       if (!response.ok || !payload.ok || !payload.template) {
-        throw new Error(payload.error ?? "Template could not be created");
+        throw new Error(payload.error ?? "Sablon olusturulamadi");
       }
-      toast.success(statusOverride === "active" ? "Template saved as active" : "Template draft saved");
+      toast.success(statusOverride === "active" ? "Sablon aktif olarak kaydedildi" : "Sablon taslak olarak kaydedildi");
       setCreateOpen(false);
       setCreateForm({ title: "", subject: "", htmlBody: "", plainTextBody: "", category: "", status: "draft" });
       setPage(1);
       await loadTemplates();
     } catch (error) {
-      toast.error("Template could not be created", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Sablon olusturulamadi", error instanceof Error ? error.message : "Beklenmeyen hata");
     } finally {
       setActionLoading(null);
     }
@@ -174,7 +174,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
             ? "This template is used in campaigns. Do you want to disable it?"
             : `Template status will be updated to "${nextStatus}".`,
         confirmLabel: "Confirm",
-        cancelLabel: "Cancel",
+        cancelLabel: "Iptal",
         tone: nextStatus === "disabled" ? "warning" : "info"
       });
       if (!confirmed) return;
@@ -195,7 +195,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; template?: TemplateDetail };
       if (!response.ok || !payload.ok || !payload.template) {
-        throw new Error(payload.error ?? "Template could not be saved");
+        throw new Error(payload.error ?? "Sablon kaydedilemedi");
       }
       const updated = {
         ...payload.template,
@@ -218,10 +218,10 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
             : item
         )
       );
-      toast.success(statusOverride ? `Template saved as ${statusOverride}` : "Template saved");
+      toast.success(statusOverride ? `Sablon su durumla kaydedildi: ${statusOverride}` : "Sablon kaydedildi");
       await loadTemplates();
     } catch (error) {
-      toast.error("Template could not be saved", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Sablon kaydedilemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
     } finally {
       setActionLoading(null);
     }
@@ -231,9 +231,9 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
     if (!selected) return;
     const approved = await confirm({
       title: "Archive template?",
-      message: "Template status will be changed to archived.",
+      message: "Sablon durumu arsivlenecek olarak degistirilecek.",
       confirmLabel: "Archive",
-      cancelLabel: "Cancel",
+      cancelLabel: "Iptal",
       tone: "warning"
     });
     if (!approved) return;
@@ -243,10 +243,10 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
   async function deleteTemplate() {
     if (!selected) return;
     const approved = await confirm({
-      title: "Delete template?",
+      title: "Sablon silinsin mi?",
       message: "If this template is in use, archiving will be recommended instead.",
-      confirmLabel: "Delete",
-      cancelLabel: "Cancel",
+      confirmLabel: "Sil",
+      cancelLabel: "Iptal",
       tone: "danger"
     });
     if (!approved) return;
@@ -258,10 +258,10 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       if (!response.ok || !payload.ok) {
         if (payload.code === "template_in_use") {
           const archiveApprove = await confirm({
-            title: "Template is used by campaigns",
+            title: "Sablon kampanyalarda kullaniliyor",
             message: "Archive instead of hard delete?",
             confirmLabel: "Archive",
-            cancelLabel: "Cancel",
+            cancelLabel: "Iptal",
             tone: "warning"
           });
           if (archiveApprove) {
@@ -269,14 +269,14 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
           }
           return;
         }
-        throw new Error(payload.error ?? "Template could not be deleted");
+        throw new Error(payload.error ?? "Sablon silinemedi");
       }
-      toast.success("Template deleted");
+      toast.success("Sablon silindi");
       setEditorOpen(false);
       setSelected(null);
       await loadTemplates();
     } catch (error) {
-      toast.error("Template could not be deleted", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Sablon silinemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
     } finally {
       setActionLoading(null);
     }
@@ -289,7 +289,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       return;
     }
     if (!testSend.smtpAccountId) {
-      toast.warning("Select an SMTP account");
+      toast.warning("Bir SMTP hesabi secin");
       return;
     }
     setActionLoading("testSend");
@@ -305,7 +305,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       }
       toast.success("Test send succeeded");
     } catch (error) {
-      toast.error("Test send failed", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Test gonderimi basarisiz", error instanceof Error ? error.message : "Beklenmeyen hata");
     } finally {
       setActionLoading(null);
     }
@@ -313,7 +313,7 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
 
   async function testSmtpConnection() {
     if (!testSend.smtpAccountId) {
-      toast.warning("Select an SMTP account");
+      toast.warning("Bir SMTP hesabi secin");
       return;
     }
     setActionLoading("testSmtp");
@@ -323,9 +323,9 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
       if (!response.ok || !payload.ok) {
         throw new Error(payload.error ?? "SMTP test failed");
       }
-      toast.success("SMTP connection test succeeded");
+      toast.success("SMTP baglanti testi basarili");
     } catch (error) {
-      toast.error("SMTP test failed", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("SMTP testi basarisiz", error instanceof Error ? error.message : "Beklenmeyen hata");
     } finally {
       setActionLoading(null);
     }
@@ -369,9 +369,9 @@ export function TemplatesManager({ smtpOptions }: { smtpOptions: SmtpOption[] })
           : prev
       );
       setShortenForm({ destinationUrl: "", customAlias: "" });
-      toast.success("Short URL inserted into template");
+      toast.success("Kisa URL sablona eklendi");
     } catch (error) {
-      toast.error("Shorten link failed", error instanceof Error ? error.message : "shortener_api_failed");
+      toast.error("Link kisaltma basarisiz", error instanceof Error ? error.message : "shortener_api_failed");
     } finally {
       setActionLoading(null);
     }

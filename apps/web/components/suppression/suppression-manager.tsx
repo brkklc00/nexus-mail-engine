@@ -250,7 +250,7 @@ export function SuppressionManager() {
       }
       setStats(payload.stats);
     } catch (err) {
-      toast.error("Suppression stats could not be loaded", err instanceof Error ? err.message : "Request failed");
+      toast.error("Baskilama istatistikleri yuklenemedi", err instanceof Error ? err.message : "Istek basarisiz oldu");
     } finally {
       setLoadingStats(false);
     }
@@ -277,7 +277,7 @@ export function SuppressionManager() {
         error?: string;
       } & QueryResponse;
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Suppression query failed");
+        throw new Error(payload.error ?? "Baskilama sorgusu basarisiz oldu");
       }
       setQueryData({
         items: payload.items,
@@ -290,7 +290,7 @@ export function SuppressionManager() {
       });
       setHasQueried(true);
     } catch (err) {
-      toast.error("Suppression query failed", err instanceof Error ? err.message : "Request failed");
+      toast.error("Baskilama sorgusu basarisiz oldu", err instanceof Error ? err.message : "Istek basarisiz oldu");
     } finally {
       setQueryLoading(false);
     }
@@ -301,7 +301,7 @@ export function SuppressionManager() {
     const accepted = await confirm({
       title: "Run bulk suppression import?",
       message: "Entries will be processed in batches.",
-      confirmLabel: "Import",
+      confirmLabel: "Ice Aktar",
       cancelLabel: "Cancel",
       tone: "warning"
     });
@@ -345,7 +345,7 @@ export function SuppressionManager() {
         };
       };
       if (!response.ok || !payload.ok || !payload.summary) {
-        toast.error("Bulk import failed", payload.error ?? "Operation stopped midway");
+        toast.error("Toplu ice aktarma basarisiz", payload.error ?? "Islem yarida durdu");
         setBulkState("idle");
         return;
       }
@@ -389,7 +389,7 @@ export function SuppressionManager() {
     const accepted = await confirm({
       title: "Run suppression bulk remove?",
       message: "Global suppression records will be removed based on input.",
-      confirmLabel: "Remove",
+      confirmLabel: "Sil",
       cancelLabel: "Cancel",
       tone: "danger"
     });
@@ -418,7 +418,7 @@ export function SuppressionManager() {
         };
       };
       if (!response.ok || !payload.ok || !payload.summary) {
-        throw new Error(payload.error ?? "Bulk remove failed");
+        throw new Error(payload.error ?? "Toplu silme basarisiz oldu");
       }
       toast.info(
         "Bulk remove completed",
@@ -430,7 +430,7 @@ export function SuppressionManager() {
         await runQuery({ ...filters, page: 1 });
       }
     } catch (err) {
-      toast.error("Bulk remove failed", err instanceof Error ? err.message : "Request failed");
+      toast.error("Toplu silme basarisiz", err instanceof Error ? err.message : "Istek basarisiz oldu");
     } finally {
       setRemoveLoading(false);
     }
@@ -450,7 +450,7 @@ export function SuppressionManager() {
     const accepted = await confirm({
       title: "Start Alibaba DirectMail sync?",
       message: "Temporary failures are ignored; permanent categories are added to suppression.",
-      confirmLabel: "Sync",
+      confirmLabel: "Senkronize Et",
       cancelLabel: "Cancel",
       tone: "warning"
     });
@@ -470,7 +470,7 @@ export function SuppressionManager() {
       });
       const payload = (await response.json().catch(() => ({}))) as AlibabaSyncResult;
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Alibaba sync failed");
+        throw new Error(payload.error ?? "Alibaba senkronizasyonu basarisiz oldu");
       }
       setSyncSummary(payload);
       setSyncSummaryOpen(true);
@@ -479,15 +479,15 @@ export function SuppressionManager() {
       }
       const statusText =
         payload.mode === "disabled"
-          ? "Alibaba sync is disabled by configuration."
+          ? "Alibaba senkronizasyonu yapilandirma nedeniyle devre disi."
           : payload.mode === "mock"
-            ? "Alibaba sync is not connected to the real API yet."
+            ? "Alibaba senkronizasyonu henuz gercek API'ye bagli degil."
             : !payload.credentialsPresent
-              ? "Alibaba credentials are not configured."
+              ? "Alibaba kimlik bilgileri yapilandirilmamis."
               : payload.errors.some((item) => /invaliddate\.malformed|specified date is invalid|starttime\/endtime/i.test(item))
                 ? "Alibaba rejected StartTime/EndTime. Expected format is YYYY-MM-DD."
               : payload.apiRequestMade && payload.totalReportsReturned === 0
-                ? "Alibaba API connected, but no failed delivery reports were found for the selected date range."
+                ? "Alibaba API baglantisi var, ancak secilen tarih araliginda basarisiz teslimat raporu bulunamadi."
                 : `Scanned ${payload.scanned}, matched ${payload.matched}, added ${payload.added}, removed from lists ${payload.removedFromLists}.`;
       toast.success("Alibaba sync completed", statusText);
       await loadStats();
@@ -495,7 +495,7 @@ export function SuppressionManager() {
         await runQuery({ ...filters, page: 1 });
       }
     } catch (err) {
-      toast.error("Alibaba sync failed", err instanceof Error ? err.message : "Request failed");
+      toast.error("Alibaba senkronizasyonu basarisiz", err instanceof Error ? err.message : "Istek basarisiz oldu");
     } finally {
       setSyncLoading(false);
     }
@@ -503,9 +503,9 @@ export function SuppressionManager() {
 
   async function removeSingle(id: string) {
     const accepted = await confirm({
-      title: "Remove suppression record?",
+      title: "Baskilama kaydi silinsin mi?",
       message: "The record will be removed from suppression.",
-      confirmLabel: "Remove",
+      confirmLabel: "Sil",
       cancelLabel: "Cancel",
       tone: "danger"
     });
@@ -514,7 +514,7 @@ export function SuppressionManager() {
     const response = await fetch(`/api/suppressions/${id}`, { method: "DELETE" });
     const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!response.ok || !payload.ok) {
-      toast.error("Record could not be removed", payload.error ?? "Request failed");
+      toast.error("Kayit silinemedi", payload.error ?? "Istek basarisiz oldu");
       return;
     }
     toast.info("Suppression record removed");
@@ -563,7 +563,7 @@ export function SuppressionManager() {
             <input
               value={draftFilters.q}
               onChange={(e) => setDraftFilters((prev) => ({ ...prev, q: e.target.value }))}
-              placeholder="Search email..."
+              placeholder="E-posta ara..."
               className="w-full rounded-lg border border-border bg-zinc-900/70 py-2 pl-8 pr-3 text-sm"
             />
           </div>
@@ -842,7 +842,7 @@ export function SuppressionManager() {
           <div className="p-4">
             <EmptyState
               icon="ban"
-              title="Search or import suppression data to view records."
+              title="Kayitlari goruntulemek icin baskilama verisini arayin veya ice aktarim yapin."
               description="The default view does not list all suppression records."
             />
           </div>
@@ -856,7 +856,7 @@ export function SuppressionManager() {
           <div className="p-4">
             <EmptyState
               icon="ban"
-              title="No records found"
+              title="Kayit bulunamadi"
               description="Change filters or expand the date range."
             />
           </div>
@@ -977,7 +977,7 @@ export function SuppressionManager() {
                   ))}
                 </div>
               ) : null}
-              <p>Mode: {syncSummary.mode === "real_api" ? "Real API" : syncSummary.mode === "mock" ? "Mock" : "Disabled"}</p>
+              <p>Mod: {syncSummary.mode === "real_api" ? "Gercek API" : syncSummary.mode === "mock" ? "Mock" : "Devre Disi"}</p>
               <p>Credentials configured: {syncSummary.credentialsPresent ? "Yes" : "No"}</p>
               <p>Alibaba API request made: {syncSummary.apiRequestMade ? "Yes" : "No"}</p>
               <p>Total reports returned: {syncSummary.totalReportsReturned}</p>

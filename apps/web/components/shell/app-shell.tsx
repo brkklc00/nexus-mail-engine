@@ -21,16 +21,16 @@ import {
 import { cn } from "@/lib/utils";
 
 const navItems: Array<{ href: Route; label: string; icon: LucideIcon }> = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/templates", label: "Templates", icon: Mail },
-  { href: "/lists", label: "Lists", icon: ListChecks },
-  { href: "/segments", label: "Segments", icon: SlidersHorizontal },
-  { href: "/send", label: "Send", icon: Send },
-  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
-  { href: "/short-links", label: "Short Links", icon: Link2 },
-  { href: "/settings/smtp", label: "SMTP", icon: ServerCog },
-  { href: "/suppression", label: "Suppression", icon: ShieldBan },
-  { href: "/logs", label: "Logs", icon: Activity }
+  { href: "/dashboard", label: "Kontrol Merkezi", icon: LayoutDashboard },
+  { href: "/templates", label: "Sablonlar", icon: Mail },
+  { href: "/lists", label: "Alici Listeleri", icon: ListChecks },
+  { href: "/segments", label: "Segmentler", icon: SlidersHorizontal },
+  { href: "/send", label: "Gonderim Kontrolu", icon: Send },
+  { href: "/campaigns", label: "Kampanyalar", icon: Megaphone },
+  { href: "/short-links", label: "Kisa Linkler", icon: Link2 },
+  { href: "/settings/smtp", label: "SMTP Hesaplari", icon: ServerCog },
+  { href: "/suppression", label: "Baskilama / Kara Liste", icon: ShieldBan },
+  { href: "/logs", label: "Kayitlar", icon: Activity }
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -76,7 +76,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="mt-auto pt-2">
           <button
             type="button"
-            title="Logout"
+            title="Cikis Yap"
             className="group/nav relative flex w-full items-center justify-center rounded-xl border border-border bg-zinc-900/70 px-3 py-2.5 text-sm text-zinc-300 transition hover:border-rose-400/40 hover:bg-rose-500/10 hover:text-rose-200"
             onClick={async () => {
               await fetch("/api/auth/logout", { method: "POST" });
@@ -86,7 +86,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <LogOut className="h-4 w-4 shrink-0" />
             <span className="pointer-events-none absolute left-[56px] top-1/2 hidden -translate-y-1/2 rounded-md border border-border bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 shadow-lg group-hover/nav:block">
-              Logout
+              Cikis Yap
             </span>
           </button>
         </div>

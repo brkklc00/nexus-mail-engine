@@ -18,8 +18,8 @@ export function ConfirmModal({
   open,
   title,
   message,
-  confirmLabel = "Confirm",
-  cancelLabel = "Cancel",
+  confirmLabel = "Onayla",
+  cancelLabel = "Iptal",
   tone = "danger",
   loading = false,
   onConfirm,
@@ -55,7 +55,7 @@ export function ConfirmModal({
               disabled={loading}
               className={`rounded-lg px-3 py-2 text-sm font-medium text-white disabled:opacity-60 ${toneClass}`}
             >
-              {loading ? "Please wait..." : confirmLabel}
+              {loading ? "Lutfen bekleyin..." : confirmLabel}
             </button>
           </div>
         </div>

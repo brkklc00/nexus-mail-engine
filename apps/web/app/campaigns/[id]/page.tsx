@@ -4,6 +4,20 @@ type CampaignDetailPageProps = {
 
 export const dynamic = "force-dynamic";
 
+function getCampaignStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    pending: "Bekliyor",
+    queued: "Kuyrukta",
+    running: "Calisiyor",
+    paused: "Duraklatildi",
+    completed: "Tamamlandi",
+    partially_completed: "Kismen Tamamlandi",
+    failed: "Basarisiz",
+    canceled: "Iptal Edildi"
+  };
+  return map[status] ?? status;
+}
+
 export default async function CampaignDetailPage({ params }: CampaignDetailPageProps) {
   const { id } = await params;
   const { prisma } = await import("@nexus/db");
@@ -26,7 +40,7 @@ export default async function CampaignDetailPage({ params }: CampaignDetailPageP
   ]);
 
   if (!campaign) {
-    return <div className="rounded-lg border border-border bg-card p-6 text-zinc-300">Campaign not found.</div>;
+    return <div className="rounded-lg border border-border bg-card p-6 text-zinc-300">Kampanya bulunamadi.</div>;
   }
 
   const completionBase = campaign.totalTargeted || 1;
@@ -57,37 +71,37 @@ export default async function CampaignDetailPage({ params }: CampaignDetailPageP
       <div>
         <h2 className="text-xl font-semibold text-white">{campaign.name}</h2>
         <p className="mt-2 text-sm text-zinc-400">
-          Status: {campaign.status} · Provider: {campaign.provider} · SMTP: {campaign.smtpAccount.name}
+          Durum: {getCampaignStatusLabel(campaign.status)} · Saglayici: {campaign.provider} · SMTP: {campaign.smtpAccount.name}
         </p>
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Metric label="Targeted" value={campaign.totalTargeted} />
-        <Metric label="Sent" value={campaign.totalSent} />
-        <Metric label="Failed" value={campaign.totalFailed} />
-        <Metric label="Skipped" value={campaign.totalSkipped} />
-        <Metric label="Opened" value={campaign.totalOpened} />
-        <Metric label="Unique Clicked" value={campaign.totalClicked} />
-        <Metric label="Total Clicks" value={totalClicks} />
-        <Metric label="Unsubscribed" value={campaign.unsubscribeCount} />
-        <Metric label="Unique Click Recipients" value={uniqueClicks.length} />
-        <Metric label="Progress" value={`${progress}%`} />
+        <Metric label="Hedeflenen" value={campaign.totalTargeted} />
+        <Metric label="Gonderilen" value={campaign.totalSent} />
+        <Metric label="Basarisiz" value={campaign.totalFailed} />
+        <Metric label="Atlanan" value={campaign.totalSkipped} />
+        <Metric label="Acilan" value={campaign.totalOpened} />
+        <Metric label="Benzersiz Tiklanan" value={campaign.totalClicked} />
+        <Metric label="Toplam Tiklama" value={totalClicks} />
+        <Metric label="Uyelikten Cikan" value={campaign.unsubscribeCount} />
+        <Metric label="Benzersiz Tiklayan Alici" value={uniqueClicks.length} />
+        <Metric label="Ilerleme" value={`${progress}%`} />
       </div>
 
       <div className="rounded-md border border-border bg-zinc-900/50 p-3">
-        <p className="text-xs uppercase tracking-wider text-zinc-400">Top Links</p>
+        <p className="text-xs uppercase tracking-wider text-zinc-400">En Cok Tiklanan Linkler</p>
         <div className="mt-2 space-y-1 text-xs text-zinc-300">
           {topLinks.map((item) => (
             <p key={item.id}>
-              {item.totalClicks} click · {item.url}
+              {item.totalClicks} tiklama · {item.url}
             </p>
           ))}
-          {topLinks.length === 0 ? <p>No click data yet.</p> : null}
+          {topLinks.length === 0 ? <p>Henuz tiklama verisi yok.</p> : null}
         </div>
       </div>
 
       <div className="rounded-md border border-border bg-zinc-900/50 p-3">
-        <p className="text-xs uppercase tracking-wider text-zinc-400">Recent Delivery Logs</p>
+        <p className="text-xs uppercase tracking-wider text-zinc-400">Son Teslimat Kayitlari</p>
         <div className="mt-2 space-y-1 text-xs text-zinc-300">
           {campaign.logs.map((log: any) => (
             <p key={log.id}>

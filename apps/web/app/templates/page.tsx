@@ -15,12 +15,12 @@ export default async function TemplatesPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Templates"
-        description="Template listesi, versiyon bilgisi ve edit aksiyonlari."
+        title="Sablonlar"
+        description="Sablon listesi, surum bilgisi ve duzenleme islemleri."
         action={
           <span className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-zinc-300">
             <MailPlus className="h-4 w-4" />
-            Template library
+            Sablon kutuphanesi
           </span>
         }
       />

@@ -220,14 +220,14 @@ export default async function DashboardPage({
     .sort((a, b) => b.count - a.count);
 
   const stats = [
-    { label: "Templates", value: templates, icon: FileText, tone: "info" as const },
-    { label: "Lists", value: lists, icon: ListChecks, tone: "info" as const },
-    { label: "Recipients", value: recipients, icon: Users, tone: "info" as const },
-    { label: "Campaigns", value: campaigns, icon: Mail, tone: "info" as const },
-    { label: "Sent Today", value: sentToday, icon: Send, tone: "success" as const },
-    { label: "Failed Today", value: failedToday, icon: TriangleAlert, tone: "danger" as const },
-    { label: "Opens Today", value: opensToday, icon: CheckCircle2, tone: "success" as const },
-    { label: "Clicks Today", value: clicksToday, icon: MousePointerClick, tone: "warning" as const }
+    { label: "Sablonlar", value: templates, icon: FileText, tone: "info" as const },
+    { label: "Listeler", value: lists, icon: ListChecks, tone: "info" as const },
+    { label: "Alicilar", value: recipients, icon: Users, tone: "info" as const },
+    { label: "Kampanyalar", value: campaigns, icon: Mail, tone: "info" as const },
+    { label: "Bugun Gonderilen", value: sentToday, icon: Send, tone: "success" as const },
+    { label: "Bugun Basarisiz", value: failedToday, icon: TriangleAlert, tone: "danger" as const },
+    { label: "Bugun Acilma", value: opensToday, icon: CheckCircle2, tone: "success" as const },
+    { label: "Bugun Tiklama", value: clicksToday, icon: MousePointerClick, tone: "warning" as const }
   ];
 
   const recentTotalPages = Math.max(1, Math.ceil(totalRecentLogs / recentPageSize));
@@ -242,11 +242,11 @@ export default async function DashboardPage({
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Command Center"
-        description="Live queue, SMTP health, and campaign activity at a glance."
+        title="Kontrol Merkezi"
+        description="Canli kuyruk, SMTP sagligi ve kampanya aktivitesini tek bakista izleyin."
         action={
           <div className="rounded-xl border border-border bg-zinc-900/70 px-3 py-2 text-xs text-zinc-300">
-            Queue: active {queueMetrics?.deliveryCounts?.active ?? 0} · waiting {queueMetrics?.deliveryCounts?.waiting ?? 0}
+            Kuyruk: aktif {queueMetrics?.deliveryCounts?.active ?? 0} · bekleyen {queueMetrics?.deliveryCounts?.waiting ?? 0}
           </div>
         }
       />
@@ -284,24 +284,24 @@ export default async function DashboardPage({
             <div className="mb-3 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <BarChart3 className="h-4 w-4 text-zinc-400" />
-                <h3 className="text-sm font-medium text-zinc-200">SMTP Health</h3>
+                <h3 className="text-sm font-medium text-zinc-200">SMTP Sagligi</h3>
               </div>
               <Link href="/settings/smtp" className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
-                View all SMTPs
+                Tum SMTP'leri gor
               </Link>
             </div>
             <div className="mb-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-zinc-300">Total: {smtpTotals.total}</div>
-              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-emerald-300">Healthy: {smtpTotals.healthy}</div>
-              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-amber-300">Throttled: {smtpTotals.throttled}</div>
-              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-rose-300">Error: {smtpTotals.error}</div>
+              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-zinc-300">Toplam: {smtpTotals.total}</div>
+              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-emerald-300">Saglikli: {smtpTotals.healthy}</div>
+              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-amber-300">Sinirlandi: {smtpTotals.throttled}</div>
+              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-rose-300">Hata: {smtpTotals.error}</div>
             </div>
             <div className="space-y-2">
               {smtpStates.length === 0 ? (
                 <EmptyState
                   icon="chart-bar"
-                  title="No SMTP accounts found"
-                  description="SMTP health and throttle state will appear here after accounts are added."
+                  title="SMTP hesabi bulunamadi"
+                  description="Hesaplar eklendikten sonra SMTP saglik ve sinirlama durumu burada gorunur."
                 />
               ) : (
                 smtpStates.slice(0, smtpPreviewLimit).map((smtp: SmtpSummary) => (
@@ -314,7 +314,7 @@ export default async function DashboardPage({
                       />
                     </div>
                     <p className="mt-1 text-xs text-zinc-400">
-                      Provider: {smtp.providerLabel ?? "custom"} · {smtp.throttleReason ?? "No active throttle"}
+                      Saglayici: {smtp.providerLabel ?? "ozel"} · {smtp.throttleReason ?? "Aktif sinirlama yok"}
                     </p>
                   </div>
                 ))
@@ -326,9 +326,9 @@ export default async function DashboardPage({
 
       <section className="rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-zinc-200">Recent Activity</h3>
+          <h3 className="text-sm font-medium text-zinc-200">Son Aktivite</h3>
           <div className="flex items-center gap-2 text-xs text-zinc-400">
-            <span>Page size:</span>
+            <span>Sayfa boyutu:</span>
             <Link
               href={`/dashboard?activityPage=1&activityPageSize=10`}
               className={`rounded border px-2 py-1 ${recentPageSize === 10 ? "border-indigo-500/60 text-indigo-200" : "border-border text-zinc-300"}`}
@@ -342,22 +342,22 @@ export default async function DashboardPage({
               20
             </Link>
             <Link href="/logs" className="rounded border border-border px-2 py-1 text-zinc-300">
-              Load more
+              Daha fazla yukle
             </Link>
           </div>
         </div>
         {recentLogs.length === 0 ? (
           <EmptyState
             icon="chart-bar"
-            title="No activity records"
-            description="Recent events will be listed here when campaign activity starts."
+            title="Aktivite kaydi yok"
+            description="Kampanya aktivitesi basladiginda son etkinlikler burada listelenir."
           />
         ) : (
           <div className="space-y-2">
             {recentLogs.map((log: RecentActivityLog) => (
               <div key={log.id} className="rounded-xl border border-border bg-zinc-900/60 px-3 py-2 text-xs text-zinc-300">
                 <span className="text-zinc-400">{new Date(log.createdAt).toLocaleString()} · </span>
-                <span className="font-medium text-zinc-100">{log.campaign?.name ?? "Campaign"}</span>
+                <span className="font-medium text-zinc-100">{log.campaign?.name ?? "Kampanya"}</span>
                 <span className="mx-1">·</span>
                 <span>{log.eventType}</span>
                 <span className="mx-1">·</span>
@@ -379,7 +379,7 @@ export default async function DashboardPage({
                   recentPage <= 1 ? "pointer-events-none border-border text-zinc-500" : "border-border text-zinc-300"
                 }`}
               >
-                Prev
+                Onceki
               </Link>
               <Link
                 href={`/dashboard?activityPage=${Math.min(recentTotalPages, recentPage + 1)}&activityPageSize=${recentPageSize}`}
@@ -387,10 +387,10 @@ export default async function DashboardPage({
                   recentPage >= recentTotalPages ? "pointer-events-none border-border text-zinc-500" : "border-border text-zinc-300"
                 }`}
               >
-                Next
+                Sonraki
               </Link>
               <Link href="/logs" className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
-                View all ({totalRecentLogs})
+                Tumunu gor ({totalRecentLogs})
               </Link>
             </div>
           </div>

@@ -70,8 +70,8 @@ export default async function SmtpSettingsPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="SMTP Accounts"
-        description="SMTP Pool + Rate Control + Warmup + Rotation Engine merkezi."
+        title="SMTP Hesaplari"
+        description="SMTP Havuzu + Hiz Kontrolu + Isinma + Donusum Motoru merkezi."
       />
       <LiveSmtpFlowCard />
       <SmtpManager

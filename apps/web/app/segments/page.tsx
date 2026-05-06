@@ -7,8 +7,8 @@ export default async function SegmentsPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Segments"
-        description="Audience analytics, dynamic segment builder, CSV export ve campaign targeting merkezi."
+        title="Segmentler"
+        description="Hedef kitle analizi, dinamik segment olusturma, CSV disa aktarma ve kampanya hedefleme merkezi."
       />
       <SegmentsManager />
     </div>

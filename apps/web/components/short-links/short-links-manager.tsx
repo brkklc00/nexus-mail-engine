@@ -131,7 +131,7 @@ export function ShortLinksManager() {
       setItems(normalized);
       setTotal(Number(payload?.data?.count ?? payload?.count ?? normalized.length));
     } catch (error) {
-      toast.error("Short links could not be loaded", error instanceof Error ? error.message : "shortener_api_failed");
+      toast.error("Kisa linkler yuklenemedi", error instanceof Error ? error.message : "shortener_api_failed");
       setItems([]);
       setTotal(0);
     } finally {
@@ -179,7 +179,7 @@ export function ShortLinksManager() {
   async function onSubmit() {
     try {
       const saved = await createOrUpdate();
-      toast.success(editing ? "Short link updated" : "Short link created");
+      toast.success(editing ? "Kisa link guncellendi" : "Kisa link olusturuldu");
       setCreatedShortUrl(saved.shortUrl);
       if (editing) {
         setOpenCreate(false);
@@ -188,26 +188,26 @@ export function ShortLinksManager() {
       setForm((prev) => ({ ...prev, location_url: "", url: "", utm_source: "", utm_medium: "", utm_campaign: "" }));
       await loadLinks();
     } catch (error) {
-      toast.error("Short link action failed", error instanceof Error ? error.message : "shortener_api_failed");
+      toast.error("Kisa link islemi basarisiz", error instanceof Error ? error.message : "shortener_api_failed");
     }
   }
 
   async function onDelete(item: ShortLinkItem) {
     const approved = await confirm({
-      title: "Delete short link?",
+      title: "Kisa link silinsin mi?",
       message: "This action cannot be undone.",
-      confirmLabel: "Delete",
-      cancelLabel: "Cancel",
+      confirmLabel: "Sil",
+      cancelLabel: "Iptal",
       tone: "danger"
     });
     if (!approved) return;
     const response = await fetch(`/api/short-links/${item.id}`, { method: "DELETE" });
     const body = await response.json().catch(() => ({}));
     if (!response.ok || body.ok === false) {
-      toast.error("Delete failed", body.code ?? body.error ?? "shortener_api_failed");
+      toast.error("Silme islemi basarisiz", body.code ?? body.error ?? "shortener_api_failed");
       return;
     }
-    toast.success("Short link deleted");
+    toast.success("Kisa link silindi");
     await loadLinks();
   }
 
@@ -219,10 +219,10 @@ export function ShortLinksManager() {
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok || body.ok === false) {
-      toast.error("Update failed", body.code ?? body.error ?? "shortener_api_failed");
+      toast.error("Guncelleme basarisiz", body.code ?? body.error ?? "shortener_api_failed");
       return;
     }
-    toast.success(item.enabled ? "Short link disabled" : "Short link enabled");
+    toast.success(item.enabled ? "Kisa link devre disi birakildi" : "Kisa link aktif edildi");
     await loadLinks();
   }
 
@@ -246,7 +246,7 @@ export function ShortLinksManager() {
 
       <section className="rounded-2xl border border-border bg-card p-3">
         <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
-          <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Search" value={filters.search} onChange={(e) => setFilters((s) => ({ ...s, search: e.target.value }))} />
+          <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Ara" value={filters.search} onChange={(e) => setFilters((s) => ({ ...s, search: e.target.value }))} />
           <select className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.search_by} onChange={(e) => setFilters((s) => ({ ...s, search_by: e.target.value }))}>
             <option value="url">Search by short URL</option>
             <option value="location_url">Search by destination</option>
@@ -331,7 +331,7 @@ export function ShortLinksManager() {
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-1">
-                        <button className="rounded border border-border px-2 py-1 text-xs" onClick={async () => { await navigator.clipboard.writeText(item.shortUrl); toast.success("Short URL copied"); }}>
+                        <button className="rounded border border-border px-2 py-1 text-xs" onClick={async () => { await navigator.clipboard.writeText(item.shortUrl); toast.success("Kisa URL kopyalandi"); }}>
                           Copy
                         </button>
                         <button className="rounded border border-border px-2 py-1 text-xs" onClick={() => { setCreatedShortUrl(null); setEditing(item); setForm({ ...DEFAULT_FORM, location_url: item.destinationUrl, url: item.alias ?? getAliasFromUrl(item.shortUrl) }); setOpenCreate(true); }}>
@@ -386,7 +386,7 @@ export function ShortLinksManager() {
         <OverlayPortal active={openCreate} lockScroll>
           <div className="fixed inset-0 z-50 bg-black/60 p-4" onClick={() => setOpenCreate(false)}>
             <div className="mx-auto w-full max-w-2xl rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
-              <p className="text-sm font-semibold text-white">{editing ? "Edit short link" : "Create short link"}</p>
+              <p className="text-sm font-semibold text-white">{editing ? "Kisa link duzenle" : "Kisa link olustur"}</p>
               <div className="mt-3 grid gap-2">
                 <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Destination URL (required)" value={form.location_url} onChange={(e) => setForm((s) => ({ ...s, location_url: e.target.value }))} />
                 <label className="space-y-1">
@@ -408,7 +408,7 @@ export function ShortLinksManager() {
                         className="rounded border border-emerald-400/60 px-2 py-1 text-[11px]"
                         onClick={async () => {
                           await navigator.clipboard.writeText(createdShortUrl);
-                          toast.success("Short URL copied");
+                          toast.success("Kisa URL kopyalandi");
                         }}
                       >
                         <Copy className="h-3.5 w-3.5" />
@@ -434,7 +434,7 @@ export function ShortLinksManager() {
               </div>
               <div className="mt-3 flex gap-2">
                 <button className="rounded bg-accent px-3 py-2 text-sm text-white" onClick={() => void onSubmit()}>
-                  {editing ? "Save" : "Create"}
+                  {editing ? "Kaydet" : "Olustur"}
                 </button>
                 <button className="rounded border border-border px-3 py-2 text-sm text-zinc-300" onClick={() => { setOpenCreate(false); setCreatedShortUrl(null); }}>
                   Close

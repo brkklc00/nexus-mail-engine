@@ -52,12 +52,12 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
         error?: string;
       };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Live SMTP flow unavailable");
+        throw new Error(payload.error ?? "Canli SMTP akisi kullanilamiyor");
       }
       setData(payload);
       setError(null);
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : "Live SMTP flow unavailable");
+      setError(fetchError instanceof Error ? fetchError.message : "Canli SMTP akisi kullanilamiyor");
     } finally {
       setLoading(false);
     }
@@ -95,7 +95,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
   return (
     <div className="rounded-2xl border border-border bg-card p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-medium text-zinc-200">Live SMTP Flow</h3>
+        <h3 className="text-sm font-medium text-zinc-200">Canli SMTP Akisi</h3>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -103,7 +103,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
             className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-zinc-300"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
+            Yenile
           </button>
           <label className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-zinc-300">
             <input
@@ -111,16 +111,16 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
               checked={autoRefresh}
               onChange={(e) => setAutoRefresh(e.target.checked)}
             />
-            Auto
+            Otomatik
           </label>
           <select
             value={filter}
             onChange={(e) => setFilter(e.target.value as "all" | "success" | "failed")}
             className="rounded border border-border bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
           >
-            <option value="all">all</option>
-            <option value="success">success</option>
-            <option value="failed">failed</option>
+            <option value="all">tum</option>
+            <option value="success">basarili</option>
+            <option value="failed">basarisiz</option>
           </select>
         </div>
       </div>
@@ -128,33 +128,33 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
       {loading && !data ? (
         <div className="flex items-center gap-2 text-xs text-zinc-400">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Loading live flow...
+          Canli akis yukleniyor...
         </div>
       ) : null}
       {error ? <p className="text-xs text-rose-300">{error}</p> : null}
 
       <div className={`grid gap-2 ${compact ? "grid-cols-2 md:grid-cols-3" : "grid-cols-2 md:grid-cols-6"}`}>
         <FlowStat label="RPS" value={data?.metrics.currentRps ?? 0} />
-        <FlowStat label="Sent/min" value={data?.metrics.sentLastMinute ?? 0} />
-        <FlowStat label="Failed/min" value={data?.metrics.failedLastMinute ?? 0} />
-        <FlowStat label="Queue pending" value={data?.metrics.queuePending ?? 0} />
-        <FlowStat label="Queue processing" value={data?.metrics.queueProcessing ?? 0} />
-        <FlowStat label="Active campaigns" value={data?.metrics.activeCampaigns ?? 0} />
+        <FlowStat label="Gonderilen/dk" value={data?.metrics.sentLastMinute ?? 0} />
+        <FlowStat label="Basarisiz/dk" value={data?.metrics.failedLastMinute ?? 0} />
+        <FlowStat label="Kuyruk bekleyen" value={data?.metrics.queuePending ?? 0} />
+        <FlowStat label="Kuyruk islenen" value={data?.metrics.queueProcessing ?? 0} />
+        <FlowStat label="Aktif kampanya" value={data?.metrics.activeCampaigns ?? 0} />
       </div>
 
       <div className="mt-3 grid gap-3 xl:grid-cols-2">
         <div className="rounded-xl border border-border bg-zinc-900/40 p-2">
-          <p className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">Recent events (last 20)</p>
+          <p className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">Son olaylar (son 20)</p>
           <div className="max-h-64 overflow-auto">
             <table className="w-full border-collapse text-left text-[11px] text-zinc-300">
               <thead className="sticky top-0 bg-zinc-900/90 text-zinc-500">
                 <tr>
-                  <th className="border-b border-border px-2 py-1">Time</th>
-                  <th className="border-b border-border px-2 py-1">Campaign</th>
+                  <th className="border-b border-border px-2 py-1">Saat</th>
+                  <th className="border-b border-border px-2 py-1">Kampanya</th>
                   <th className="border-b border-border px-2 py-1">SMTP</th>
-                  <th className="border-b border-border px-2 py-1">Recipient</th>
-                  <th className="border-b border-border px-2 py-1">Status</th>
-                  <th className="border-b border-border px-2 py-1">Error</th>
+                  <th className="border-b border-border px-2 py-1">Alici</th>
+                  <th className="border-b border-border px-2 py-1">Durum</th>
+                  <th className="border-b border-border px-2 py-1">Hata</th>
                 </tr>
               </thead>
               <tbody>
@@ -181,7 +181,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
         </div>
 
         <div className="space-y-2 rounded-xl border border-border bg-zinc-900/40 p-2">
-          <p className="text-[11px] uppercase tracking-wide text-zinc-500">SMTP activity</p>
+          <p className="text-[11px] uppercase tracking-wide text-zinc-500">SMTP aktivitesi</p>
           <div className="max-h-36 space-y-1 overflow-auto">
             {(data?.smtpActivity ?? []).map((item) => (
               <div key={item.smtpId} className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
@@ -193,19 +193,19 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
                   />
                 </div>
                 <p className="text-[11px] text-zinc-500">
-                  sent:{item.sentToday} failed:{item.failedToday} rps:{item.currentRps}
+                  gonderilen:{item.sentToday} basarisiz:{item.failedToday} rps:{item.currentRps}
                 </p>
               </div>
             ))}
           </div>
           <div className="rounded border border-border px-2 py-2">
-            <p className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">SMTP rotation activity</p>
+            <p className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">SMTP donusum aktivitesi</p>
             {rotationMap.length === 0 ? (
-              <p className="text-xs text-zinc-500">No recent rotation data.</p>
+              <p className="text-xs text-zinc-500">Son donusum verisi yok.</p>
             ) : (
               rotationMap.map((item) => (
                 <p key={item.campaignName} className="text-xs text-zinc-300">
-                  {item.campaignName}: {item.smtpCount} SMTP used
+                  {item.campaignName}: {item.smtpCount} SMTP kullanildi
                 </p>
               ))
             )}

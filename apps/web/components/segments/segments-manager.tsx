@@ -146,15 +146,15 @@ export function SegmentsManager() {
       const response = await fetch("/api/segments?page=1&pageSize=50", { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; items?: SegmentListItem[]; error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Segment list could not be loaded");
+        throw new Error(payload.error ?? "Segment listesi yuklenemedi");
       }
       setSegments(payload.items ?? []);
     } catch (error) {
       setSegments([]);
       if (!silent) {
-        toast.error("Segment list could not be loaded", error instanceof Error ? error.message : "Unexpected error");
+        toast.error("Segment listesi yuklenemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
       } else {
-        showInitialLoadErrorOnce("Segment list could not be loaded", error instanceof Error ? error.message : "Unexpected error");
+        showInitialLoadErrorOnce("Segment listesi yuklenemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
       }
     } finally {
       setLoadingSegments(false);
@@ -166,7 +166,7 @@ export function SegmentsManager() {
       try {
         await Promise.all([loadBootstrap(), loadSegments({ silent: true })]);
       } catch (error) {
-        showInitialLoadErrorOnce("Segment bootstrap could not be loaded", error instanceof Error ? error.message : "Request failed");
+        showInitialLoadErrorOnce("Segment baslangic verisi yuklenemedi", error instanceof Error ? error.message : "Istek basarisiz oldu");
         setSegments([]);
       }
     })();
@@ -182,11 +182,11 @@ export function SegmentsManager() {
       });
       const payload = (await response.json().catch(() => ({}))) as QueryResponse & { error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Segment query failed");
+        throw new Error(payload.error ?? "Segment sorgusu basarisiz oldu");
       }
       setQueryResult(payload);
     } catch (error) {
-      toast.error("Segment query failed", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Segment sorgusu basarisiz oldu", error instanceof Error ? error.message : "Beklenmeyen hata");
     } finally {
       setLoading(false);
     }
@@ -201,7 +201,7 @@ export function SegmentsManager() {
       });
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error ?? "Export failed");
+        throw new Error(payload.error ?? "Disa aktarma basarisiz oldu");
       }
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -212,13 +212,13 @@ export function SegmentsManager() {
       window.URL.revokeObjectURL(url);
       toast.success("CSV export prepared");
     } catch (error) {
-      toast.error("CSV export failed", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("CSV disa aktarma basarisiz", error instanceof Error ? error.message : "Beklenmeyen hata");
     }
   }
 
   async function saveSegment() {
     if (!saveName.trim()) {
-      toast.warning("Segment name is required");
+      toast.warning("Segment adi gerekli");
       return;
     }
     try {
@@ -234,14 +234,14 @@ export function SegmentsManager() {
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Segment could not be saved");
+        throw new Error(payload.error ?? "Segment kaydedilemedi");
       }
-      toast.success("Segment saved");
+      toast.success("Segment kaydedildi");
       setSaveName("");
       setSaveDescription("");
       await loadSegments();
     } catch (error) {
-      toast.error("Segment could not be saved", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Segment kaydedilemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
     }
   }
 
@@ -261,10 +261,10 @@ export function SegmentsManager() {
 
   async function deleteSegment(id: string) {
     const approved = await confirm({
-      title: "Delete segment?",
+      title: "Segment silinsin mi?",
       message: "It will be permanently deleted if it is not used by any campaign.",
-      confirmLabel: "Delete",
-      cancelLabel: "Cancel",
+      confirmLabel: "Sil",
+      cancelLabel: "Iptal",
       tone: "danger"
     });
     if (!approved) return;
@@ -272,12 +272,12 @@ export function SegmentsManager() {
       const response = await fetch(`/api/segments/${id}`, { method: "DELETE" });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Delete failed");
+        throw new Error(payload.error ?? "Silme islemi basarisiz oldu");
       }
-      toast.success("Segment deleted");
+      toast.success("Segment silindi");
       await loadSegments();
     } catch (error) {
-      toast.error("Segment could not be deleted", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Segment silinemedi", error instanceof Error ? error.message : "Beklenmeyen hata");
     }
   }
 

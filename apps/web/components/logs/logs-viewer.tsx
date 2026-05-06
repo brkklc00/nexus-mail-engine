@@ -102,16 +102,16 @@ export function LogsViewer() {
         const res = await fetch(`/api/logs?${queryString}`);
         const payload = (await res.json().catch(() => ({}))) as Partial<LogsResponse>;
         if (!res.ok || !payload.ok) {
-          throw new Error(payload.error ?? "Log query failed.");
+          throw new Error(payload.error ?? "Kayit sorgusu basarisiz oldu.");
         }
         if (!cancelled) {
           setResponse(payload as LogsResponse);
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Log query failed.";
+        const message = err instanceof Error ? err.message : "Kayit sorgusu basarisiz oldu.";
         if (!cancelled) {
           setError(message);
-          toast.error("Logs could not be loaded", message);
+          toast.error("Kayitlar yuklenemedi", message);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -137,7 +137,7 @@ export function LogsViewer() {
           <input
             value={draftFilters.q}
             onChange={(e) => setDraftFilters((prev) => ({ ...prev, q: e.target.value }))}
-            placeholder="Search text..."
+            placeholder="Metin ara..."
             className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm xl:col-span-2"
           />
           <select
@@ -160,8 +160,8 @@ export function LogsViewer() {
             className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
           >
             <option value="all">all</option>
-            <option value="success">success</option>
-            <option value="warning">warning</option>
+            <option value="success">basarili</option>
+            <option value="warning">uyari</option>
             <option value="error">error</option>
             <option value="info">info</option>
           </select>
@@ -259,7 +259,7 @@ export function LogsViewer() {
           <div className="p-4">
             <EmptyState
               icon="activity"
-              title="No logs match this filter"
+              title="Bu filtreye uygun kayit yok"
               description="Broaden filters or increase date range."
             />
           </div>
@@ -367,7 +367,7 @@ export function LogsViewer() {
                 <span className="text-zinc-500">Severity:</span> {selectedLog.severity}
               </p>
               <p>
-                <span className="text-zinc-500">Campaign ID:</span> {selectedLog.campaignId ?? "-"}
+                <span className="text-zinc-500">Kampanya ID:</span> {selectedLog.campaignId ?? "-"}
               </p>
               <p>
                 <span className="text-zinc-500">Resource ID:</span> {selectedLog.resourceId ?? "-"}

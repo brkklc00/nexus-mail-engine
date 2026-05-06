@@ -154,7 +154,7 @@ export function LiveSendPanel() {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Request failed";
         setBootstrapError(message);
-        toast.error("Send bootstrap failed", message || "Could not load bootstrap data.");
+        toast.error("Gonderim hazirlik verisi alinamadi", message || "Hazirlik verisi yuklenemedi.");
       } finally {
         setLoadingBootstrap(false);
       }
@@ -224,27 +224,27 @@ export function LiveSendPanel() {
 
   async function createAndStartCampaign() {
     if (noTemplate) {
-      toast.warning("Template is required", "Select a template before starting.");
+      toast.warning("Sablon gerekli", "Baslatmadan once bir sablon secin.");
       return;
     }
     if (targetEmpty) {
-      toast.warning("Target is required", "Select a list/segment or configure ad-hoc filters.");
+      toast.warning("Hedef gerekli", "Liste/segment secin veya ad-hoc filtreleri ayarlayin.");
       return;
     }
     if (targetZero) {
-      toast.warning("Target has zero recipients", "Selected target does not contain recipients.");
+      toast.warning("Hedefte alici yok", "Secilen hedefte alici bulunmuyor.");
       return;
     }
     if (noUsableSmtp) {
-      toast.warning("No usable SMTP pool", "No active usable SMTP account found with current global pool safety filters.");
+      toast.warning("Kullanilabilir SMTP havuzu yok", "Mevcut global havuz guvenlik filtrelerine uygun aktif SMTP hesabi bulunamadi.");
       return;
     }
     const selectedSmtpNames = selectedPool.map((smtp) => smtp.name).join(", ");
     const confirmed = await confirm({
-      title: "Start this campaign?",
+        title: "Bu kampanya baslatilsin mi?",
       message: `Target: ${estimatedTarget} recipient | SMTP: ${selectedSmtpNames || "-"} | Rotation: ${form.strategy} / every ${form.rotateEvery} | Estimated throughput: ${estimatedRate.toFixed(2)}/s`,
-      confirmLabel: "Create + Start",
-      cancelLabel: "Cancel",
+        confirmLabel: "Olustur ve Baslat",
+        cancelLabel: "Iptal",
       tone: "warning"
     });
     if (!confirmed) return;
@@ -292,9 +292,9 @@ export function LiveSendPanel() {
       }
       setCampaignId(created.campaign.id);
       setLogs((prev) => [`campaign created + started: ${created.campaign.id}`, ...prev]);
-      toast.success("Campaign started");
+      toast.success("Kampanya baslatildi");
     } catch (error) {
-      toast.error("Campaign could not be started", error instanceof Error ? error.message : "Action failed");
+      toast.error("Kampanya baslatilamadi", error instanceof Error ? error.message : "Islem basarisiz oldu");
     } finally {
       setActionLoading(null);
     }
@@ -304,10 +304,10 @@ export function LiveSendPanel() {
     if (!campaignId) return;
     if (kind === "cancel") {
       const accepted = await confirm({
-        title: "Cancel this campaign?",
-        message: "Pending sends will be marked as skipped.",
-        confirmLabel: "Cancel campaign",
-        cancelLabel: "Cancel",
+        title: "Bu kampanya iptal edilsin mi?",
+        message: "Bekleyen gonderimler atlandi olarak isaretlenecek.",
+        confirmLabel: "Kampanyayi Iptal Et",
+        cancelLabel: "Vazgec",
         tone: "danger"
       });
       if (!accepted) return;
@@ -322,12 +322,12 @@ export function LiveSendPanel() {
         throw new Error(payload.error ?? `${kind} failed`);
       }
       if (kind === "cancel") {
-        toast.info("Campaign canceled. Pending recipients will stop processing.");
+        toast.info("Kampanya iptal edildi. Bekleyen alicilarin islemi durdurulacak.");
       } else {
         toast.info(`Campaign ${kind} request accepted`);
       }
     } catch (error) {
-      toast.error(`Campaign ${kind} failed`, error instanceof Error ? error.message : `${kind} failed`);
+      toast.error(`Kampanya islemi basarisiz: ${kind}`, error instanceof Error ? error.message : `${kind} basarisiz`);
     } finally {
       setActionLoading(null);
     }
@@ -350,7 +350,7 @@ export function LiveSendPanel() {
           className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
           value={form.name}
           onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
-          placeholder="Campaign name"
+          placeholder="Kampanya adi"
         />
         <select
           className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
@@ -361,7 +361,7 @@ export function LiveSendPanel() {
           {templateOptions.length === 0 ? <option value="">No active templates</option> : null}
           {templateOptions.map((t) => (
             <option key={t.id} value={t.id}>
-              {t.title}{t.status === "draft" ? " (draft)" : ""}
+              {t.title}{t.status === "draft" ? " (taslak)" : ""}
             </option>
           ))}
         </select>
@@ -370,9 +370,9 @@ export function LiveSendPanel() {
           value={form.targetMode}
           onChange={(e) => setForm((s) => ({ ...s, targetMode: e.target.value as "list" | "saved_segment" | "ad_hoc_segment" }))}
         >
-          <option value="list">Target: Recipient list</option>
-          <option value="saved_segment">Target: Saved segment</option>
-          <option value="ad_hoc_segment">Target: Ad-hoc segment query</option>
+          <option value="list">Hedef: Alici listesi</option>
+          <option value="saved_segment">Hedef: Kayitli segment</option>
+          <option value="ad_hoc_segment">Hedef: Ad-hoc segment sorgusu</option>
         </select>
         {form.targetMode === "list" ? (
           <select
@@ -410,7 +410,7 @@ export function LiveSendPanel() {
               className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
               value={form.adHocDomain}
               onChange={(e) => setForm((s) => ({ ...s, adHocDomain: e.target.value }))}
-              placeholder="Ad-hoc domain (example: gmail.com)"
+              placeholder="Ad-hoc alan adi (ornek: gmail.com)"
             />
             <label className="flex items-center gap-2 rounded-md border border-border bg-zinc-900 px-3 py-2 text-xs">
               <input type="checkbox" checked={form.adHocOpened} onChange={(e) => setForm((s) => ({ ...s, adHocOpened: e.target.checked }))} />
@@ -440,11 +440,11 @@ export function LiveSendPanel() {
             }))
           }
         >
-          <option value="rotate_every_n">Strategy: rotate every N emails</option>
-          <option value="round_robin">Strategy: round robin</option>
-          <option value="weighted_warmup">Strategy: weighted by warmup/rate</option>
-          <option value="least_used">Strategy: least used SMTP first</option>
-          <option value="health_based">Strategy: health-based priority</option>
+          <option value="rotate_every_n">Strateji: Her N e-postada donusum</option>
+          <option value="round_robin">Strateji: Sirali dagitim</option>
+          <option value="weighted_warmup">Strateji: Isinma/hiza gore agirlikli</option>
+          <option value="least_used">Strateji: En az kullanilandan basla</option>
+          <option value="health_based">Strateji: Saglik oncelikli</option>
         </select>
         <input
           className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
@@ -453,7 +453,7 @@ export function LiveSendPanel() {
           max={50}
           value={form.parallelSmtpCount}
           onChange={(e) => setForm((s) => ({ ...s, parallelSmtpCount: Number(e.target.value || 1) }))}
-          placeholder="Parallel SMTP count"
+          placeholder="Paralel SMTP sayisi"
         />
         <p className="rounded-md border border-border bg-zinc-900/60 px-3 py-2 text-xs text-zinc-400 md:col-span-2">
           Campaigns use all active SMTPs by default. Lower this only if you want safer/slower delivery.
@@ -465,7 +465,7 @@ export function LiveSendPanel() {
           max={50000}
           value={form.rotateEvery}
           onChange={(e) => setForm((s) => ({ ...s, rotateEvery: Number(e.target.value || 500) }))}
-          placeholder="Rotate every N emails"
+          placeholder="Her N e-postada donusum"
         />
       </div>
 
@@ -477,9 +477,9 @@ export function LiveSendPanel() {
 
       {templateOptions.length === 0 || listOptions.length === 0 || usableSmtpOptions.length === 0 ? (
         <div className="flex flex-wrap gap-2 rounded-md border border-border bg-zinc-900/50 p-3 text-xs text-zinc-300">
-          {templateOptions.length === 0 ? <Link className="rounded border border-border px-2 py-1" href="/templates">Create template</Link> : null}
-          {listOptions.length === 0 ? <Link className="rounded border border-border px-2 py-1" href="/lists">Create recipient list</Link> : null}
-          {usableSmtpOptions.length === 0 ? <Link className="rounded border border-border px-2 py-1" href="/settings/smtp">Add or recover usable SMTP accounts</Link> : null}
+          {templateOptions.length === 0 ? <Link className="rounded border border-border px-2 py-1" href="/templates">Sablon olustur</Link> : null}
+          {listOptions.length === 0 ? <Link className="rounded border border-border px-2 py-1" href="/lists">Alici listesi olustur</Link> : null}
+          {usableSmtpOptions.length === 0 ? <Link className="rounded border border-border px-2 py-1" href="/settings/smtp">Kullanilabilir SMTP hesaplarini ekle/duzelt</Link> : null}
         </div>
       ) : null}
 
@@ -559,16 +559,16 @@ export function LiveSendPanel() {
       </div>
 
       <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-        <Metric label="Sent" value={live?.sent ?? 0} />
-        <Metric label="Failed" value={live?.failed ?? 0} />
-        <Metric label="Skipped" value={live?.skipped ?? 0} />
-        <Metric label="Effective Rate" value={`${live?.effectiveRate ?? 0}/s`} />
+        <Metric label="Gonderildi" value={live?.sent ?? 0} />
+        <Metric label="Basarisiz" value={live?.failed ?? 0} />
+        <Metric label="Atlandi" value={live?.skipped ?? 0} />
+        <Metric label="Efektif Hiz" value={`${live?.effectiveRate ?? 0}/s`} />
       </div>
 
       <div className="grid grid-cols-1 gap-3 text-sm md:grid-cols-3">
-        <Metric label="Queue Waiting" value={live?.queue?.waiting ?? 0} />
-        <Metric label="Queue Active" value={live?.queue?.active ?? 0} />
-        <Metric label="Queue Failed" value={live?.queue?.failed ?? 0} />
+        <Metric label="Kuyruk Bekleyen" value={live?.queue?.waiting ?? 0} />
+        <Metric label="Kuyruk Aktif" value={live?.queue?.active ?? 0} />
+        <Metric label="Kuyruk Basarisiz" value={live?.queue?.failed ?? 0} />
       </div>
 
       {live ? (
@@ -586,7 +586,7 @@ export function LiveSendPanel() {
           ) : null}
           {live.perSmtpSent && live.perSmtpSent.length > 0 ? (
             <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
-              <p className="mb-1 uppercase tracking-wide text-zinc-400">Per SMTP Sent</p>
+              <p className="mb-1 uppercase tracking-wide text-zinc-400">SMTP Bazli Gonderim</p>
               <div className="grid gap-1 md:grid-cols-2">
                 {live.perSmtpSent.map((item) => (
                   <p key={item.smtpAccountId} className="rounded bg-zinc-900/80 px-2 py-1">
@@ -600,9 +600,9 @@ export function LiveSendPanel() {
       ) : null}
 
       <div className="rounded-md border border-border bg-zinc-900/40 p-3">
-        <p className="text-xs uppercase tracking-wider text-zinc-400">Live Logs</p>
+        <p className="text-xs uppercase tracking-wider text-zinc-400">Canli Kayitlar</p>
         <div className="mt-2 space-y-1 text-xs text-zinc-300">
-          {logs.length === 0 ? <p className="text-zinc-500">No live events yet. Start a campaign to stream logs.</p> : null}
+          {logs.length === 0 ? <p className="text-zinc-500">Henuz canli olay yok. Kayit akisi icin kampanya baslatin.</p> : null}
           {logs.map((line) => (
             <p key={line} className="rounded bg-zinc-900/80 px-2 py-1">
               {line}

@@ -29,14 +29,14 @@ export function PerformanceCharts({
     <section className="rounded-2xl border border-zinc-800/80 bg-card p-4">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold text-white">Performance Analytics</p>
-          <p className="text-xs text-zinc-400">Delivery, engagement and failure trends for recent campaigns.</p>
+          <p className="text-sm font-semibold text-white">Performans Analitigi</p>
+          <p className="text-xs text-zinc-400">Son kampanyalar icin teslimat, etkilesim ve basarisizlik trendleri.</p>
         </div>
         <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-900/60 p-1 text-xs">
           {[
-            { id: "today", label: "Today" },
-            { id: "7d", label: "7 days" },
-            { id: "30d", label: "30 days" }
+            { id: "today", label: "Bugun" },
+            { id: "7d", label: "7 gun" },
+            { id: "30d", label: "30 gun" }
           ].map((item) => (
             <a
               key={item.id}
@@ -54,16 +54,16 @@ export function PerformanceCharts({
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         <article className="min-h-[260px] max-h-[320px] rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-3">
           <div className="mb-2 flex items-center justify-between text-xs text-zinc-400">
-            <span>Delivery Trend</span>
+            <span>Teslimat Trendi</span>
             <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-indigo-400" />Sent</span>
-              <span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-rose-400" />Failed</span>
-              <span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-amber-300" />Skipped</span>
+              <span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-indigo-400" />Gonderildi</span>
+              <span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-rose-400" />Basarisiz</span>
+              <span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-amber-300" />Atlandi</span>
             </div>
           </div>
           {deliveryData.every((item) => item.sent === 0 && item.failed === 0 && item.skipped === 0) ? (
             <div className="flex h-[235px] items-center justify-center">
-              <EmptyState icon="chart-bar" title="No delivery data yet." description="Delivery trend appears as events accumulate." />
+              <EmptyState icon="chart-bar" title="Henüz teslimat verisi yok." description="Teslimat trendi veriler biriktikçe gorunur." />
             </div>
           ) : (
             <div className="h-[235px]">
@@ -83,25 +83,25 @@ export function PerformanceCharts({
         </article>
 
         <article className="min-h-[260px] max-h-[320px] rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-3">
-          <div className="mb-2 text-xs text-zinc-400">Engagement Trend</div>
+          <div className="mb-2 text-xs text-zinc-400">Etkilesim Trendi</div>
           {noEngagement ? (
             <div className="flex h-[235px] items-center justify-center">
               <EmptyState
                 icon="chart-pie"
-                title="No engagement data yet."
-                description="Open/click tracking will appear here after recipients interact."
+                title="Henuz etkilesim verisi yok."
+                description="Alicilar etkilesime girdikten sonra acilma/tiklama verisi burada gorunur."
               />
             </div>
           ) : (
             <>
               <div className="mb-2 grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">Opens: {engagementData.reduce((s, i) => s + i.opens, 0)}</div>
-                <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">Clicks: {engagementData.reduce((s, i) => s + i.clicks, 0)}</div>
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">Acilma: {engagementData.reduce((s, i) => s + i.opens, 0)}</div>
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">Tiklama: {engagementData.reduce((s, i) => s + i.clicks, 0)}</div>
                 <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">
-                  Open Rate: {Number((engagementData.reduce((s, i) => s + i.openRate, 0) / engagementData.length).toFixed(2))}%
+                  Acilma Orani: {Number((engagementData.reduce((s, i) => s + i.openRate, 0) / engagementData.length).toFixed(2))}%
                 </div>
                 <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">
-                  Click Rate: {Number((engagementData.reduce((s, i) => s + i.clickRate, 0) / engagementData.length).toFixed(2))}%
+                  Tiklama Orani: {Number((engagementData.reduce((s, i) => s + i.clickRate, 0) / engagementData.length).toFixed(2))}%
                 </div>
               </div>
               <div className="h-[190px]">
@@ -121,10 +121,10 @@ export function PerformanceCharts({
         </article>
 
         <article className="min-h-[260px] max-h-[320px] rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-3">
-          <div className="mb-2 text-xs text-zinc-400">Failure Breakdown</div>
+          <div className="mb-2 text-xs text-zinc-400">Basarisizlik Dagilimi</div>
           {totalFailures === 0 ? (
             <div className="flex h-[235px] items-center justify-center">
-              <EmptyState icon="chart-pie" title="No failures recorded." description="Failure trends appear here when delivery fails." />
+              <EmptyState icon="chart-pie" title="Basarisizlik kaydi yok." description="Gonderim basarisiz oldugunda trendler burada gorunur." />
             </div>
           ) : (
             <div className="space-y-2">

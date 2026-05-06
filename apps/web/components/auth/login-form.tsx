@@ -62,7 +62,7 @@ export function LoginForm() {
       };
 
       if (!response.ok || !data.ok) {
-        setError(data.error ?? "Login failed");
+        setError(data.error ?? "Giris basarisiz");
         return;
       }
 
@@ -73,7 +73,7 @@ export function LoginForm() {
         window.location.href = safeTarget;
       }, 300);
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Login request failed");
+      setError(submitError instanceof Error ? submitError.message : "Giris istegi basarisiz oldu");
     } finally {
       setIsPending(false);
     }
@@ -82,7 +82,7 @@ export function LoginForm() {
   return (
     <form onSubmit={onSubmit} className="space-y-4">
       <div>
-        <label className="mb-1 block text-xs uppercase tracking-wider text-zinc-400">Email</label>
+        <label className="mb-1 block text-xs uppercase tracking-wider text-zinc-400">E-posta</label>
         <input
           type="email"
           className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm text-white"
@@ -90,7 +90,7 @@ export function LoginForm() {
         />
       </div>
       <div>
-        <label className="mb-1 block text-xs uppercase tracking-wider text-zinc-400">Password</label>
+        <label className="mb-1 block text-xs uppercase tracking-wider text-zinc-400">Sifre</label>
         <input
           type="password"
           className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm text-white"
@@ -103,7 +103,7 @@ export function LoginForm() {
         disabled={formState.isSubmitting || isPending}
         className="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
       >
-        {formState.isSubmitting || isPending ? "Signing in..." : "Sign In"}
+        {formState.isSubmitting || isPending ? "Giris yapiliyor..." : "Giris Yap"}
       </button>
     </form>
   );

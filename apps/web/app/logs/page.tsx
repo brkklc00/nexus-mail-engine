@@ -7,8 +7,8 @@ export default async function LogsPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Operational Logs"
-        description="Paginated, filterable production log viewer with details modal."
+        title="Operasyon Kayitlari"
+        description="Sayfalanmis, filtrelenebilir ve detay pencereli uretim kayit goruntuleme ekrani."
       />
       <LogsViewer />
     </div>

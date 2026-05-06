@@ -7,8 +7,8 @@ export default async function CampaignsPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Campaigns"
-        description="Canli kampanya operasyonu, queue izleme, analytics, raporlama ve durum bazli aksiyonlar."
+        title="Kampanyalar"
+        description="Canli kampanya operasyonu, kuyruk izleme, analiz, raporlama ve durum bazli islemler."
       />
       <CampaignOperations />
     </div>
