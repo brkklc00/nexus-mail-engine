@@ -19,6 +19,52 @@ function ssePayload(event: string, data: unknown) {
   return encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+function isMissingCampaignSoftDeleteColumn(message: string): boolean {
+  return /column .*isdeleted.* does not exist/i.test(message);
+}
+
+async function findCampaignForStream(campaignId: string) {
+  const select = {
+    id: true,
+    status: true,
+    smtpAccountId: true,
+    smtpPoolConfig: true,
+    totalTargeted: true,
+    totalSent: true,
+    totalFailed: true,
+    totalSkipped: true,
+    totalOpened: true,
+    totalClicked: true,
+    throttleReason: true,
+    smtpAccount: {
+      select: {
+        host: true,
+        targetRatePerSecond: true,
+        maxRatePerSecond: true,
+        alibabaRateCap: true,
+        alibabaWarmupMaxRatePerSecond: true
+      }
+    }
+  } as const;
+
+  try {
+    return await prisma.campaign.findFirst({
+      where: { id: campaignId, isDeleted: false },
+      select
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[campaign.lookup] failed", { campaignId, message });
+    if (!isMissingCampaignSoftDeleteColumn(message)) {
+      return null;
+    }
+    return prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select
+    });
+  }
+}
+
 export async function GET(req: Request) {
   const session = await getSession();
   if (!session) {
@@ -39,10 +85,7 @@ export async function GET(req: Request) {
 
       const push = async () => {
         if (closed) return;
-        const campaign = await prisma.campaign.findUnique({
-          where: { id: campaignId },
-          include: { smtpAccount: true }
-        });
+        const campaign = await findCampaignForStream(campaignId);
         if (!campaign) {
           controller.enqueue(ssePayload("error", { error: "campaign_not_found" }));
           if (interval) clearInterval(interval);

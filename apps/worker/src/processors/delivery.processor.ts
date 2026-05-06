@@ -75,6 +75,52 @@ function normalizeHref(href: string): string | null {
   return href;
 }
 
+function isMissingCampaignSoftDeleteColumn(message: string): boolean {
+  return /column .*isdeleted.* does not exist/i.test(message);
+}
+
+async function findCampaignForDelivery(campaignId: string) {
+  const select = {
+    id: true,
+    name: true,
+    subject: true,
+    status: true,
+    smtpAccountId: true,
+    smtpPoolConfig: true,
+    throttleReason: true,
+    totalTargeted: true,
+    totalFailed: true,
+    totalSkipped: true,
+    template: {
+      select: {
+        id: true,
+        htmlBody: true,
+        plainTextBody: true
+      }
+    }
+  } as const;
+
+  try {
+    return await prisma.campaign.findFirst({
+      where: {
+        id: campaignId,
+        isDeleted: false
+      },
+      select
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[campaign.lookup] failed", { campaignId, message });
+    if (!isMissingCampaignSoftDeleteColumn(message)) {
+      return null;
+    }
+    return prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select
+    });
+  }
+}
+
 async function ensureCampaignLink(campaignId: string, originalUrl: string) {
   const token = crypto.createHash("sha256").update(`${campaignId}:${originalUrl}`).digest("hex").slice(0, 48);
   return prisma.campaignLink.upsert({
@@ -145,10 +191,42 @@ async function buildTrackedHtml(html: string, campaignId: string, recipientId: s
 }
 
 async function finalizeCampaignIfDone(campaignId: string) {
-  const [pendingCount, campaign] = await Promise.all([
-    prisma.campaignRecipient.count({ where: { campaignId, sendStatus: "pending" } }),
-    prisma.campaign.findUnique({ where: { id: campaignId } })
-  ]);
+  const pendingCount = await prisma.campaignRecipient.count({ where: { campaignId, sendStatus: "pending" } });
+  let campaign:
+    | {
+        id: string;
+        totalFailed: number;
+        totalSkipped: number;
+        totalTargeted: number;
+      }
+    | null = null;
+  try {
+    campaign = await prisma.campaign.findFirst({
+      where: { id: campaignId, isDeleted: false },
+      select: {
+        id: true,
+        totalFailed: true,
+        totalSkipped: true,
+        totalTargeted: true
+      }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[campaign.lookup] failed", { campaignId, message });
+    if (isMissingCampaignSoftDeleteColumn(message)) {
+      campaign = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: {
+          id: true,
+          totalFailed: true,
+          totalSkipped: true,
+          totalTargeted: true
+        }
+      });
+    } else {
+      campaign = null;
+    }
+  }
   if (!campaign || pendingCount > 0) {
     return;
   }
@@ -175,13 +253,13 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     return;
   }
 
-  const campaign = await prisma.campaign.findUnique({
-    where: { id: payload.campaignId },
-    include: { template: true }
-  });
+  const campaign = await findCampaignForDelivery(payload.campaignId);
   const recipient = await prisma.recipient.findUnique({ where: { id: payload.recipientId } });
 
-  if (!campaign || !recipient || !campaign.template) {
+  if (!campaign) {
+    return;
+  }
+  if (!recipient || !campaign.template) {
     throw new Error("delivery_missing_entities");
   }
   const poolSmtpIds = Array.isArray(((campaign as any).smtpPoolConfig as any)?.smtpIds)
