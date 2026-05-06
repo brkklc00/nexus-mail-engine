@@ -38,7 +38,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   if (pathname === "/login") {
-    return <main className="p-6">{children}</main>;
+    return <main className="h-[100dvh] min-h-[100dvh] overflow-hidden">{children}</main>;
   }
 
   return (

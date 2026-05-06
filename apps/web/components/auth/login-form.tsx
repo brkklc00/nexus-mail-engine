@@ -90,7 +90,7 @@ export function LoginForm() {
           <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
           <input
             type="email"
-            className="h-12 w-full rounded-xl border border-zinc-700/90 bg-zinc-900/90 py-2 pl-10 pr-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-cyan-400/80 focus:ring-2 focus:ring-cyan-400/20"
+            className="h-12 w-full rounded-xl border border-zinc-700/90 bg-zinc-900/90 py-2 pl-10 pr-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-indigo-400/80 focus:ring-2 focus:ring-indigo-400/20"
             placeholder="ornek@firma.com"
             {...register("email", { required: true })}
           />
@@ -102,7 +102,7 @@ export function LoginForm() {
           <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
           <input
             type={showPassword ? "text" : "password"}
-            className="h-12 w-full rounded-xl border border-zinc-700/90 bg-zinc-900/90 py-2 pl-10 pr-11 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-cyan-400/80 focus:ring-2 focus:ring-cyan-400/20"
+            className="h-12 w-full rounded-xl border border-zinc-700/90 bg-zinc-900/90 py-2 pl-10 pr-11 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-indigo-400/80 focus:ring-2 focus:ring-indigo-400/20"
             placeholder="Şifrenizi girin"
             {...register("password", { required: true })}
           />
@@ -126,7 +126,7 @@ export function LoginForm() {
           aria-label="Beni hatırla"
           onClick={() => setRememberMe((prev) => !prev)}
           className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${
-            rememberMe ? "border-cyan-400/70 bg-cyan-400/20" : "border-zinc-700 bg-zinc-800"
+            rememberMe ? "border-indigo-400/70 bg-indigo-400/20" : "border-zinc-700 bg-zinc-800"
           }`}
         >
           <span
@@ -142,7 +142,7 @@ export function LoginForm() {
       <button
         type="submit"
         disabled={formState.isSubmitting || isPending}
-        className="h-12 w-full rounded-xl border border-cyan-400/30 bg-gradient-to-r from-zinc-800 to-zinc-700 px-4 text-sm font-semibold text-zinc-100 transition hover:border-cyan-300/60 hover:from-zinc-700 hover:to-zinc-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
+        className="h-12 w-full rounded-xl border border-indigo-400/40 bg-indigo-500/15 px-4 text-sm font-semibold text-indigo-100 transition hover:border-indigo-300/60 hover:bg-indigo-500/25 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
       >
         {formState.isSubmitting || isPending ? "Giriş yapılıyor..." : "Giriş Yap"}
       </button>
