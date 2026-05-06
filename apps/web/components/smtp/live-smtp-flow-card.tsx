@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 
@@ -16,7 +16,7 @@ type FlowPayload = {
   };
   smtpActivity: Array<{
     smtpId: string;
-    fromEmail: string;
+    fromEmail: string | null;
     status: string;
     sentToday: number;
     failedToday: number;
@@ -31,6 +31,8 @@ type FlowPayload = {
     status: "success" | "failed";
     error: string | null;
   }>;
+  queueHuge?: boolean;
+  error?: string;
 };
 
 type Props = {
@@ -58,24 +60,38 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [filter, setFilter] = useState<"all" | "success" | "failed">("all");
+  const requestControllerRef = useRef<AbortController | null>(null);
+  const inFlightRef = useRef(false);
 
   const refresh = useCallback(async (silent = false) => {
+    if (inFlightRef.current) {
+      return;
+    }
+    inFlightRef.current = true;
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 3000);
     try {
       if (!silent) {
         setLoading(true);
       }
-      const response = await fetch("/api/smtp/live-flow", { cache: "no-store" });
-      const payload = (await response.json().catch(() => ({}))) as FlowPayload & {
-        error?: string;
-      };
+      const response = await fetch("/api/smtp/live-flow", { cache: "no-store", signal: controller.signal });
+      const payload = (await response.json().catch(() => ({}))) as FlowPayload;
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Canli SMTP akisi kullanilamiyor");
+        throw new Error(payload.error ?? "Yüklenemedi");
       }
       setData(payload);
       setError(null);
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : "Canli SMTP akisi kullanilamiyor");
+      if (fetchError instanceof Error && fetchError.name === "AbortError") {
+        setError("Yüklenemedi");
+      } else {
+        setError(fetchError instanceof Error ? fetchError.message : "Yüklenemedi");
+      }
     } finally {
+      window.clearTimeout(timeout);
+      inFlightRef.current = false;
       if (!silent) {
         setLoading(false);
       }
@@ -88,9 +104,20 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const interval = setInterval(() => void refresh(true), POLL_INTERVAL_MS);
+    const interval = setInterval(() => {
+      if (document.hidden) {
+        return;
+      }
+      void refresh(true);
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [autoRefresh, refresh]);
+
+  useEffect(() => {
+    return () => {
+      requestControllerRef.current?.abort();
+    };
+  }, []);
 
   const events = useMemo(() => {
     const base = (data?.recentEvents ?? []).slice(0, MAX_RECENT_EVENTS);
@@ -153,6 +180,9 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
         </div>
       ) : null}
       {error ? <p className="text-xs text-rose-300">{error}</p> : null}
+      {data?.queueHuge ? (
+        <p className="mt-2 text-xs text-amber-300">Kuyruk çok büyük, detaylar arka planda yükleniyor.</p>
+      ) : null}
 
       <div className={`grid gap-2 ${compact ? "grid-cols-2 md:grid-cols-3" : "grid-cols-2 md:grid-cols-6"}`}>
         <FlowStat label="RPS" value={data?.metrics.currentRps ?? 0} />
@@ -208,7 +238,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
             {smtpRows.map((item) => (
               <div key={item.smtpId} className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="truncate">{item.fromEmail}</p>
+                  <p className="truncate">{item.fromEmail ?? "-"}</p>
                   <StatusBadge
                     label={SMTP_STATUS_LABELS[item.status] ?? item.status}
                     tone={item.status === "active" ? "success" : item.status === "throttled" ? "warning" : "danger"}
