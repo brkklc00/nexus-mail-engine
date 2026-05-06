@@ -1,6 +1,5 @@
 import { BarChart3, CheckCircle2, FileText, ListChecks, Mail, MousePointerClick, Send, TriangleAlert, Users } from "lucide-react";
 import { prisma } from "@nexus/db";
-import { DeliveryChart } from "@/components/dashboard/delivery-chart";
 import { PerformanceCharts } from "@/components/dashboard/performance-charts";
 import { QueueObservabilityWidget } from "@/components/dashboard/queue-observability-widget";
 import { LiveSmtpFlowCard } from "@/components/smtp/live-smtp-flow-card";
@@ -38,9 +37,10 @@ type RecentActivityLog = {
 export default async function DashboardPage({
   searchParams
 }: {
-  searchParams?: Promise<{ activityPage?: string; activityPageSize?: string }>;
+  searchParams?: Promise<{ activityPage?: string; activityPageSize?: string; analyticsRange?: string }>;
 }) {
   const params = (await searchParams) ?? {};
+  const analyticsRange = params.analyticsRange === "today" || params.analyticsRange === "30d" ? params.analyticsRange : "7d";
   const requestedPageSize = Number(params.activityPageSize ?? 20);
   const recentPageSize = requestedPageSize === 10 ? 10 : 20;
   const requestedPage = Number(params.activityPage ?? 1);
@@ -48,6 +48,16 @@ export default async function DashboardPage({
   const recentSkip = (recentPage - 1) * recentPageSize;
   const smtpPreviewLimit = 5;
   const dayStart = startOfToday();
+  const analyticsStart = new Date();
+  if (analyticsRange === "today") {
+    analyticsStart.setHours(0, 0, 0, 0);
+  } else if (analyticsRange === "30d") {
+    analyticsStart.setDate(analyticsStart.getDate() - 29);
+    analyticsStart.setHours(0, 0, 0, 0);
+  } else {
+    analyticsStart.setDate(analyticsStart.getDate() - 6);
+    analyticsStart.setHours(0, 0, 0, 0);
+  }
   const [
     templates,
     lists,
@@ -59,7 +69,9 @@ export default async function DashboardPage({
     clicksToday,
     recentLogs,
     totalRecentLogs,
-    recentFailedLogs,
+    analyticsLogs,
+    analyticsOpenEvents,
+    analyticsClickEvents,
     smtpStates,
     smtpTotalCount,
     smtpHealthyCount,
@@ -87,11 +99,27 @@ export default async function DashboardPage({
     prisma.campaignLog.count(),
     prisma.campaignLog.findMany({
       where: {
-        createdAt: { gte: dayStart },
-        OR: [{ eventType: "sent" }, { status: "failed" }]
+        createdAt: { gte: analyticsStart },
+        OR: [{ eventType: "sent" }, { status: "failed" }, { status: "skipped" }]
       },
-      orderBy: { createdAt: "desc" },
-      take: 300
+      orderBy: { createdAt: "asc" },
+      select: {
+        createdAt: true,
+        eventType: true,
+        status: true,
+        providerCode: true,
+        message: true
+      }
+    }),
+    prisma.openEvent.findMany({
+      where: { createdAt: { gte: analyticsStart } },
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true }
+    }),
+    prisma.clickEvent.findMany({
+      where: { createdAt: { gte: analyticsStart } },
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true }
     }),
     prisma.smtpAccount.findMany({
       where: { isSoftDeleted: false },
@@ -106,61 +134,90 @@ export default async function DashboardPage({
   ]);
   const queueMetrics = await getQueueObservability().catch(() => null);
 
-  const deliveryHourMap = new Map<string, { sent: number; failed: number }>();
-  for (let hour = 0; hour < 24; hour += 1) {
-    const key = String(hour).padStart(2, "0");
-    deliveryHourMap.set(key, { sent: 0, failed: 0 });
+  const bucketKeys: string[] = [];
+  if (analyticsRange === "today") {
+    for (let hour = 0; hour < 24; hour += 1) {
+      bucketKeys.push(String(hour).padStart(2, "0"));
+    }
+  } else {
+    const days = analyticsRange === "30d" ? 30 : 7;
+    for (let i = days - 1; i >= 0; i -= 1) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      bucketKeys.push(date.toISOString().slice(0, 10));
+    }
   }
-  for (const log of recentFailedLogs) {
-    const key = String(new Date(log.createdAt).getHours()).padStart(2, "0");
-    const existing = deliveryHourMap.get(key);
-    if (!existing) continue;
-    if (log.eventType === "sent") existing.sent += 1;
-    if (log.status === "failed") existing.failed += 1;
-  }
-  const deliveryChartData = Array.from(deliveryHourMap.entries())
-    .map(([hour, val]) => ({ hour, sent: val.sent, failed: val.failed }))
-    .filter((item) => item.sent > 0 || item.failed > 0);
+  const labelForKey = (key: string) => {
+    if (analyticsRange === "today") return `${key}:00`;
+    const parsed = new Date(`${key}T00:00:00`);
+    return analyticsRange === "30d"
+      ? parsed.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+      : parsed.toLocaleDateString("en-US", { weekday: "short" });
+  };
+  const keyForDate = (date: Date) => {
+    if (analyticsRange === "today") return String(date.getHours()).padStart(2, "0");
+    return date.toISOString().slice(0, 10);
+  };
 
-  const weekStart = new Date();
-  weekStart.setDate(weekStart.getDate() - 6);
-  weekStart.setHours(0, 0, 0, 0);
-  const campaignsWeek = await prisma.campaign.findMany({
-    where: { createdAt: { gte: weekStart } },
-    select: { createdAt: true, openRate: true, clickRate: true, totalFailed: true, throttleReason: true }
-  });
-
-  const dayMap = new Map<string, { openRate: number; clickRate: number; count: number }>();
-  for (let i = 0; i < 7; i += 1) {
-    const day = new Date(weekStart);
-    day.setDate(weekStart.getDate() + i);
-    const key = day.toLocaleDateString("en-US", { weekday: "short" });
-    dayMap.set(key, { openRate: 0, clickRate: 0, count: 0 });
+  const trendMap = new Map<string, { sent: number; failed: number; skipped: number; opens: number; clicks: number }>();
+  for (const key of bucketKeys) {
+    trendMap.set(key, { sent: 0, failed: 0, skipped: 0, opens: 0, clicks: 0 });
   }
-  for (const campaign of campaignsWeek) {
-    const key = new Date(campaign.createdAt).toLocaleDateString("en-US", { weekday: "short" });
-    const existing = dayMap.get(key);
-    if (!existing) continue;
-    existing.openRate += campaign.openRate ?? 0;
-    existing.clickRate += campaign.clickRate ?? 0;
-    existing.count += 1;
-  }
-  const rateData = Array.from(dayMap.entries()).map(([day, val]) => ({
-    day,
-    openRate: val.count === 0 ? 0 : Number((val.openRate / val.count).toFixed(2)),
-    clickRate: val.count === 0 ? 0 : Number((val.clickRate / val.count).toFixed(2))
-  }));
 
   const failureReasonMap = new Map<string, number>();
-  for (const item of campaignsWeek) {
-    if (!item.totalFailed || item.totalFailed <= 0) continue;
-    const reason = item.throttleReason?.split(",")[0]?.trim() || "delivery-failed";
-    failureReasonMap.set(reason, (failureReasonMap.get(reason) ?? 0) + item.totalFailed);
+  for (const log of analyticsLogs as Array<{ createdAt: Date; eventType: string; status: string; providerCode: string | null; message: string | null }>) {
+    const key = keyForDate(new Date(log.createdAt));
+    const current = trendMap.get(key);
+    if (current) {
+      if (log.eventType === "sent") current.sent += 1;
+      if (log.status === "failed") current.failed += 1;
+      if (log.status === "skipped") current.skipped += 1;
+    }
+    if (log.status === "failed") {
+      const reason = (log.providerCode ?? log.message ?? "delivery_failed").slice(0, 48);
+      failureReasonMap.set(reason, (failureReasonMap.get(reason) ?? 0) + 1);
+    }
   }
+  for (const row of analyticsOpenEvents as Array<{ createdAt: Date }>) {
+    const key = keyForDate(new Date(row.createdAt));
+    const current = trendMap.get(key);
+    if (current) current.opens += 1;
+  }
+  for (const row of analyticsClickEvents as Array<{ createdAt: Date }>) {
+    const key = keyForDate(new Date(row.createdAt));
+    const current = trendMap.get(key);
+    if (current) current.clicks += 1;
+  }
+
+  const deliveryData = bucketKeys.map((key) => {
+    const row = trendMap.get(key) ?? { sent: 0, failed: 0, skipped: 0, opens: 0, clicks: 0 };
+    return {
+      label: labelForKey(key),
+      sent: row.sent,
+      failed: row.failed,
+      skipped: row.skipped
+    };
+  });
+  const engagementData = bucketKeys.map((key) => {
+    const row = trendMap.get(key) ?? { sent: 0, failed: 0, skipped: 0, opens: 0, clicks: 0 };
+    const openRate = row.sent > 0 ? Number(((row.opens / row.sent) * 100).toFixed(2)) : 0;
+    const clickRate = row.sent > 0 ? Number(((row.clicks / row.sent) * 100).toFixed(2)) : 0;
+    return {
+      label: labelForKey(key),
+      opens: row.opens,
+      clicks: row.clicks,
+      openRate,
+      clickRate
+    };
+  });
+  const totalFailures = Array.from(failureReasonMap.values()).reduce((sum, value) => sum + value, 0);
   const failureData = Array.from(failureReasonMap.entries())
-    .map(([name, value]) => ({ name, value }))
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 6);
+    .map(([reason, count]) => ({
+      reason,
+      count,
+      percentage: totalFailures > 0 ? Number(((count / totalFailures) * 100).toFixed(1)) : 0
+    }))
+    .sort((a, b) => b.count - a.count);
 
   const stats = [
     { label: "Templates", value: templates, icon: FileText, tone: "info" as const },
@@ -210,15 +267,19 @@ export default async function DashboardPage({
         ))}
       </section>
 
-      <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="xl:col-span-2 space-y-4">
-          <DeliveryChart chartData={deliveryChartData} />
-          <PerformanceCharts rateData={rateData} failureData={failureData} />
-        </div>
+      <PerformanceCharts
+        deliveryData={deliveryData}
+        engagementData={engagementData}
+        failureData={failureData}
+        range={analyticsRange}
+      />
 
-        <div className="space-y-4">
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <div className="space-y-4 xl:col-span-1">
           <QueueObservabilityWidget />
           <LiveSmtpFlowCard compact />
+        </div>
+        <div className="space-y-4 xl:col-span-2">
           <div className="rounded-2xl border border-border bg-card p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
