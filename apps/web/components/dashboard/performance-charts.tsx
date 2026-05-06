@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import {
   Line,
   LineChart,
@@ -10,6 +11,12 @@ import {
   YAxis
 } from "recharts";
 import { EmptyState } from "@/components/ui/empty-state";
+
+const RANGE_OPTIONS = [
+  { id: "today", label: "Bugun" },
+  { id: "7d", label: "7 gun" },
+  { id: "30d", label: "30 gun" }
+] as const;
 
 export function PerformanceCharts({
   deliveryData,
@@ -22,8 +29,21 @@ export function PerformanceCharts({
   failureData: Array<{ reason: string; count: number; percentage: number }>;
   range: "today" | "7d" | "30d";
 }) {
-  const noEngagement = engagementData.every((item) => item.opens === 0 && item.clicks === 0 && item.openRate === 0 && item.clickRate === 0);
-  const totalFailures = failureData.reduce((sum, item) => sum + item.count, 0);
+  const noEngagement = useMemo(
+    () => engagementData.every((item) => item.opens === 0 && item.clicks === 0 && item.openRate === 0 && item.clickRate === 0),
+    [engagementData]
+  );
+  const totalFailures = useMemo(() => failureData.reduce((sum, item) => sum + item.count, 0), [failureData]);
+  const engagementSummary = useMemo(() => {
+    if (engagementData.length === 0) {
+      return { opens: 0, clicks: 0, averageOpenRate: 0, averageClickRate: 0 };
+    }
+    const opens = engagementData.reduce((sum, item) => sum + item.opens, 0);
+    const clicks = engagementData.reduce((sum, item) => sum + item.clicks, 0);
+    const averageOpenRate = Number((engagementData.reduce((sum, item) => sum + item.openRate, 0) / engagementData.length).toFixed(2));
+    const averageClickRate = Number((engagementData.reduce((sum, item) => sum + item.clickRate, 0) / engagementData.length).toFixed(2));
+    return { opens, clicks, averageOpenRate, averageClickRate };
+  }, [engagementData]);
 
   return (
     <section className="rounded-2xl border border-zinc-800/80 bg-card p-4">
@@ -33,11 +53,7 @@ export function PerformanceCharts({
           <p className="text-xs text-zinc-400">Son kampanyalar icin teslimat, etkilesim ve basarisizlik trendleri.</p>
         </div>
         <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-900/60 p-1 text-xs">
-          {[
-            { id: "today", label: "Bugun" },
-            { id: "7d", label: "7 gun" },
-            { id: "30d", label: "30 gun" }
-          ].map((item) => (
+          {RANGE_OPTIONS.map((item) => (
             <a
               key={item.id}
               href={`/dashboard?${new URLSearchParams({ analyticsRange: item.id }).toString()}`}
@@ -95,13 +111,13 @@ export function PerformanceCharts({
           ) : (
             <>
               <div className="mb-2 grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">Acilma: {engagementData.reduce((s, i) => s + i.opens, 0)}</div>
-                <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">Tiklama: {engagementData.reduce((s, i) => s + i.clicks, 0)}</div>
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">Acilma: {engagementSummary.opens}</div>
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">Tiklama: {engagementSummary.clicks}</div>
                 <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">
-                  Acilma Orani: {Number((engagementData.reduce((s, i) => s + i.openRate, 0) / engagementData.length).toFixed(2))}%
+                  Acilma Orani: {engagementSummary.averageOpenRate}%
                 </div>
                 <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-zinc-300">
-                  Tiklama Orani: {Number((engagementData.reduce((s, i) => s + i.clickRate, 0) / engagementData.length).toFixed(2))}%
+                  Tiklama Orani: {engagementSummary.averageClickRate}%
                 </div>
               </div>
               <div className="h-[190px]">

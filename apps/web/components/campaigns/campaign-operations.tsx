@@ -171,6 +171,8 @@ const CAMPAIGN_STATUS_LABELS: Record<string, string> = {
   canceled: "Iptal Edildi"
 };
 
+const INT_FORMATTER = new Intl.NumberFormat("en-US");
+
 function fmtDate(input: string | null): string {
   if (!input) return "-";
   const date = new Date(input);
@@ -179,7 +181,7 @@ function fmtDate(input: string | null): string {
 }
 
 function fmtInt(value: number): string {
-  return new Intl.NumberFormat("en-US").format(value ?? 0);
+  return INT_FORMATTER.format(value ?? 0);
 }
 
 function toneForStatus(status: string): "success" | "danger" | "warning" | "info" | "muted" {
@@ -393,6 +395,24 @@ export function CampaignOperations() {
 
   const stats = data?.stats;
   const deleteReady = deleteConfirmText.trim().toUpperCase() === "DELETE";
+  const campaignItems = useMemo(() => data?.items ?? [], [data?.items]);
+
+  const applyFilters = useCallback(() => {
+    setPage(1);
+    void fetchCampaigns();
+  }, [fetchCampaigns]);
+
+  const resetFilters = useCallback(() => {
+    setSearch("");
+    setStatus("all");
+    setRange("all");
+    setFrom("");
+    setTo("");
+    setTemplateId("all");
+    setListSegmentId("all");
+    setSmtpAccountId("all");
+    setPage(1);
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -538,27 +558,14 @@ export function CampaignOperations() {
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => {
-                setPage(1);
-                void fetchCampaigns();
-              }}
+              onClick={applyFilters}
               className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900"
             >
               Filtreleri Uygula
             </button>
             <button
               type="button"
-              onClick={() => {
-                setSearch("");
-                setStatus("all");
-                setRange("all");
-                setFrom("");
-                setTo("");
-                setTemplateId("all");
-                setListSegmentId("all");
-                setSmtpAccountId("all");
-                setPage(1);
-              }}
+              onClick={resetFilters}
               className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-900"
             >
               Sifirla
@@ -608,7 +615,7 @@ export function CampaignOperations() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data?.items.map((row) => {
+                  {campaignItems.map((row) => {
                     const actions = availableActions(row.status);
                     return (
                       <tr

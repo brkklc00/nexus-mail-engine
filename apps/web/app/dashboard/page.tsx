@@ -1,13 +1,11 @@
-import { BarChart3, CheckCircle2, FileText, ListChecks, Mail, MousePointerClick, Send, TriangleAlert, Users } from "lucide-react";
 import { prisma } from "@nexus/db";
-import { PerformanceCharts } from "@/components/dashboard/performance-charts";
+import { MetricsCards } from "@/components/dashboard/metrics-cards";
+import { PerformanceAnalytics } from "@/components/dashboard/performance-analytics";
 import { QueueObservabilityWidget } from "@/components/dashboard/queue-observability-widget";
+import { SmtpHealthSummary } from "@/components/dashboard/smtp-health-summary";
 import { LiveSmtpFlowCard } from "@/components/smtp/live-smtp-flow-card";
-import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { getQueueObservability } from "@/server/observability/queue-observability.service";
-import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +30,6 @@ export default async function DashboardPage({
 }) {
   const params = (await searchParams) ?? {};
   const analyticsRange = params.analyticsRange === "today" || params.analyticsRange === "30d" ? params.analyticsRange : "7d";
-  const smtpPreviewLimit = 5;
   const dayStart = startOfToday();
   const analyticsStart = new Date();
   if (analyticsRange === "today") {
@@ -101,7 +98,7 @@ export default async function DashboardPage({
     prisma.smtpAccount.findMany({
       where: { isSoftDeleted: false },
       orderBy: { createdAt: "desc" },
-      take: smtpPreviewLimit,
+      take: 5,
       select: { id: true, name: true, isThrottled: true, throttleReason: true, providerLabel: true }
     }) as Promise<SmtpSummary[]>,
     prisma.smtpAccount.count({ where: { isSoftDeleted: false } }),
@@ -196,17 +193,6 @@ export default async function DashboardPage({
     }))
     .sort((a, b) => b.count - a.count);
 
-  const stats = [
-    { label: "Sablonlar", value: templates, icon: FileText, tone: "info" as const },
-    { label: "Listeler", value: lists, icon: ListChecks, tone: "info" as const },
-    { label: "Alicilar", value: recipients, icon: Users, tone: "info" as const },
-    { label: "Kampanyalar", value: campaigns, icon: Mail, tone: "info" as const },
-    { label: "Bugun Gonderilen", value: sentToday, icon: Send, tone: "success" as const },
-    { label: "Bugun Basarisiz", value: failedToday, icon: TriangleAlert, tone: "danger" as const },
-    { label: "Bugun Acilma", value: opensToday, icon: CheckCircle2, tone: "success" as const },
-    { label: "Bugun Tiklama", value: clicksToday, icon: MousePointerClick, tone: "warning" as const }
-  ];
-
   const smtpTotals = {
     total: smtpTotalCount,
     healthy: smtpHealthyCount,
@@ -226,23 +212,18 @@ export default async function DashboardPage({
         }
       />
 
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {stats.map((metric) => (
-          <article
-            key={metric.label}
-            className="rounded-2xl border border-border bg-gradient-to-br from-card to-zinc-900/70 p-4 transition duration-200 hover:-translate-y-0.5 hover:border-indigo-400/40"
-          >
-            <div className="flex items-center justify-between">
-              <p className="text-xs uppercase tracking-wider text-zinc-400">{metric.label}</p>
-              <metric.icon className="h-4 w-4 text-zinc-400" />
-            </div>
-            <p className="mt-2 text-2xl font-semibold text-white">{metric.value.toLocaleString()}</p>
-            <StatusBadge label={metric.tone} tone={metric.tone} className="mt-3" />
-          </article>
-        ))}
-      </section>
+      <MetricsCards
+        templates={templates}
+        lists={lists}
+        recipients={recipients}
+        campaigns={campaigns}
+        sentToday={sentToday}
+        failedToday={failedToday}
+        opensToday={opensToday}
+        clicksToday={clicksToday}
+      />
 
-      <PerformanceCharts
+      <PerformanceAnalytics
         deliveryData={deliveryData}
         engagementData={engagementData}
         failureData={failureData}
@@ -258,47 +239,7 @@ export default async function DashboardPage({
           <QueueObservabilityWidget />
         </div>
         <div className="space-y-4 xl:col-span-2">
-          <div className="rounded-2xl border border-border bg-card p-4">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <BarChart3 className="h-4 w-4 text-zinc-400" />
-                <h3 className="text-sm font-medium text-zinc-200">SMTP Sagligi</h3>
-              </div>
-              <Link href="/settings/smtp" className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
-                Tum SMTP'leri gor
-              </Link>
-            </div>
-            <div className="mb-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-zinc-300">Toplam: {smtpTotals.total}</div>
-              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-emerald-300">Saglikli: {smtpTotals.healthy}</div>
-              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-amber-300">Sinirlandi: {smtpTotals.throttled}</div>
-              <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-rose-300">Hata: {smtpTotals.error}</div>
-            </div>
-            <div className="space-y-2">
-              {smtpStates.length === 0 ? (
-                <EmptyState
-                  icon="chart-bar"
-                  title="SMTP hesabi bulunamadi"
-                  description="Hesaplar eklendikten sonra SMTP saglik ve sinirlama durumu burada gorunur."
-                />
-              ) : (
-                smtpStates.slice(0, smtpPreviewLimit).map((smtp: SmtpSummary) => (
-                  <div key={smtp.id} className="rounded-xl border border-border bg-zinc-900/60 p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-medium text-white">{smtp.name}</p>
-                      <StatusBadge
-                        label={smtp.isThrottled ? "throttled" : "healthy"}
-                        tone={smtp.isThrottled ? "warning" : "success"}
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-zinc-400">
-                      Saglayici: {smtp.providerLabel ?? "ozel"} · {smtp.throttleReason ?? "Aktif sinirlama yok"}
-                    </p>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
+          <SmtpHealthSummary smtpTotals={smtpTotals} smtpStates={smtpStates} />
         </div>
       </section>
     </div>

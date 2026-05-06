@@ -236,6 +236,8 @@ export function SmtpManager({
     initialAccounts.length > 10 ? "list" : "card"
   );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [accountsPage, setAccountsPage] = useState(1);
+  const [accountsPageSize, setAccountsPageSize] = useState(50);
   const [bulkDeleteModalOpen, setBulkDeleteModalOpen] = useState(false);
   const [bulkDeleteTyped, setBulkDeleteTyped] = useState("");
   const [plannerModalOpen, setPlannerModalOpen] = useState(false);
@@ -273,7 +275,17 @@ export function SmtpManager({
 
   const selectedCount = selectedIds.size;
   const selectedIdList = useMemo(() => [...selectedIds], [selectedIds]);
-  const allVisibleSelected = accounts.length > 0 && accounts.every((a) => selectedIds.has(a.id));
+  const totalAccountPages = useMemo(() => Math.max(1, Math.ceil(accounts.length / accountsPageSize)), [accounts.length, accountsPageSize]);
+  const pagedAccounts = useMemo(() => {
+    const safePage = Math.min(accountsPage, totalAccountPages);
+    const start = (safePage - 1) * accountsPageSize;
+    return accounts.slice(start, start + accountsPageSize);
+  }, [accounts, accountsPage, accountsPageSize, totalAccountPages]);
+  const allVisibleSelected = pagedAccounts.length > 0 && pagedAccounts.every((a) => selectedIds.has(a.id));
+
+  useEffect(() => {
+    setAccountsPage((prev) => Math.min(prev, totalAccountPages));
+  }, [totalAccountPages]);
 
   async function refreshSmtpSnapshot() {
     try {
@@ -871,10 +883,14 @@ export function SmtpManager({
 
   function toggleSelectAllVisible() {
     setSelectedIds((prev) => {
-      if (accounts.length === 0) return new Set();
-      const all = accounts.every((a) => prev.has(a.id));
-      if (all) return new Set();
-      return new Set(accounts.map((a) => a.id));
+      if (pagedAccounts.length === 0) return new Set();
+      const next = new Set(prev);
+      const all = pagedAccounts.every((a) => next.has(a.id));
+      for (const account of pagedAccounts) {
+        if (all) next.delete(account.id);
+        else next.add(account.id);
+      }
+      return next;
     });
   }
 
@@ -1261,6 +1277,9 @@ export function SmtpManager({
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-sm font-semibold text-white">SMTP Accounts</p>
             <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-zinc-400">{accounts.length} total</span>
+            <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-zinc-500">
+              Sayfa {accountsPage} / {totalAccountPages}
+            </span>
             <div className="flex items-center rounded-lg border border-border bg-zinc-950/80 p-0.5">
               <button
                 type="button"
@@ -1268,6 +1287,7 @@ export function SmtpManager({
                 onClick={() => {
                   setViewMode("card");
                   setSelectedIds(new Set());
+                  setAccountsPage(1);
                 }}
                 className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] ${
                   viewMode === "card" ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-zinc-200"
@@ -1279,7 +1299,10 @@ export function SmtpManager({
               <button
                 type="button"
                 title="List view"
-                onClick={() => setViewMode("list")}
+                onClick={() => {
+                  setViewMode("list");
+                  setAccountsPage(1);
+                }}
                 className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] ${
                   viewMode === "list" ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-zinc-200"
                 }`}
@@ -1288,6 +1311,18 @@ export function SmtpManager({
                 List
               </button>
             </div>
+            <select
+              value={accountsPageSize}
+              onChange={(event) => {
+                setAccountsPageSize(Number(event.target.value));
+                setAccountsPage(1);
+              }}
+              className="rounded border border-border bg-zinc-950 px-2 py-1 text-[11px] text-zinc-300"
+            >
+              <option value={25}>25 / sayfa</option>
+              <option value={50}>50 / sayfa</option>
+              <option value={100}>100 / sayfa</option>
+            </select>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -1390,7 +1425,7 @@ export function SmtpManager({
                 </tr>
               </thead>
               <tbody>
-                {accounts.map((account) => (
+                {pagedAccounts.map((account) => (
                   <tr key={account.id} className="border-b border-border/50 hover:bg-zinc-900/40">
                     <td className="px-2 py-1.5 align-middle">
                       <input
@@ -1469,7 +1504,7 @@ export function SmtpManager({
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            {accounts.map((account) => (
+            {pagedAccounts.map((account) => (
               <article key={account.id} className="rounded-2xl border border-border bg-card p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -1529,6 +1564,29 @@ export function SmtpManager({
             ))}
           </div>
         )}
+        {accounts.length > accountsPageSize ? (
+          <div className="mt-3 flex items-center justify-end gap-2 text-xs text-zinc-400">
+            <button
+              type="button"
+              onClick={() => setAccountsPage((prev) => Math.max(1, prev - 1))}
+              disabled={accountsPage <= 1}
+              className="rounded border border-border px-2 py-1 text-zinc-300 disabled:opacity-50"
+            >
+              Onceki
+            </button>
+            <span>
+              Sayfa {accountsPage} / {totalAccountPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setAccountsPage((prev) => Math.min(totalAccountPages, prev + 1))}
+              disabled={accountsPage >= totalAccountPages}
+              className="rounded border border-border px-2 py-1 text-zinc-300 disabled:opacity-50"
+            >
+              Sonraki
+            </button>
+          </div>
+        ) : null}
       </section>
 
       {showModal ? (

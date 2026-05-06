@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 
@@ -48,6 +48,10 @@ const SMTP_STATUS_LABELS: Record<string, string> = {
   unhealthy: "Sagliksiz"
 };
 
+const MAX_RECENT_EVENTS = 20;
+const MAX_SMTP_ACTIVITY = 20;
+const POLL_INTERVAL_MS = 5000;
+
 export function LiveSmtpFlowCard({ compact = false }: Props) {
   const [data, setData] = useState<FlowPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -55,9 +59,11 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [filter, setFilter] = useState<"all" | "success" | "failed">("all");
 
-  const refresh = async () => {
+  const refresh = useCallback(async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) {
+        setLoading(true);
+      }
       const response = await fetch("/api/smtp/live-flow", { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as FlowPayload & {
         error?: string;
@@ -70,22 +76,24 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
     } catch (fetchError) {
       setError(fetchError instanceof Error ? fetchError.message : "Canli SMTP akisi kullanilamiyor");
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
-  };
-
-  useEffect(() => {
-    void refresh();
   }, []);
 
   useEffect(() => {
+    void refresh(false);
+  }, [refresh]);
+
+  useEffect(() => {
     if (!autoRefresh) return;
-    const interval = setInterval(() => void refresh(), 4000);
+    const interval = setInterval(() => void refresh(true), POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [autoRefresh]);
+  }, [autoRefresh, refresh]);
 
   const events = useMemo(() => {
-    const base = data?.recentEvents ?? [];
+    const base = (data?.recentEvents ?? []).slice(0, MAX_RECENT_EVENTS);
     if (filter === "all") return base;
     return base.filter((item) => item.status === filter);
   }, [data?.recentEvents, filter]);
@@ -103,6 +111,8 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
       .slice(0, 5);
   }, [data?.recentEvents]);
 
+  const smtpRows = useMemo(() => (data?.smtpActivity ?? []).slice(0, MAX_SMTP_ACTIVITY), [data?.smtpActivity]);
+
   return (
     <div className="rounded-2xl border border-border bg-card p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -110,7 +120,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void refresh()}
+            onClick={() => void refresh(false)}
             className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-zinc-300"
           >
             <RefreshCw className="h-3.5 w-3.5" />
@@ -195,7 +205,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
           <div>
           <p className="text-[11px] uppercase tracking-wide text-zinc-500">SMTP aktivitesi</p>
           <div className="max-h-36 space-y-1 overflow-auto">
-            {(data?.smtpActivity ?? []).map((item) => (
+            {smtpRows.map((item) => (
               <div key={item.smtpId} className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
                 <div className="flex items-center justify-between gap-2">
                   <p className="truncate">{item.fromEmail}</p>
