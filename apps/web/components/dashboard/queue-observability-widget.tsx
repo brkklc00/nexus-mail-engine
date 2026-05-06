@@ -22,9 +22,53 @@ type QueuePayload = {
   }>;
 };
 
+type QueueAdminAction =
+  | "pause"
+  | "resume"
+  | "clean_stale_campaign_jobs"
+  | "clean_failed"
+  | "clean_completed"
+  | "clean_campaign_jobs";
+
+type QueueAdminResponse = {
+  ok: boolean;
+  action?: QueueAdminAction;
+  cleaned?: number;
+  skippedActive?: number;
+  skippedUnknown?: number;
+  protectedActiveCampaigns?: string[];
+  queueCounts?: {
+    campaign?: Record<string, number>;
+    delivery?: Record<string, number>;
+    retry?: Record<string, number>;
+    dead?: Record<string, number>;
+  };
+  code?: string;
+  error?: string;
+};
+
+type ConfirmState = {
+  open: boolean;
+  action: QueueAdminAction | null;
+  requiredText: string;
+  title: string;
+  message: string;
+};
+
 export function QueueObservabilityWidget() {
   const [data, setData] = useState<QueuePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [campaignId, setCampaignId] = useState("");
+  const [confirmState, setConfirmState] = useState<ConfirmState>({
+    open: false,
+    action: null,
+    requiredText: "",
+    title: "",
+    message: ""
+  });
+  const [confirmText, setConfirmText] = useState("");
+  const [adminLoading, setAdminLoading] = useState<QueueAdminAction | null>(null);
+  const [adminResult, setAdminResult] = useState<QueueAdminResponse | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -52,6 +96,62 @@ export function QueueObservabilityWidget() {
       clearInterval(interval);
     };
   }, []);
+
+  const estimatedWaiting = (data?.deliveryCounts.waiting ?? 0) + (data?.retryCounts.waiting ?? 0);
+
+  async function runAdminAction(action: QueueAdminAction) {
+    setAdminLoading(action);
+    try {
+      const response = await fetch("/api/queue/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          campaignId: action === "clean_campaign_jobs" ? campaignId.trim() : undefined
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as QueueAdminResponse;
+      setAdminResult(payload);
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Kuyruk islemi basarisiz");
+      }
+      setConfirmState({ open: false, action: null, requiredText: "", title: "", message: "" });
+      setConfirmText("");
+    } catch (actionError) {
+      setAdminResult({
+        ok: false,
+        error: actionError instanceof Error ? actionError.message : "Kuyruk islemi basarisiz"
+      });
+    } finally {
+      setAdminLoading(null);
+    }
+  }
+
+  function requestConfirmation(action: QueueAdminAction) {
+    if (action === "clean_stale_campaign_jobs") {
+      setConfirmState({
+        open: true,
+        action,
+        requiredText: "TEMIZLE",
+        title: "Eski/İptal Edilmiş İşleri Temizle",
+        message:
+          "Bu işlem yalnızca iptal edilmiş, tamamlanmış, başarısız veya silinmiş kampanyalara ait kuyruk işlerini temizler. Aktif kampanyaların kuyrukları korunur."
+      });
+      return;
+    }
+    if (action === "clean_campaign_jobs") {
+      setConfirmState({
+        open: true,
+        action,
+        requiredText: "KAMPANYA KUYRUGU TEMIZLE",
+        title: "Seçili Kampanyanın Kuyruğunu Temizle",
+        message:
+          "Bu işlem yalnızca seçili kampanya güvenli durumdaysa kuyruk işlerini temizler. Aktif kampanya işleri korunur."
+      });
+      return;
+    }
+    void runAdminAction(action);
+  }
 
   return (
     <div className="rounded-lg border border-border bg-card p-4">
@@ -98,6 +198,131 @@ export function QueueObservabilityWidget() {
           </p>
         ))}
       </div>
+
+      <div className="mt-3 rounded bg-zinc-900/60 p-3">
+        <p className="mb-2 text-xs uppercase tracking-wider text-zinc-400">Kuyruk Yonetimi</p>
+        <div className="grid grid-cols-1 gap-2">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => requestConfirmation("pause")}
+              disabled={adminLoading !== null}
+              className="rounded border border-border px-2 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
+            >
+              Kuyrugu Duraklat
+            </button>
+            <button
+              type="button"
+              onClick={() => requestConfirmation("resume")}
+              disabled={adminLoading !== null}
+              className="rounded border border-border px-2 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
+            >
+              Kuyrugu Devam Ettir
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => requestConfirmation("clean_stale_campaign_jobs")}
+            disabled={adminLoading !== null}
+            className="rounded border border-amber-500/40 px-2 py-1.5 text-xs text-amber-200 hover:bg-amber-500/10 disabled:opacity-50"
+          >
+            Eski/Iptal Edilmis Isleri Temizle
+          </button>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => requestConfirmation("clean_failed")}
+              disabled={adminLoading !== null}
+              className="rounded border border-border px-2 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
+            >
+              Basarisiz Isleri Temizle
+            </button>
+            <button
+              type="button"
+              onClick={() => requestConfirmation("clean_completed")}
+              disabled={adminLoading !== null}
+              className="rounded border border-border px-2 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
+            >
+              Tamamlanan Isleri Temizle
+            </button>
+          </div>
+          <div className="grid grid-cols-[1fr_auto] gap-2">
+            <input
+              value={campaignId}
+              onChange={(event) => setCampaignId(event.target.value)}
+              placeholder="Kampanya ID"
+              className="rounded border border-border bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100"
+            />
+            <button
+              type="button"
+              onClick={() => requestConfirmation("clean_campaign_jobs")}
+              disabled={adminLoading !== null || campaignId.trim().length === 0}
+              className="rounded border border-rose-500/40 px-2 py-1.5 text-xs text-rose-200 hover:bg-rose-500/10 disabled:opacity-50"
+            >
+              Secili Kampanya
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {adminResult ? (
+        <div className="mt-3 rounded bg-zinc-900/60 p-3 text-xs text-zinc-300">
+          <p className="mb-1 uppercase tracking-wider text-zinc-400">Islem Ozeti</p>
+          <p>Temizlenen is: {adminResult.cleaned ?? 0}</p>
+          <p>Korunan aktif kampanya isi: {adminResult.skippedActive ?? 0}</p>
+          <p>Bilinmeyen/atlanmis is: {adminResult.skippedUnknown ?? 0}</p>
+          <p>
+            Guncel kuyruk bekleyen:{" "}
+            {Number(adminResult.queueCounts?.delivery?.waiting ?? 0) + Number(adminResult.queueCounts?.retry?.waiting ?? 0)}
+          </p>
+          {adminResult.protectedActiveCampaigns?.length ? (
+            <p>Korunan aktif kampanya sayisi: {adminResult.protectedActiveCampaigns.length}</p>
+          ) : null}
+          {!adminResult.ok && adminResult.error ? <p className="mt-1 text-rose-300">{adminResult.error}</p> : null}
+        </div>
+      ) : null}
+
+      {confirmState.open && confirmState.action ? (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-xl border border-border bg-zinc-950 p-4">
+            <p className="text-sm font-semibold text-white">{confirmState.title}</p>
+            <p className="mt-2 text-xs text-zinc-300">{confirmState.message}</p>
+            <div className="mt-2 rounded border border-border bg-zinc-900/50 p-2 text-xs text-zinc-400">
+              <p>Tahmini bekleyen is: {estimatedWaiting.toLocaleString()}</p>
+              <p>Aktif kampanyalar korunur.</p>
+            </div>
+            <p className="mt-3 text-xs text-zinc-400">
+              Onaylamak icin <span className="font-semibold text-zinc-200">{confirmState.requiredText}</span> yazin.
+            </p>
+            <input
+              value={confirmText}
+              onChange={(event) => setConfirmText(event.target.value)}
+              className="mt-2 w-full rounded border border-border bg-zinc-900 px-2 py-1.5 text-xs text-zinc-100"
+              placeholder={confirmState.requiredText}
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmState({ open: false, action: null, requiredText: "", title: "", message: "" });
+                  setConfirmText("");
+                }}
+                className="rounded border border-border px-2 py-1.5 text-xs text-zinc-300"
+              >
+                Vazgec
+              </button>
+              <button
+                type="button"
+                disabled={confirmText.trim() !== confirmState.requiredText || adminLoading !== null}
+                onClick={() => void runAdminAction(confirmState.action!)}
+                className="rounded border border-rose-500/40 px-2 py-1.5 text-xs text-rose-200 disabled:opacity-50"
+              >
+                {adminLoading ? <Loader2 className="inline h-3.5 w-3.5 animate-spin" /> : null} Onayla
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

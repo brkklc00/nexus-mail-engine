@@ -121,6 +121,10 @@ type MinimalQueue<T> = {
     end?: number,
     asc?: boolean
   ) => Promise<Array<{ timestamp: number }>>;
+  pause: () => Promise<void>;
+  resume: () => Promise<void>;
+  clean: (grace: number, limit: number, type: "completed" | "wait" | "active" | "paused" | "prioritized" | "delayed" | "failed") => Promise<string[]>;
+  close: () => Promise<void>;
 };
 
 const noopQueue = {
@@ -132,6 +136,18 @@ const noopQueue = {
   },
   async getJobs(_types?: any, _start?: number, _end?: number, _asc?: boolean) {
     return [];
+  },
+  async pause() {
+    return undefined;
+  },
+  async resume() {
+    return undefined;
+  },
+  async clean() {
+    return [];
+  },
+  async close() {
+    return undefined;
   }
 };
 
@@ -193,26 +209,42 @@ export const campaignQueue = {
   add: (...args: Parameters<MinimalQueue<CampaignDispatchJob>["add"]>) => getCampaignQueue().add(...args),
   getJobCounts: () => getCampaignQueue().getJobCounts(),
   getJobs: (...args: Parameters<MinimalQueue<CampaignDispatchJob>["getJobs"]>) =>
-    getCampaignQueue().getJobs(...args)
+    getCampaignQueue().getJobs(...args),
+  pause: () => getCampaignQueue().pause(),
+  resume: () => getCampaignQueue().resume(),
+  clean: (...args: Parameters<MinimalQueue<CampaignDispatchJob>["clean"]>) => getCampaignQueue().clean(...args),
+  close: () => getCampaignQueue().close()
 };
 
 export const deliveryQueue = {
   add: (...args: Parameters<MinimalQueue<DeliveryJob>["add"]>) => getDeliveryQueue().add(...args),
   getJobCounts: () => getDeliveryQueue().getJobCounts(),
-  getJobs: (...args: Parameters<MinimalQueue<DeliveryJob>["getJobs"]>) => getDeliveryQueue().getJobs(...args)
+  getJobs: (...args: Parameters<MinimalQueue<DeliveryJob>["getJobs"]>) => getDeliveryQueue().getJobs(...args),
+  pause: () => getDeliveryQueue().pause(),
+  resume: () => getDeliveryQueue().resume(),
+  clean: (...args: Parameters<MinimalQueue<DeliveryJob>["clean"]>) => getDeliveryQueue().clean(...args),
+  close: () => getDeliveryQueue().close()
 };
 
 export const retryQueue = {
   add: (...args: Parameters<MinimalQueue<DeliveryJob>["add"]>) => getRetryQueue().add(...args),
   getJobCounts: () => getRetryQueue().getJobCounts(),
-  getJobs: (...args: Parameters<MinimalQueue<DeliveryJob>["getJobs"]>) => getRetryQueue().getJobs(...args)
+  getJobs: (...args: Parameters<MinimalQueue<DeliveryJob>["getJobs"]>) => getRetryQueue().getJobs(...args),
+  pause: () => getRetryQueue().pause(),
+  resume: () => getRetryQueue().resume(),
+  clean: (...args: Parameters<MinimalQueue<DeliveryJob>["clean"]>) => getRetryQueue().clean(...args),
+  close: () => getRetryQueue().close()
 };
 
 export const deadLetterQueue = {
   add: (...args: Parameters<MinimalQueue<DeliveryJob>["add"]>) => getDeadLetterQueue().add(...args),
   getJobCounts: () => getDeadLetterQueue().getJobCounts(),
   getJobs: (...args: Parameters<MinimalQueue<DeliveryJob>["getJobs"]>) =>
-    getDeadLetterQueue().getJobs(...args)
+    getDeadLetterQueue().getJobs(...args),
+  pause: () => getDeadLetterQueue().pause(),
+  resume: () => getDeadLetterQueue().resume(),
+  clean: (...args: Parameters<MinimalQueue<DeliveryJob>["clean"]>) => getDeadLetterQueue().clean(...args),
+  close: () => getDeadLetterQueue().close()
 };
 
 export const queueEvents = {
