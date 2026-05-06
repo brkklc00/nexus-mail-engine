@@ -224,51 +224,84 @@ export async function GET(req: Request) {
         [campaigns, total, allCampaignsForStats] = await loadCampaignList(false);
       } catch (fallbackError) {
         console.error("[campaigns.list] failed", {
-          errorName: fallbackError instanceof Error ? fallbackError.name : "UnknownError",
-          message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+          name: fallbackError instanceof Error ? fallbackError.name : "UnknownError",
+          message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+          stack: fallbackError instanceof Error ? fallbackError.stack : undefined
         });
         return NextResponse.json(
-          { error: "Kampanya listesi su anda yuklenemiyor. Lutfen tekrar deneyin." },
+          {
+            ok: false,
+            code: "campaign_list_failed",
+            error: "Campaign list could not be loaded"
+          },
           { status: 500 }
         );
       }
     } else {
       console.error("[campaigns.list] failed", {
-        errorName: error instanceof Error ? error.name : "UnknownError",
-        message
+        name: error instanceof Error ? error.name : "UnknownError",
+        message,
+        stack: error instanceof Error ? error.stack : undefined
       });
       return NextResponse.json(
-        { error: "Kampanya listesi su anda yuklenemiyor. Lutfen tekrar deneyin." },
+        {
+          ok: false,
+          code: "campaign_list_failed",
+          error: "Campaign list could not be loaded"
+        },
         { status: 500 }
       );
     }
   }
 
-  const [templates, lists, segments, smtps, queueObs] = await Promise.all([
-    prisma.mailTemplate.findMany({ select: { id: true, title: true }, orderBy: { title: "asc" } }),
-    prisma.recipientList.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
-    prisma.segment.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
-    prisma.smtpAccount.findMany({ where: { isSoftDeleted: false }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
-    getQueueObservability()
-  ]);
+  let templates: Array<{ id: string; title: string }> = [];
+  let lists: Array<{ id: string; name: string }> = [];
+  let segments: Array<{ id: string; name: string }> = [];
+  let smtps: Array<{ id: string; name: string }> = [];
+  let queueObs: any = null;
+  let recipientCounts: any[] = [];
+  let lastActivityRows: any[] = [];
+  try {
+    [templates, lists, segments, smtps, queueObs] = await Promise.all([
+      prisma.mailTemplate.findMany({ select: { id: true, title: true }, orderBy: { title: "asc" } }),
+      prisma.recipientList.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+      prisma.segment.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+      prisma.smtpAccount.findMany({ where: { isSoftDeleted: false }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+      getQueueObservability()
+    ]);
 
-  const campaignIds = campaigns.map((campaign: any) => campaign.id);
-  const [recipientCounts, lastActivityRows] = await Promise.all([
-    campaignIds.length
-      ? prisma.campaignRecipient.groupBy({
-          by: ["campaignId", "sendStatus"],
-          where: { campaignId: { in: campaignIds } },
-          _count: { _all: true }
-        })
-      : Promise.resolve([] as any[]),
-    campaignIds.length
-      ? prisma.campaignLog.groupBy({
-          by: ["campaignId"],
-          where: { campaignId: { in: campaignIds } },
-          _max: { createdAt: true }
-        })
-      : Promise.resolve([] as any[])
-  ]);
+    const campaignIds = campaigns.map((campaign: any) => campaign.id);
+    [recipientCounts, lastActivityRows] = await Promise.all([
+      campaignIds.length
+        ? prisma.campaignRecipient.groupBy({
+            by: ["campaignId", "sendStatus"],
+            where: { campaignId: { in: campaignIds } },
+            _count: { _all: true }
+          })
+        : Promise.resolve([] as any[]),
+      campaignIds.length
+        ? prisma.campaignLog.groupBy({
+            by: ["campaignId"],
+            where: { campaignId: { in: campaignIds } },
+            _max: { createdAt: true }
+          })
+        : Promise.resolve([] as any[])
+    ]);
+  } catch (error) {
+    console.error("[campaigns.list] failed", {
+      name: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "campaign_list_failed",
+        error: "Campaign list could not be loaded"
+      },
+      { status: 500 }
+    );
+  }
 
   const queueCount = (obj: Record<string, any>, keys: string[]) =>
     keys.reduce((sum, key) => sum + Number(obj[key] ?? 0), 0);
@@ -342,6 +375,7 @@ export async function GET(req: Request) {
   });
 
   return NextResponse.json({
+    ok: true,
     items,
     total,
     page,

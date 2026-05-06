@@ -80,6 +80,9 @@ type FilterOptions = {
 };
 
 type CampaignListResponse = {
+  ok?: boolean;
+  code?: string;
+  error?: string;
   items: CampaignRow[];
   total: number;
   page: number;
@@ -261,11 +264,13 @@ export function CampaignOperations() {
         smtpAccountId: smtpAccountId === "all" ? "" : smtpAccountId
       });
       const response = await fetch(`/api/campaigns?${params.toString()}`, { cache: "no-store" });
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      const payload = (await response.json().catch(() => ({}))) as CampaignListResponse;
+      if (!response.ok || payload.ok === false) {
+        if (payload.code === "campaign_list_failed") {
+          throw new Error("Kampanya listesi yüklenemedi");
+        }
         throw new Error(payload.error ?? "Kampanya listesi yuklenemedi");
       }
-      const payload = (await response.json()) as CampaignListResponse;
       setData(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Kampanya listesi yuklenemedi");
