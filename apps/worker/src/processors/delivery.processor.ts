@@ -368,7 +368,7 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
   const safetyRate = await applySafetyToRate(selectedSmtp.id, decision.effectiveRatePerSecond);
   const enforcedRate = Math.max(0.01, safetyRate.rate);
   const dynamicDelayMs = Math.max(10, Math.min(1000, Math.round(1000 / enforcedRate)));
-  const maxWaitMs = 3_000;
+  const maxWaitMs = Math.max(1_000, Number(process.env.RATE_LIMIT_WAIT_TIMEOUT_MS ?? 60_000));
   await prisma.campaignLog.create({
     data: {
       campaignId: campaign.id,

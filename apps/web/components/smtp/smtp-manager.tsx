@@ -84,6 +84,37 @@ type PlannerPreview = {
   perSmtpMinuteCap: number;
 };
 
+type BulkScope = "all_active" | "selected" | "healthy" | "error";
+type BulkPreset = "safe" | "balanced" | "fast" | "aggressive" | "custom" | "daily_target";
+
+type BulkWarmupValues = {
+  targetRatePerSecond: number;
+  maxRatePerSecond: number;
+  warmupEnabled: boolean;
+  warmupStartRps: number;
+  warmupIncrementStep: number;
+  warmupMaxRps: number;
+  dailyCap: number;
+  hourlyCap: number;
+  minuteCap: number;
+  resetThrottle: boolean;
+  clearCooldown: boolean;
+  clearLastError: boolean;
+  onlyActive: boolean;
+};
+
+type BulkDistributionPreview = {
+  totalSmtp: number;
+  usableSmtpCount: number;
+  dailyTarget: number;
+  globalRps: number;
+  perSmtpRps: number;
+  perSmtpDailyCap: number;
+  perSmtpHourlyCap: number;
+  perSmtpMinuteCap: number;
+  estimatedTotalRps: number;
+};
+
 type PoolSettings = {
   sendingMode: "single" | "pool";
   useAllActiveByDefault: boolean;
@@ -128,6 +159,44 @@ const dailyPresets = [5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000
 const modalTabs = ["connection", "identity", "rate", "warmup", "advanced"] as const;
 type ModalTab = (typeof modalTabs)[number];
 type ProviderPreset = "alibaba" | "custom";
+
+const BULK_PRESET_VALUES: Record<Exclude<BulkPreset, "custom" | "daily_target">, Pick<
+  BulkWarmupValues,
+  "targetRatePerSecond" | "maxRatePerSecond" | "warmupEnabled" | "warmupStartRps" | "warmupIncrementStep" | "warmupMaxRps"
+>> = {
+  safe: {
+    targetRatePerSecond: 0.2,
+    maxRatePerSecond: 0.5,
+    warmupEnabled: true,
+    warmupStartRps: 0.1,
+    warmupIncrementStep: 0.1,
+    warmupMaxRps: 1
+  },
+  balanced: {
+    targetRatePerSecond: 0.5,
+    maxRatePerSecond: 1,
+    warmupEnabled: true,
+    warmupStartRps: 0.2,
+    warmupIncrementStep: 0.2,
+    warmupMaxRps: 2
+  },
+  fast: {
+    targetRatePerSecond: 1,
+    maxRatePerSecond: 2,
+    warmupEnabled: true,
+    warmupStartRps: 0.5,
+    warmupIncrementStep: 0.5,
+    warmupMaxRps: 3
+  },
+  aggressive: {
+    targetRatePerSecond: 2,
+    maxRatePerSecond: 5,
+    warmupEnabled: true,
+    warmupStartRps: 1,
+    warmupIncrementStep: 1,
+    warmupMaxRps: 5
+  }
+};
 
 const SMTP_VIEW_STORAGE_KEY = "nexus-smtp-accounts-view-mode";
 
@@ -243,6 +312,29 @@ export function SmtpManager({
   const [plannerModalOpen, setPlannerModalOpen] = useState(false);
   const [plannerIncludeUnhealthy, setPlannerIncludeUnhealthy] = useState(false);
   const [plannerIncludeThrottled, setPlannerIncludeThrottled] = useState(false);
+  const [bulkWarmupModalOpen, setBulkWarmupModalOpen] = useState(false);
+  const [bulkResetModalOpen, setBulkResetModalOpen] = useState(false);
+  const [bulkScope, setBulkScope] = useState<BulkScope>("all_active");
+  const [bulkPreset, setBulkPreset] = useState<BulkPreset>("balanced");
+  const [bulkDailyTarget, setBulkDailyTarget] = useState(1000000);
+  const [bulkWarmupValues, setBulkWarmupValues] = useState<BulkWarmupValues>({
+    targetRatePerSecond: 0.5,
+    maxRatePerSecond: 1,
+    warmupEnabled: true,
+    warmupStartRps: 0.2,
+    warmupIncrementStep: 0.2,
+    warmupMaxRps: 2,
+    dailyCap: 0,
+    hourlyCap: 0,
+    minuteCap: 0,
+    resetThrottle: false,
+    clearCooldown: false,
+    clearLastError: false,
+    onlyActive: true
+  });
+  const [bulkApplyPreview, setBulkApplyPreview] = useState<BulkDistributionPreview | null>(null);
+  const [bulkResetIncludeAuthErrors, setBulkResetIncludeAuthErrors] = useState(false);
+  const [bulkResetSetHealthy, setBulkResetSetHealthy] = useState(false);
 
   useEffect(() => {
     try {
@@ -360,6 +452,53 @@ export function SmtpManager({
     () => buildPlannerPreview(plannerIncludeUnhealthy, plannerIncludeThrottled),
     [accounts, plannerDailyTarget, plannerIncludeUnhealthy, plannerIncludeThrottled]
   );
+
+  const bulkTargetAccounts = useMemo(() => {
+    const selectedSet = new Set(selectedIdList);
+    return accounts.filter((account) => {
+      if (bulkScope === "selected") return selectedSet.has(account.id);
+      if (bulkScope === "all_active") return account.isActive;
+      if (bulkScope === "healthy") return account.isActive && account.healthStatus === "healthy" && !account.isThrottled;
+      return account.healthStatus === "error" || account.isThrottled || Boolean(account.lastError);
+    });
+  }, [accounts, bulkScope, selectedIdList]);
+
+  const bulkUsableAccounts = useMemo(
+    () => bulkTargetAccounts.filter((account) => (bulkWarmupValues.onlyActive ? account.isActive : true)),
+    [bulkTargetAccounts, bulkWarmupValues.onlyActive]
+  );
+
+  const bulkDistributionPreview = useMemo(() => {
+    if (bulkPreset !== "daily_target") return null;
+    const usableCount = bulkUsableAccounts.length;
+    if (usableCount <= 0) return null;
+    const dailyTarget = Math.max(1, Number(bulkDailyTarget || 0));
+    const globalRps = Number((dailyTarget / 86400).toFixed(6));
+    const perSmtpRps = Number((globalRps / usableCount).toFixed(6));
+    const perSmtpDailyCap = Math.max(1, Math.ceil(dailyTarget / usableCount));
+    const perSmtpHourlyCap = Math.max(1, Math.ceil(perSmtpDailyCap / 24));
+    const perSmtpMinuteCap = Math.max(1, Math.ceil(perSmtpHourlyCap / 60));
+    return {
+      totalSmtp: bulkTargetAccounts.length,
+      usableSmtpCount: usableCount,
+      dailyTarget,
+      globalRps,
+      perSmtpRps,
+      perSmtpDailyCap,
+      perSmtpHourlyCap,
+      perSmtpMinuteCap,
+      estimatedTotalRps: Number((perSmtpRps * usableCount).toFixed(6))
+    } satisfies BulkDistributionPreview;
+  }, [bulkPreset, bulkDailyTarget, bulkTargetAccounts.length, bulkUsableAccounts.length]);
+
+  useEffect(() => {
+    if (bulkPreset === "custom" || bulkPreset === "daily_target") return;
+    const presetValues = BULK_PRESET_VALUES[bulkPreset];
+    setBulkWarmupValues((prev) => ({
+      ...prev,
+      ...presetValues
+    }));
+  }, [bulkPreset]);
 
   const warmupHelper = useMemo(() => {
     if (poolSettings.rotateEvery <= 250) return "100-250 is recommended for warmup SMTP accounts.";
@@ -566,6 +705,119 @@ export function SmtpManager({
       await refreshSmtpSnapshot();
     } catch (error) {
       toast.error("Rate planner apply failed", error instanceof Error ? error.message : "Unexpected error");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function applyBulkRateWarmup() {
+    const targetCount = bulkUsableAccounts.length;
+    if (targetCount <= 0) {
+      toast.warning("Uygulanacak SMTP bulunamadi");
+      return;
+    }
+    const approved = await confirm({
+      title: "Toplu rate/warmup ayarlarini uygula?",
+      message: `Bu islem ${targetCount} SMTP hesabinin rate/warmup ayarlarini guncelleyecek.`,
+      confirmLabel: "Uygula",
+      cancelLabel: "Iptal",
+      tone: "warning"
+    });
+    if (!approved) return;
+
+    setActionLoading("bulk_rate_warmup");
+    try {
+      const requestValues: Record<string, unknown> = {
+        warmupEnabled: bulkWarmupValues.warmupEnabled,
+        resetThrottle: bulkWarmupValues.resetThrottle,
+        clearCooldown: bulkWarmupValues.clearCooldown,
+        clearLastError: bulkWarmupValues.clearLastError,
+        onlyActive: bulkWarmupValues.onlyActive
+      };
+      if (bulkPreset !== "daily_target") {
+        requestValues.targetRatePerSecond = bulkWarmupValues.targetRatePerSecond;
+        requestValues.maxRatePerSecond = bulkWarmupValues.maxRatePerSecond;
+        requestValues.warmupStartRps = bulkWarmupValues.warmupStartRps;
+        requestValues.warmupIncrementStep = bulkWarmupValues.warmupIncrementStep;
+        requestValues.warmupMaxRps = bulkWarmupValues.warmupMaxRps;
+      }
+      if (bulkWarmupValues.dailyCap > 0) requestValues.dailyCap = bulkWarmupValues.dailyCap;
+      if (bulkWarmupValues.hourlyCap > 0) requestValues.hourlyCap = bulkWarmupValues.hourlyCap;
+      if (bulkWarmupValues.minuteCap > 0) requestValues.minuteCap = bulkWarmupValues.minuteCap;
+
+      const response = await fetch("/api/smtp/bulk-rate-warmup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: bulkScope,
+          smtpAccountIds: bulkScope === "selected" ? selectedIdList : undefined,
+          preset: bulkPreset,
+          dailyTarget: bulkPreset === "daily_target" ? bulkDailyTarget : undefined,
+          values: requestValues
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        updated?: number;
+        skipped?: number;
+        preview?: BulkDistributionPreview | null;
+      };
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Toplu ayar guncellenemedi");
+      }
+      setBulkApplyPreview(payload.preview ?? null);
+      setBulkWarmupModalOpen(false);
+      toast.success("SMTP rate/warmup ayarlari guncellendi.", `Guncellenen: ${payload.updated ?? 0}, atlanan: ${payload.skipped ?? 0}`);
+      await refreshSmtpSnapshot();
+    } catch (error) {
+      toast.error("Toplu ayar islemi basarisiz", error instanceof Error ? error.message : "Beklenmeyen hata");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function runBulkResetThrottle() {
+    const targetCount = bulkUsableAccounts.length;
+    if (targetCount <= 0) {
+      toast.warning("Temizlenecek SMTP bulunamadi");
+      return;
+    }
+    const approved = await confirm({
+      title: "Rate limit / throttle temizlensin mi?",
+      message: `Bu islem ${targetCount} SMTP hesabinda throttle/cooldown hata durumunu temizleyecek.`,
+      confirmLabel: "Temizle",
+      cancelLabel: "Iptal",
+      tone: "warning"
+    });
+    if (!approved) return;
+
+    setActionLoading("bulk_reset_throttle");
+    try {
+      const response = await fetch("/api/smtp/reset-throttle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: bulkScope,
+          smtpAccountIds: bulkScope === "selected" ? selectedIdList : undefined,
+          includeAuthErrors: bulkResetIncludeAuthErrors,
+          setHealthy: bulkResetSetHealthy
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        updated?: number;
+        authSkipped?: number;
+      };
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Throttle temizleme basarisiz");
+      }
+      setBulkResetModalOpen(false);
+      toast.success("SMTP throttle/rate limit durumu temizlendi.", `Guncellenen: ${payload.updated ?? 0}, auth skip: ${payload.authSkipped ?? 0}`);
+      await refreshSmtpSnapshot();
+    } catch (error) {
+      toast.error("Throttle temizleme basarisiz", error instanceof Error ? error.message : "Beklenmeyen hata");
     } finally {
       setActionLoading(null);
     }
@@ -1327,6 +1579,20 @@ export function SmtpManager({
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
+              onClick={() => setBulkWarmupModalOpen(true)}
+              className="rounded-lg border border-emerald-400/40 px-3 py-2 text-xs text-emerald-200"
+            >
+              Toplu Rate / Warmup Ayarla
+            </button>
+            <button
+              type="button"
+              onClick={() => setBulkResetModalOpen(true)}
+              className="rounded-lg border border-amber-400/40 px-3 py-2 text-xs text-amber-200"
+            >
+              Rate Limit / Throttle Temizle
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 setBulkAlibabaResult(null);
                 setShowBulkAlibabaModal(true);
@@ -1843,6 +2109,175 @@ export function SmtpManager({
                   ) : null}
                 </div>
               ) : null}
+            </div>
+          </div>
+        </OverlayPortal>
+      ) : null}
+
+      {bulkWarmupModalOpen ? (
+        <OverlayPortal active={bulkWarmupModalOpen} lockScroll>
+          <div className="fixed inset-0 z-[56] bg-black/70 p-4 backdrop-blur-sm" onClick={() => setBulkWarmupModalOpen(false)}>
+            <div className="mx-auto mt-8 w-full max-w-3xl rounded-2xl border border-border bg-zinc-950 p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <p className="text-sm font-semibold text-white">Toplu SMTP Rate ve Warmup Ayarlari</p>
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                <Field label="Kapsam" helper="Hangi SMTP hesaplari guncellenecek">
+                  <SelectInput
+                    value={bulkScope}
+                    onChange={(value) => setBulkScope(value as BulkScope)}
+                    options={[
+                      { value: "all_active", label: "Tum aktif SMTP'ler" },
+                      { value: "selected", label: "Sadece secili SMTP'ler" },
+                      { value: "healthy", label: "Sadece saglikli SMTP'ler" },
+                      { value: "error", label: "Sadece hata durumundaki SMTP'ler" }
+                    ]}
+                  />
+                </Field>
+                <Field label="Preset" helper="Hazir hiz/warmup profili">
+                  <SelectInput
+                    value={bulkPreset}
+                    onChange={(value) => setBulkPreset(value as BulkPreset)}
+                    options={[
+                      { value: "safe", label: "Guvenli" },
+                      { value: "balanced", label: "Dengeli" },
+                      { value: "fast", label: "Hizli" },
+                      { value: "aggressive", label: "Agresif" },
+                      { value: "custom", label: "Ozel" },
+                      { value: "daily_target", label: "Global hedefe gore dagit" }
+                    ]}
+                  />
+                </Field>
+              </div>
+
+              {bulkScope === "selected" ? (
+                <p className="mt-2 text-xs text-amber-200">Secili SMTP sayisi: {selectedCount}. (Liste gorunumunde secim yapabilirsiniz)</p>
+              ) : null}
+
+              {bulkPreset === "daily_target" ? (
+                <div className="mt-3 rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3">
+                  <Field label="Gunluk hedef (dailyTarget)" helper="Ornek: 1000000">
+                    <NumberInput value={bulkDailyTarget} onChange={(value) => setBulkDailyTarget(Math.max(1, value))} />
+                  </Field>
+                  {bulkDistributionPreview ? (
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-indigo-100">
+                      <p>Toplam SMTP: {bulkDistributionPreview.totalSmtp}</p>
+                      <p>Kullanilacak SMTP: {bulkDistributionPreview.usableSmtpCount}</p>
+                      <p>Gunluk hedef: {bulkDistributionPreview.dailyTarget.toLocaleString()}</p>
+                      <p>SMTP basi gunluk limit: {bulkDistributionPreview.perSmtpDailyCap.toLocaleString()}</p>
+                      <p>SMTP basi RPS: {bulkDistributionPreview.perSmtpRps}</p>
+                      <p>Tahmini toplam RPS: {bulkDistributionPreview.estimatedTotalRps}</p>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-amber-200">Bu kapsamda dagitim yapilacak uygun SMTP bulunamadi.</p>
+                  )}
+                </div>
+              ) : null}
+
+              {bulkPreset !== "daily_target" ? (
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                  <Field label="Target RPS" helper="SMTP basi hedef">
+                    <NumberInput step="0.01" value={bulkWarmupValues.targetRatePerSecond} onChange={(value) => setBulkWarmupValues((s) => ({ ...s, targetRatePerSecond: value }))} />
+                  </Field>
+                  <Field label="Max RPS" helper="SMTP basi ust sinir">
+                    <NumberInput step="0.01" value={bulkWarmupValues.maxRatePerSecond} onChange={(value) => setBulkWarmupValues((s) => ({ ...s, maxRatePerSecond: value }))} />
+                  </Field>
+                  <Field label="Warmup Baslangic RPS" helper="warmupStartRps">
+                    <NumberInput step="0.01" value={bulkWarmupValues.warmupStartRps} onChange={(value) => setBulkWarmupValues((s) => ({ ...s, warmupStartRps: value }))} />
+                  </Field>
+                  <Field label="Warmup Artis Adimi" helper="warmupIncrementStep">
+                    <NumberInput step="0.01" value={bulkWarmupValues.warmupIncrementStep} onChange={(value) => setBulkWarmupValues((s) => ({ ...s, warmupIncrementStep: value }))} />
+                  </Field>
+                  <Field label="Warmup Max RPS" helper="warmupMaxRps">
+                    <NumberInput step="0.01" value={bulkWarmupValues.warmupMaxRps} onChange={(value) => setBulkWarmupValues((s) => ({ ...s, warmupMaxRps: value }))} />
+                  </Field>
+                  <Field label="Warmup Aktif" helper="Tum secili SMTP'lerde warmup ac/kapat">
+                    <label className="flex items-center gap-2 rounded-lg border border-border bg-zinc-900 px-3 py-2 text-xs">
+                      <input type="checkbox" checked={bulkWarmupValues.warmupEnabled} onChange={(e) => setBulkWarmupValues((s) => ({ ...s, warmupEnabled: e.target.checked }))} />
+                      Warmup aktif
+                    </label>
+                  </Field>
+                </div>
+              ) : null}
+
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                <Field label="Gunluk limit / SMTP" helper="0 = degistirme">
+                  <NumberInput value={bulkWarmupValues.dailyCap} onChange={(value) => setBulkWarmupValues((s) => ({ ...s, dailyCap: value }))} />
+                </Field>
+                <Field label="Saatlik limit / SMTP" helper="0 = degistirme">
+                  <NumberInput value={bulkWarmupValues.hourlyCap} onChange={(value) => setBulkWarmupValues((s) => ({ ...s, hourlyCap: value }))} />
+                </Field>
+                <Field label="Dakikalik limit / SMTP" helper="0 = degistirme">
+                  <NumberInput value={bulkWarmupValues.minuteCap} onChange={(value) => setBulkWarmupValues((s) => ({ ...s, minuteCap: value }))} />
+                </Field>
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-zinc-300 md:grid-cols-2">
+                <label className="flex items-center gap-2"><input type="checkbox" checked={bulkWarmupValues.resetThrottle} onChange={(e) => setBulkWarmupValues((s) => ({ ...s, resetThrottle: e.target.checked }))} /> Throttle durumunu sifirla</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={bulkWarmupValues.clearCooldown} onChange={(e) => setBulkWarmupValues((s) => ({ ...s, clearCooldown: e.target.checked }))} /> Cooldown temizle</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={bulkWarmupValues.clearLastError} onChange={(e) => setBulkWarmupValues((s) => ({ ...s, clearLastError: e.target.checked }))} /> Son hata bilgisini temizle</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={bulkWarmupValues.onlyActive} onChange={(e) => setBulkWarmupValues((s) => ({ ...s, onlyActive: e.target.checked }))} /> Sadece aktif SMTP'lere uygula</label>
+              </div>
+
+              {bulkApplyPreview ? (
+                <p className="mt-2 text-xs text-indigo-200">
+                  Son dagitim onizlemesi: Gunluk {bulkApplyPreview.dailyTarget.toLocaleString()} · SMTP basi {bulkApplyPreview.perSmtpDailyCap.toLocaleString()} · RPS {bulkApplyPreview.perSmtpRps}
+                </p>
+              ) : null}
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button type="button" onClick={() => setBulkWarmupModalOpen(false)} className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-300">
+                  Iptal
+                </button>
+                <button type="button" onClick={() => void applyBulkRateWarmup()} disabled={actionLoading === "bulk_rate_warmup"} className="rounded-lg border border-emerald-500/50 bg-emerald-500/20 px-3 py-2 text-xs text-emerald-200 disabled:opacity-50">
+                  {actionLoading === "bulk_rate_warmup" ? <Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> : null}
+                  Uygula
+                </button>
+              </div>
+            </div>
+          </div>
+        </OverlayPortal>
+      ) : null}
+
+      {bulkResetModalOpen ? (
+        <OverlayPortal active={bulkResetModalOpen} lockScroll>
+          <div className="fixed inset-0 z-[56] bg-black/70 p-4 backdrop-blur-sm" onClick={() => setBulkResetModalOpen(false)}>
+            <div className="mx-auto mt-16 w-full max-w-lg rounded-2xl border border-border bg-zinc-950 p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <p className="text-sm font-semibold text-white">Rate Limit / Throttle Temizle</p>
+              <div className="mt-3">
+                <Field label="Kapsam" helper="Temizlenecek SMTP grubu">
+                  <SelectInput
+                    value={bulkScope}
+                    onChange={(value) => setBulkScope(value as BulkScope)}
+                    options={[
+                      { value: "all_active", label: "Tum aktif SMTP'ler" },
+                      { value: "selected", label: "Sadece secili SMTP'ler" },
+                      { value: "healthy", label: "Sadece saglikli SMTP'ler" },
+                      { value: "error", label: "Sadece hata durumundaki SMTP'ler" }
+                    ]}
+                  />
+                </Field>
+              </div>
+              <div className="mt-2 space-y-2 text-xs text-zinc-300">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={bulkResetSetHealthy} onChange={(e) => setBulkResetSetHealthy(e.target.checked)} />
+                  Health durumunu da healthy yap
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={bulkResetIncludeAuthErrors} onChange={(e) => setBulkResetIncludeAuthErrors(e.target.checked)} />
+                  Auth hatalarini da temizle
+                </label>
+              </div>
+              <p className="mt-3 text-xs text-zinc-400">
+                Varsayilan olarak auth hatalari korunur. Bu islem isThrottled/throttleReason/cooldownUntil/lastError alanlarini temizler.
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button type="button" onClick={() => setBulkResetModalOpen(false)} className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-300">
+                  Iptal
+                </button>
+                <button type="button" onClick={() => void runBulkResetThrottle()} disabled={actionLoading === "bulk_reset_throttle"} className="rounded-lg border border-amber-500/50 bg-amber-500/20 px-3 py-2 text-xs text-amber-200 disabled:opacity-50">
+                  {actionLoading === "bulk_reset_throttle" ? <Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> : null}
+                  Temizle
+                </button>
+              </div>
             </div>
           </div>
         </OverlayPortal>

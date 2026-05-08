@@ -175,14 +175,29 @@ deliveryWorker.on("failed", async (job, error) => {
   const poolSetting = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } });
   const retryCount = Number((poolSetting?.value as any)?.retryCount ?? 5);
   const retryDelayMs = Number((poolSetting?.value as any)?.retryDelayMs ?? 2000);
+  const rateLimitRequeueDelayMs = Math.max(500, Number(process.env.RATE_LIMIT_REQUEUE_DELAY_MS ?? 5000));
+  const isRateLimitedTimeout = (error?.message ?? "").includes("rate_limited_wait_timeout");
   const nextAttempt = Number(job.data.attempt ?? 1) + 1;
   if (nextAttempt <= retryCount) {
+    const delay = isRateLimitedTimeout ? rateLimitRequeueDelayMs : retryDelayMs;
     await retryQueue.add("delivery_retry", {
       ...job.data,
       attempt: nextAttempt
     }, {
-      delay: retryDelayMs
+      delay
     });
+    if (isRateLimitedTimeout) {
+      await prisma.campaignLog.create({
+        data: {
+          campaignId: job.data.campaignId,
+          recipientId: job.data.recipientId,
+          eventType: "rate_limited_delayed",
+          status: "skipped",
+          message: `rate limited, delayed ${delay}ms (attempt ${nextAttempt}/${retryCount})`
+        }
+      });
+      return;
+    }
   } else {
     await deadLetterQueue.add("delivery_dead", job.data);
   }
