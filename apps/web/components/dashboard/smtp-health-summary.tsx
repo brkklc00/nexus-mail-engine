@@ -24,33 +24,33 @@ export function SmtpHealthSummary({
   smtpStates: SmtpSummary[];
 }) {
   return (
-    <div className="flex h-full min-h-[460px] flex-col rounded-2xl border border-border bg-card p-4">
+    <div className="flex h-full min-h-[460px] max-h-[650px] flex-col rounded-2xl border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <BarChart3 className="h-4 w-4 text-zinc-400" />
-          <h3 className="text-sm font-medium text-zinc-200">SMTP Sagligi</h3>
+          <h3 className="text-sm font-medium text-zinc-200">SMTP Sağlığı</h3>
         </div>
         <Link href="/settings/smtp" className="rounded border border-border px-2 py-1 text-xs text-zinc-300">
-          Tum SMTP'leri gor
+          Tüm SMTP'leri gör
         </Link>
       </div>
       <div className="mb-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
         <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-zinc-300">Toplam: {smtpTotals.total}</div>
-        <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-emerald-300">Saglikli: {smtpTotals.healthy}</div>
-        <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-amber-300">Sinirlandi: {smtpTotals.throttled}</div>
+        <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-emerald-300">Sağlıklı: {smtpTotals.healthy}</div>
+        <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-amber-300">Sınırlandı: {smtpTotals.throttled}</div>
         <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-rose-300">Hata: {smtpTotals.error}</div>
       </div>
-      <div className="max-h-[372px] overflow-y-auto pr-1">
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {smtpStates.length === 0 ? (
           <EmptyState
             icon="chart-bar"
-            title="SMTP hesabi bulunamadi"
-            description="Hesaplar eklendikten sonra SMTP saglik ve sinirlama durumu burada gorunur."
+            title="SMTP hesabı bulunamadı"
+            description="Hesaplar eklendikten sonra SMTP sağlık ve sınırlandırma durumu burada görünür."
           />
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {smtpStates.map((smtp) => (
-              <div key={smtp.id} className="h-[68px] rounded-xl border border-border bg-zinc-900/60 p-3">
+              <div key={smtp.id} className="rounded-xl border border-border bg-zinc-900/60 px-3 py-2.5">
                 <div className="flex items-center justify-between gap-3">
                   <p className="truncate text-sm font-medium text-white">{smtp.name}</p>
                   <StatusBadge
@@ -58,8 +58,8 @@ export function SmtpHealthSummary({
                     tone={smtp.isThrottled ? "warning" : "success"}
                   />
                 </div>
-                <p className="mt-1 truncate text-xs text-zinc-400">
-                  Saglayici: {smtp.providerLabel ?? "ozel"} · {smtp.throttleReason ?? "Aktif sinirlama yok"}
+                <p className="mt-0.5 truncate text-xs text-zinc-400">
+                  Sağlayıcı: {smtp.providerLabel ?? "özel"} · {smtp.throttleReason ?? "Aktif sınırlandırma yok"}
                 </p>
               </div>
             ))}

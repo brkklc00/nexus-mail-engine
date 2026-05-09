@@ -22,7 +22,7 @@ async function loadSmtpHealth() {
     prisma.smtpAccount.findMany({
       where: { isSoftDeleted: false },
       orderBy: { updatedAt: "desc" },
-      take: 20,
+      take: 100,
       select: { id: true, name: true, isThrottled: true, throttleReason: true, providerLabel: true }
     }),
     prisma.smtpAccount.count({ where: { isSoftDeleted: false } }),
