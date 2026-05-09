@@ -58,8 +58,15 @@ type AlibabaSyncStatus = {
   invalidEmailSkipped: number;
   ignoredTemporary: number;
   ignoredUnknown: number;
+  runPagesFetched: number;
+  runRawRecords: number;
+  runParsedEmails: number;
+  runAddedToSuppression: number;
+  runAlreadySuppressed: number;
+  runRemovedFromLists: number;
   hasNextStart: boolean;
   nextStartHash: string | null;
+  nextStartLength: number;
   lastError: string | null;
   startedAt: string | null;
   updatedAt: string | null;
@@ -210,6 +217,12 @@ export function SuppressionManager() {
       Boolean(filters.q || filters.reason || filters.source || filters.scope !== "all" || filters.range !== "7d" || filters.from || filters.to),
     [filters]
   );
+  const syncProgressPercent = useMemo(() => {
+    const total = Number(syncStatus?.totalCount ?? 0);
+    const processed = Number(syncStatus?.rawRecords ?? 0);
+    if (total <= 0) return 0;
+    return Math.max(0, Math.min(100, (processed / total) * 100));
+  }, [syncStatus?.rawRecords, syncStatus?.totalCount]);
 
   async function loadStats() {
     setLoadingStats(true);
@@ -253,6 +266,16 @@ export function SuppressionManager() {
 
   async function startAlibabaSyncLast30Days() {
     const range = computeSyncPresetRange("last30d");
+    if (syncStatus?.hasNextStart && (syncStatus.status === "paused" || syncStatus.status === "stopped_limit")) {
+      const accepted = await confirm({
+        title: "Mevcut senkronizasyon yeniden başlatılsın mı?",
+        message: "Mevcut kaldığı yer bilgisi silinecek. Emin misiniz?",
+        confirmLabel: "Yeniden Başlat",
+        cancelLabel: "İptal",
+        tone: "warning"
+      });
+      if (!accepted) return;
+    }
     setSyncLoading(true);
     try {
       const response = await fetch("/api/suppression/alibaba-sync/start", {
@@ -945,6 +968,10 @@ export function SuppressionManager() {
           QueryInvalidAddress yalnızca Alibaba invalid address listesini döndürür. Tüm gönderim hataları için
           SenderStatisticsDetailByParam entegrasyonu ayrıca kullanılmalıdır.
         </p>
+        <p className="mt-2 rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-xs text-indigo-200">
+          Alibaba Toplam Kayıt, Alibaba tarafındaki toplam invalid adres sayısıdır. Sistem bu kayıtları güvenli şekilde
+          parça parça çeker. Devam Et butonuyla kaldığı yerden devam eder.
+        </p>
         <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
           <input
             type="checkbox"
@@ -955,15 +982,35 @@ export function SuppressionManager() {
         </label>
         <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-300 md:grid-cols-5">
           <StatCard title="Durum" value={syncStatus?.status ?? "-"} isText />
-          <StatCard title="TotalCount" value={syncStatus?.totalCount ?? 0} />
-          <StatCard title="İşlenen Sayfa" value={syncStatus?.pagesFetched ?? 0} />
-          <StatCard title="İşlenen Kayıt" value={syncStatus?.rawRecords ?? 0} />
-          <StatCard title="Parse Edilen E-posta" value={syncStatus?.parsedEmails ?? 0} />
-          <StatCard title="Eklenen" value={syncStatus?.addedToSuppression ?? 0} />
-          <StatCard title="Zaten Kayıtlı" value={syncStatus?.alreadySuppressed ?? 0} />
-          <StatCard title="Listeden Çıkarılan" value={syncStatus?.removedFromLists ?? 0} />
-          <StatCard title="Devam Bilgisi" value={syncStatus?.hasNextStart ? "Var" : "Yok"} isText />
+          <StatCard title="Alibaba Toplam Kayıt" value={syncStatus?.totalCount ?? 0} />
+          <StatCard title="Toplam İşlenen Sayfa" value={syncStatus?.pagesFetched ?? 0} />
+          <StatCard title="Toplam İşlenen Kayıt" value={syncStatus?.rawRecords ?? 0} />
+          <StatCard title="Okunan E-posta" value={syncStatus?.parsedEmails ?? 0} />
+          <StatCard title="Bu Çalıştırmada Yeni Eklenen" value={syncStatus?.runAddedToSuppression ?? 0} />
+          <StatCard title="Bu Çalıştırmada Zaten Vardı" value={syncStatus?.runAlreadySuppressed ?? 0} />
+          <StatCard title="Alibaba’dan Toplam Eklenen" value={syncStatus?.addedToSuppression ?? 0} />
+          <StatCard title="Kaldığı Yer Bilgisi" value={syncStatus?.hasNextStart ? "Var" : "Yok"} isText />
           <StatCard title="Son Güncelleme" value={syncStatus?.updatedAt ? new Date(syncStatus.updatedAt).toLocaleString() : "-"} isText />
+        </div>
+        <div className="mt-3 rounded-lg border border-border bg-zinc-900/40 p-2">
+          <div className="mb-1 flex items-center justify-between text-xs text-zinc-300">
+            <p>Toplam ilerleme</p>
+            <p>
+              {(syncStatus?.rawRecords ?? 0).toLocaleString()} / {(syncStatus?.totalCount ?? 0).toLocaleString()} işlendi
+              (%{syncProgressPercent.toFixed(2)})
+            </p>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded bg-zinc-800">
+            <div className="h-full bg-indigo-500" style={{ width: `${syncProgressPercent}%` }} />
+          </div>
+          <p className="mt-1 text-xs text-zinc-400">
+            Baskılama listesine eklenen Alibaba kaydı: {(syncStatus?.addedToSuppression ?? 0).toLocaleString()}
+          </p>
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-300 md:grid-cols-3">
+          <StatCard title="Bu Çalıştırma Sayfa" value={syncStatus?.runPagesFetched ?? 0} />
+          <StatCard title="Bu Çalıştırma Kayıt" value={syncStatus?.runRawRecords ?? 0} />
+          <StatCard title="Bu Çalıştırma Okunan" value={syncStatus?.runParsedEmails ?? 0} />
         </div>
         <p className="mt-2 text-xs text-zinc-400">{syncStatus?.message ?? "Henüz senkronizasyon başlatılmadı."}</p>
         {syncTechnicalOpen ? (
@@ -973,6 +1020,7 @@ export function SuppressionManager() {
             <p>parser path used: {syncStatus?.parserPathUsed ?? "-"}</p>
             <p>hasNextStart: {syncStatus?.hasNextStart ? "true" : "false"}</p>
             <p>nextStartHash: {syncStatus?.nextStartHash ?? "-"}</p>
+            <p>nextStartLength: {syncStatus?.nextStartLength ?? 0}</p>
           </div>
         ) : null}
       </section>

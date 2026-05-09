@@ -16,9 +16,16 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ ok: false, error: "Geçersiz istek" }, { status: 400 });
   }
-  const summary = await runAlibabaSync({
-    removeFromLists: parsed.data.removeFromLists,
-    reset: false
-  });
-  return NextResponse.json({ ok: true, summary });
+  try {
+    const summary = await runAlibabaSync({
+      removeFromLists: parsed.data.removeFromLists,
+      reset: false
+    });
+    return NextResponse.json({ ok: true, summary });
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: error instanceof Error ? error.message : "Alibaba senkronizasyonu devam ettirilemedi" },
+      { status: 400 }
+    );
+  }
 }
