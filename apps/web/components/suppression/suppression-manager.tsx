@@ -44,11 +44,17 @@ type AlibabaSyncResult = {
   mode: "real_api" | "mock" | "disabled";
   dateRange: { from: string; to: string };
   normalizedApiRange?: { startTime: string; endTime: string };
-  finalParams?: Array<{ startTime: string; endTime: string }>;
+  finalParams?: Array<{ startTime: string; endTime: string; length: number; nextStart: number | null }>;
   warnings?: string[];
   credentialsPresent: boolean;
   apiRequestMade: boolean;
   totalReportsReturned: number;
+  totalRawRecords?: number;
+  parsedEmails?: number;
+  pagesFetched?: number;
+  nextStartLastValue?: number | null;
+  responseKeys?: string[];
+  firstRecordKeys?: string[];
   scanned: number;
   matched: number;
   added: number;
@@ -56,11 +62,12 @@ type AlibabaSyncResult = {
   listRemovalSkipped: number;
   alreadySuppressed: number;
   ignoredTemporary: number;
+  ignoredUnknown?: number;
   ignoredByCategory: number;
   errors: string[];
 };
 
-type SyncPreset = "last24h" | "yesterday" | "last3d" | "last7d" | "custom";
+type SyncPreset = "yesterday" | "last7d" | "last30d" | "custom";
 
 type Filters = {
   q: string;
@@ -111,42 +118,33 @@ function parseBatchText(text: string, maxLines = 8000, maxChars = 220_000): stri
   return batches;
 }
 
-function toDatetimeLocalValue(date: Date): string {
+function toDateOnlyValue(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
+  return `${year}-${month}-${day}`;
 }
 
 function computeSyncPresetRange(preset: Exclude<SyncPreset, "custom">): { from: string; to: string } {
-  const safeNow = new Date(Date.now() - 10 * 60 * 1000);
-  if (preset === "last24h") {
-    return {
-      from: toDatetimeLocalValue(new Date(safeNow.getTime() - 24 * 60 * 60 * 1000)),
-      to: toDatetimeLocalValue(safeNow)
-    };
-  }
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
+  const yesterdayEnd = new Date(todayStart.getTime() - 1000);
   if (preset === "yesterday") {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
-    const yesterdayEnd = new Date(todayStart.getTime() - 1000);
     return {
-      from: toDatetimeLocalValue(yesterdayStart),
-      to: toDatetimeLocalValue(yesterdayEnd)
+      from: toDateOnlyValue(yesterdayStart),
+      to: toDateOnlyValue(yesterdayEnd)
     };
   }
-  if (preset === "last3d") {
+  if (preset === "last7d") {
     return {
-      from: toDatetimeLocalValue(new Date(safeNow.getTime() - 3 * 24 * 60 * 60 * 1000)),
-      to: toDatetimeLocalValue(safeNow)
+      from: toDateOnlyValue(new Date(yesterdayStart.getTime() - 6 * 24 * 60 * 60 * 1000)),
+      to: toDateOnlyValue(yesterdayEnd)
     };
   }
   return {
-    from: toDatetimeLocalValue(new Date(safeNow.getTime() - 7 * 24 * 60 * 60 * 1000)),
-    to: toDatetimeLocalValue(safeNow)
+    from: toDateOnlyValue(new Date(yesterdayStart.getTime() - 29 * 24 * 60 * 60 * 1000)),
+    to: toDateOnlyValue(yesterdayEnd)
   };
 }
 
@@ -202,9 +200,9 @@ export function SuppressionManager() {
   const [removeTo, setRemoveTo] = useState("");
   const [removeLoading, setRemoveLoading] = useState(false);
 
-  const [syncPreset, setSyncPreset] = useState<SyncPreset>("yesterday");
-  const [syncFrom, setSyncFrom] = useState(() => computeSyncPresetRange("yesterday").from);
-  const [syncTo, setSyncTo] = useState(() => computeSyncPresetRange("yesterday").to);
+  const [syncPreset, setSyncPreset] = useState<SyncPreset>("last30d");
+  const [syncFrom, setSyncFrom] = useState(() => computeSyncPresetRange("last30d").from);
+  const [syncTo, setSyncTo] = useState(() => computeSyncPresetRange("last30d").to);
   const [syncCategories, setSyncCategories] = useState<Record<string, boolean>>({
     invalid: true,
     hard_bounce: true,
@@ -484,11 +482,13 @@ export function SuppressionManager() {
             ? "Alibaba senkronizasyonu henuz gercek API'ye bagli degil."
             : !payload.credentialsPresent
               ? "Alibaba kimlik bilgileri yapilandirilmamis."
-              : payload.errors.some((item) => /invaliddate\.malformed|specified date is invalid|starttime\/endtime/i.test(item))
-                ? "Alibaba rejected StartTime/EndTime. Expected format is YYYY-MM-DD."
-              : payload.apiRequestMade && payload.totalReportsReturned === 0
-                ? "Alibaba API baglantisi var, ancak secilen tarih araliginda basarisiz teslimat raporu bulunamadi."
-                : `Scanned ${payload.scanned}, matched ${payload.matched}, added ${payload.added}, removed from lists ${payload.removedFromLists}.`;
+              : (payload.totalRawRecords ?? payload.totalReportsReturned) === 0
+                ? "Alibaba baglantisi basarili. Secilen tarih araliginda invalid address kaydi bulunamadi."
+                : (payload.totalRawRecords ?? payload.totalReportsReturned) > 0 && (payload.parsedEmails ?? 0) === 0
+                  ? "Alibaba veri dondurdu ancak e-posta alani taninamadi. Response alanlarini kontrol edin."
+                  : (payload.parsedEmails ?? 0) > 0 && payload.added === 0
+                    ? "Alibaba kayitlari bulundu ancak hepsi zaten baskilama listesinde veya gecici kategori olarak atlandi."
+                    : "Alibaba kayitlari basariyla baskilama listesine eklendi.";
       toast.success("Alibaba sync completed", statusText);
       await loadStats();
       if (hasQueried || hasFilterInput) {
@@ -760,7 +760,7 @@ export function SuppressionManager() {
         </div>
         <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
           <input
-            type="datetime-local"
+            type="date"
             value={syncFrom}
             onChange={(e) => {
               setSyncPreset("custom");
@@ -769,7 +769,7 @@ export function SuppressionManager() {
             className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
           />
           <input
-            type="datetime-local"
+            type="date"
             value={syncTo}
             onChange={(e) => {
               setSyncPreset("custom");
@@ -785,10 +785,9 @@ export function SuppressionManager() {
         ) : null}
         <div className="mt-2 flex flex-wrap gap-2">
           {[
-            { id: "last24h" as const, label: "Last 24 hours" },
-            { id: "yesterday" as const, label: "Yesterday" },
-            { id: "last3d" as const, label: "Last 3 days" },
-            { id: "last7d" as const, label: "Last 7 days" }
+            { id: "yesterday" as const, label: "Dun" },
+            { id: "last7d" as const, label: "Son 7 gun" },
+            { id: "last30d" as const, label: "Son 30 gun" }
           ].map((preset) => (
             <button
               key={preset.id}
@@ -949,22 +948,22 @@ export function SuppressionManager() {
       {syncSummaryOpen && syncSummary ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-2xl border border-border/80 bg-[#0f1420] p-4 shadow-2xl">
-            <h3 className="text-sm font-semibold text-zinc-100">Alibaba Sync Summary</h3>
+            <h3 className="text-sm font-semibold text-zinc-100">Alibaba Senkronizasyon Ozeti</h3>
             <div className="mt-2 space-y-1 text-sm text-zinc-300">
               <p>
-                Date range: {new Date(syncSummary.dateRange.from).toLocaleString()} - {new Date(syncSummary.dateRange.to).toLocaleString()}
+                Tarih araligi: {new Date(syncSummary.dateRange.from).toLocaleString()} - {new Date(syncSummary.dateRange.to).toLocaleString()}
               </p>
               {syncSummary.normalizedApiRange ? (
                 <p>
-                  API range: StartTime={syncSummary.normalizedApiRange.startTime} | EndTime={syncSummary.normalizedApiRange.endTime}
+                  API araligi: StartTime={syncSummary.normalizedApiRange.startTime} | EndTime={syncSummary.normalizedApiRange.endTime}
                 </p>
               ) : null}
               {syncSummary.finalParams && syncSummary.finalParams.length > 0 ? (
                 <div className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
                   <p className="font-medium">Alibaba Final Params</p>
                   {syncSummary.finalParams.map((item, index) => (
-                    <p key={`${item.startTime}-${item.endTime}-${index}`}>
-                      StartTime={item.startTime} | EndTime={item.endTime}
+                    <p key={`${item.startTime}-${item.endTime}-${item.nextStart ?? "null"}-${index}`}>
+                      StartTime={item.startTime} | EndTime={item.endTime} | Length={item.length} | NextStart={item.nextStart ?? "-"}
                     </p>
                   ))}
                 </div>
@@ -978,9 +977,12 @@ export function SuppressionManager() {
                 </div>
               ) : null}
               <p>Mod: {syncSummary.mode === "real_api" ? "Gercek API" : syncSummary.mode === "mock" ? "Mock" : "Devre Disi"}</p>
-              <p>Credentials configured: {syncSummary.credentialsPresent ? "Yes" : "No"}</p>
-              <p>Alibaba API request made: {syncSummary.apiRequestMade ? "Yes" : "No"}</p>
-              <p>Total reports returned: {syncSummary.totalReportsReturned}</p>
+              <p>Credentials: {syncSummary.credentialsPresent ? "Var" : "Yok"}</p>
+              <p>API istegi: {syncSummary.apiRequestMade ? "Yapildi" : "Yapilmadi"}</p>
+              <p>Pages fetched: {syncSummary.pagesFetched ?? 0}</p>
+              <p>Raw records: {syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned}</p>
+              <p>Parsed emails: {syncSummary.parsedEmails ?? 0}</p>
+              <p>NextStart son deger: {syncSummary.nextStartLastValue ?? "-"}</p>
               <p>
                 Scanned: {syncSummary.scanned} | Matched: {syncSummary.matched} | Added: {syncSummary.added}
               </p>
@@ -991,6 +993,13 @@ export function SuppressionManager() {
                 Already suppressed: {syncSummary.alreadySuppressed} | Ignored temporary: {syncSummary.ignoredTemporary} | Ignored by category:{" "}
                 {syncSummary.ignoredByCategory}
               </p>
+              <p>Ignored unknown: {syncSummary.ignoredUnknown ?? 0}</p>
+              {syncSummary.responseKeys && syncSummary.responseKeys.length > 0 ? (
+                <p>responseKeys: {syncSummary.responseKeys.join(", ")}</p>
+              ) : null}
+              {syncSummary.firstRecordKeys && syncSummary.firstRecordKeys.length > 0 ? (
+                <p>firstRecordKeys: {syncSummary.firstRecordKeys.join(", ")}</p>
+              ) : null}
               {syncSummary.mode === "mock" ? (
                 <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
                   Alibaba sync is not connected to the real API yet.
@@ -1009,9 +1018,34 @@ export function SuppressionManager() {
               {syncSummary.mode === "real_api" &&
               syncSummary.credentialsPresent &&
               syncSummary.apiRequestMade &&
-              syncSummary.totalReportsReturned === 0 ? (
+              (syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned) === 0 ? (
                 <p className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
-                  Alibaba API connected, but no failed delivery reports were found for the selected date range.
+                  Alibaba baglantisi basarili. Secilen tarih araliginda invalid address kaydi bulunamadi.
+                </p>
+              ) : null}
+              {syncSummary.mode === "real_api" &&
+              syncSummary.credentialsPresent &&
+              syncSummary.apiRequestMade &&
+              (syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned) > 0 &&
+              (syncSummary.parsedEmails ?? 0) === 0 ? (
+                <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
+                  Alibaba veri dondurdu ancak e-posta alani taninamadi. Response alanlarini kontrol edin.
+                </p>
+              ) : null}
+              {syncSummary.mode === "real_api" &&
+              syncSummary.credentialsPresent &&
+              syncSummary.apiRequestMade &&
+              (syncSummary.parsedEmails ?? 0) > 0 &&
+              syncSummary.added === 0 ? (
+                <p className="rounded border border-zinc-500/30 bg-zinc-500/10 p-2 text-zinc-200">
+                  Alibaba kayitlari bulundu ancak hepsi zaten baskilama listesinde veya gecici kategori olarak atlandi.
+                </p>
+              ) : null}
+              {syncSummary.mode === "real_api" &&
+              syncSummary.credentialsPresent &&
+              syncSummary.added > 0 ? (
+                <p className="rounded border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-200">
+                  Alibaba kayitlari basariyla baskilama listesine eklendi.
                 </p>
               ) : null}
               {syncSummary.errors.length > 0 ? (

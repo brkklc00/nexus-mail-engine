@@ -5,7 +5,6 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  Activity,
   LayoutDashboard,
   Link2,
   ListChecks,
@@ -29,8 +28,7 @@ const navItems: Array<{ href: Route; label: string; icon: LucideIcon }> = [
   { href: "/campaigns", label: "Kampanyalar", icon: Megaphone },
   { href: "/short-links", label: "Kisa Linkler", icon: Link2 },
   { href: "/settings/smtp", label: "SMTP Hesaplari", icon: ServerCog },
-  { href: "/suppression", label: "Baskilama / Kara Liste", icon: ShieldBan },
-  { href: "/logs", label: "Kayitlar", icon: Activity }
+  { href: "/suppression", label: "Baskilama / Kara Liste", icon: ShieldBan }
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
