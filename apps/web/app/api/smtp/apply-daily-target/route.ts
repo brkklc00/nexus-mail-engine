@@ -298,7 +298,9 @@ export async function POST(req: Request) {
           parallelSmtpCount: Math.max(1, nextParallel),
           parallelSmtpLanes: Math.max(1, nextParallel),
           skipThrottled: true,
-          skipUnhealthy: true
+          skipUnhealthy: true,
+          warmupPolicy: parsed.data.warmupPolicy,
+          targetPerSmtpRps
         } as any
       },
       update: {
@@ -310,7 +312,9 @@ export async function POST(req: Request) {
           parallelSmtpCount: Math.max(1, nextParallel),
           parallelSmtpLanes: Math.max(1, nextParallel),
           skipThrottled: true,
-          skipUnhealthy: true
+          skipUnhealthy: true,
+          warmupPolicy: parsed.data.warmupPolicy,
+          targetPerSmtpRps
         } as any
       }
     });

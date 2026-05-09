@@ -487,9 +487,11 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
   const safetyRate = await applySafetyToRate(selected.id, decision.effectiveRatePerSecond);
   const enforcedRate = Math.max(0.01, safetyRate.rate);
   const laneKey = `${campaign.id}:${selected.id}`;
-  const bottleneck =
-    safetyRate.reason ??
-    (decision.reasons.some((reason) => reason.includes("warmup")) ? "warmup_cap" : decision.reasons.length > 0 ? "rate_limit" : "none");
+  const forceTargetLane = decision.reasons.includes("force_target_override");
+  const bottleneck = forceTargetLane
+    ? safetyRate.reason ?? "none"
+    : safetyRate.reason ??
+      (decision.reasons.some((reason) => reason.includes("warmup")) ? "warmup_cap" : decision.reasons.length > 0 ? "rate_limit" : "none");
   const lastRateApply = lastRateApplyLogByLane.get(laneKey);
   const now = Date.now();
   const changedEnough =

@@ -14,9 +14,11 @@ export type EffectiveRateInput = {
   alibabaWarmupMaxRatePerSecond?: number | null;
   deliveredSuccessCount: number;
   warmupLadder: WarmupTier[];
+  /** When true, skip Alibaba warmup ladder and alibabaWarmupMaxRatePerSecond (e.g. force_target policy). */
+  bypassAlibabaWarmupConstraints?: boolean;
 };
 
-const ALIBABA_HOST_PATTERN = /(aliyun|alibaba|aliyuncs\.com)/i;
+const ALIBABA_HOST_PATTERN = /(aliyun|alibaba|aliyuncs\.com|smtpdm)/i;
 
 export function isAlibabaProvider(host: string): boolean {
   return ALIBABA_HOST_PATTERN.test(host);
@@ -57,12 +59,12 @@ export function calculateEffectiveRate(input: EffectiveRateInput): EffectiveRate
 
   const { current, next } = resolveWarmupTier(input.deliveredSuccessCount, input.warmupLadder);
 
-  if (isAlibaba && current) {
+  if (!input.bypassAlibabaWarmupConstraints && isAlibaba && current) {
     effective = Math.min(effective, current.ratePerSecond);
     reasons.push("alibaba_warmup_tier");
   }
 
-  if (isAlibaba && input.alibabaWarmupMaxRatePerSecond) {
+  if (!input.bypassAlibabaWarmupConstraints && isAlibaba && input.alibabaWarmupMaxRatePerSecond) {
     effective = Math.min(effective, input.alibabaWarmupMaxRatePerSecond);
     reasons.push("alibaba_warmup_max_rate_per_second");
   }
@@ -70,7 +72,7 @@ export function calculateEffectiveRate(input: EffectiveRateInput): EffectiveRate
   return {
     effectiveRatePerSecond: Math.max(0.01, Number(effective.toFixed(4))),
     reasons,
-    warmupTierName: current?.name,
-    nextTierName: next?.name
+    warmupTierName: input.bypassAlibabaWarmupConstraints ? undefined : current?.name,
+    nextTierName: input.bypassAlibabaWarmupConstraints ? undefined : next?.name
   };
 }

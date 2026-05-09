@@ -70,6 +70,7 @@ const RECENT_EVENTS_LIMIT = 20;
 const SMTP_ACTIVITY_LIMIT = 20;
 const SMTP_DIAGNOSTIC_SCOPE = 500;
 const HUGE_QUEUE_THRESHOLD = 100_000;
+const LIVE_FLOW_MAIN_TIMEOUT_MS = 12_000;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -117,6 +118,12 @@ export async function GET() {
     );
     const progressRate = Number(smtp.warmupStartRps ?? 1) + Math.floor(delivered / 1000) * Number(smtp.warmupIncrementStep ?? 1);
     return Math.min(desiredRps, Math.max(0.01, Math.min(maxWarmup || desiredRps, progressRate)));
+  }
+
+  function resolveWarmupPolicyFromSummary(summary: { warmupPolicy?: string }) {
+    const fromSummary = String(summary.warmupPolicy ?? "").trim().toLowerCase();
+    if (fromSummary) return fromSummary;
+    return String(process.env.SMTP_WARMUP_POLICY ?? "").trim().toLowerCase();
   }
 
   const dayStart = startOfToday();
@@ -201,10 +208,10 @@ export async function GET() {
             LIMIT 500
           `.catch(() => [])
         ]),
-        3000
+        LIVE_FLOW_MAIN_TIMEOUT_MS
       );
 
-    const [dailySummaryRow, workerSnapshotRow, schedulerDiagRow, dbStatusRowsRaw] = await Promise.all([
+    const [dailySummaryRow, poolSettingsRow, schedulerDiagRow, dbStatusRowsRaw] = await Promise.all([
       prisma.appSetting.findUnique({ where: { key: "smtp_daily_target_summary" } }).catch(() => null),
       prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }).catch(() => null),
       prisma.appSetting.findUnique({ where: { key: "scheduler_runtime_diagnostics" } }).catch(() => null),
@@ -240,8 +247,7 @@ export async function GET() {
               successfulDeliveries: true,
               failedDeliveries: true,
               updatedAt: true
-            },
-            take: SMTP_ACTIVITY_LIMIT
+            }
           })
           .catch((error: unknown) => {
             console.warn("[smtp.live-flow] warmup query skipped", {
@@ -304,13 +310,22 @@ export async function GET() {
     const queueProcessing = Number(deliveryCounts.active ?? 0) + Number(retryCounts.active ?? 0);
     const currentRps = Number((sentLastMinute / 60).toFixed(3));
     const queueHuge = queuePending >= HUGE_QUEUE_THRESHOLD;
-    const dailySummary = ((dailySummaryRow?.value as any) ?? {}) as {
+    const poolSettings = ((poolSettingsRow?.value as any) ?? {}) as { warmupPolicy?: string; targetPerSmtpRps?: number };
+    const rawDaily = ((dailySummaryRow?.value as any) ?? {}) as Record<string, unknown>;
+    const dailySummary = {
+      ...rawDaily,
+      warmupPolicy: (rawDaily.warmupPolicy as string | undefined) ?? poolSettings.warmupPolicy,
+      targetPerSmtpRps: Number(rawDaily.targetPerSmtpRps ?? poolSettings.targetPerSmtpRps ?? 0)
+    } as {
       dailyTarget?: number;
       targetTotalRps?: number;
       globalRps?: number;
       usableSmtpCount?: number;
       targetPerSmtpRps?: number;
+      warmupPolicy?: string;
     };
+    const resolvedWarmupPolicy = resolveWarmupPolicyFromSummary(dailySummary);
+    const forceTargetActive = resolvedWarmupPolicy === "force_target";
     const targetTotalRps = Number(dailySummary.targetTotalRps ?? dailySummary.globalRps ?? 0);
     const targetPerSmtpRps = Number(dailySummary.targetPerSmtpRps ?? 0);
     const eligiblePool = (activeSmtps as ActiveSmtpRow[]).filter((item) => smtpEligibilityReason(item) === null);
@@ -344,9 +359,9 @@ export async function GET() {
         )
       );
       providerCapTotalRps += desired;
-      const warmupRate = computeWarmupRate(smtp, delivered, desired);
+      const warmupRate = forceTargetActive ? desired : computeWarmupRate(smtp, delivered, desired);
       warmupCapTotalRps += warmupRate;
-      if (warmupRate + 0.0001 < desired) {
+      if (!forceTargetActive && warmupRate + 0.0001 < desired) {
         warmupCappedCount += 1;
         const maxRps = Number(smtp.maxRatePerSecond ?? smtp.targetRatePerSecond ?? 0);
         const warmupConfiguredCap = Number(smtp.warmupMaxRps ?? smtp.alibabaWarmupMaxRatePerSecond ?? 0);
@@ -376,8 +391,19 @@ export async function GET() {
       throttleCapTotalRps += smtp.isThrottled ? Math.max(0.01, warmupRate * 0.5) : warmupRate;
     }
     const smtpsUsedLast5m = new Set(((smtpSentLast5mRaw ?? []) as Array<{ smtp_id: string }>).map((row: { smtp_id: string }) => String(row.smtp_id ?? "")).filter(Boolean)).size;
-    const smtpsUsedCampaignTotal = (activeSmtps as ActiveSmtpRow[]).filter((smtp) => Number(warmupMap.get(smtp.id)?.successfulDeliveries ?? 0) > 0).length;
+    const smtpDistinctSentTodayRows = await prisma.$queryRaw<Array<{ c: bigint }>>`
+      SELECT COUNT(*)::bigint AS c
+      FROM (
+        SELECT DISTINCT (cl.metadata->>'smtpAccountId') AS sid
+        FROM "CampaignLog" cl
+        WHERE cl."eventType" = 'sent'
+          AND cl."createdAt" >= ${dayStart}
+          AND (cl.metadata->>'smtpAccountId') IS NOT NULL
+      ) t
+    `.catch(() => [{ c: BigInt(0) }]);
+    const smtpsUsedCampaignTotal = Number(smtpDistinctSentTodayRows[0]?.c ?? 0);
     const smtpDistributionSkew = usableSmtpCount > 0 ? Number((1 - smtpsUsedLast5m / usableSmtpCount).toFixed(4)) : 0;
+    const recentEventsSmtpDistinctCount = new Set(recentEvents.map((e) => e.smtpFromEmail).filter(Boolean)).size;
     const schedulerDiag = ((schedulerDiagRow?.value as any) ?? {}) as {
       dbPendingRecipients?: number;
       dbQueuedRecipients?: number;
@@ -426,7 +452,7 @@ export async function GET() {
     else if (usableSmtpCount > 0 && usableSmtpCount < 2) bottleneckReason = "too_few_eligible_smtps";
     else if (usableSmtpCount >= 10 && smtpsUsedLast5m < Math.floor(usableSmtpCount * 0.8)) bottleneckReason = "smtp_distribution_skew";
     else if (throttledCount > 0) bottleneckReason = "throttle";
-    else if (warmupCappedCount > 0) bottleneckReason = "warmup_cap";
+    else if (!forceTargetActive && warmupCappedCount > 0) bottleneckReason = "warmup_cap";
     else if (queueHuge) bottleneckReason = "db_slow";
     if (targetTotalRps > 0 && currentRps < targetTotalRps * 0.8 && bottleneckReason === "none") {
       bottleneckReason = redisActiveJobs >= Math.max(1, Math.floor(workerConcurrency * 0.8)) ? "rate_limiter_or_smtp" : "worker_not_consuming";
@@ -452,6 +478,12 @@ export async function GET() {
       queueHuge,
       diagnostics: {
         dailyTarget: Number(dailySummary.dailyTarget ?? 0),
+        warmupPolicyResolved: resolvedWarmupPolicy || "automatic_recommended",
+        forceTargetActive,
+        alibabaWarmupTierBypassed: forceTargetActive,
+        alibabaWarmupTierCappedCount: Number(cappedReasonCounts.alibaba_warmup_tier ?? 0),
+        providerSafeCapAlibaba: alibabaSafeCap,
+        providerSafeCapDefault: defaultProviderSafeCap,
         eligibleSmtp: usableSmtpCount,
         activeLane: Math.max(0, usableSmtpCount - throttledCount),
         throttledSmtp: throttledCount,
@@ -465,6 +497,8 @@ export async function GET() {
         warmupCappedSmtpDetails: cappedSmtpDetails,
         smtpsUsedLast5m,
         smtpsUsedCampaignTotal,
+        smtpsSentTodayDistinct: smtpsUsedCampaignTotal,
+        recentEventsSmtpDistinctCount,
         smtpDistributionSkew,
         expectedRpsAfterApply: Number(providerCapTotalRps.toFixed(4)),
         targetPerSmtpRps: Number(targetPerSmtpRps.toFixed(4)),

@@ -95,6 +95,9 @@ type LiveEvent = {
   lastSchedulerEnqueued?: number;
   lastSchedulerReason?: string;
   bottleneckReason?: string;
+  warmupPolicyResolved?: string;
+  forceTargetActive?: boolean;
+  alibabaWarmupTierBypassed?: boolean;
 };
 
 export function LiveSendPanel() {
@@ -664,7 +667,8 @@ export function LiveSendPanel() {
             Aktif lane: {live.activeLaneCount ?? 0} · Uygun SMTP: {live.eligibleSmtpCount ?? 0} · SMTP başı hedef RPS: {Number(live.targetPerSmtpRps ?? 0).toFixed(2)} ·
             SMTP başı efektif ortalama RPS: {Number(live.avgPerSmtpRps ?? 0).toFixed(2)} · Warmup cap toplamı: {Number(live.warmupCapTotalRps ?? 0).toFixed(2)} ·
             Throttle cap toplamı: {Number(live.throttleCapTotalRps ?? 0).toFixed(2)} · Provider cap toplamı: {Number(live.providerCapTotalRps ?? 0).toFixed(2)} ·
-            Son 5dk kullanılan SMTP: {live.smtpsUsedLast5m ?? 0} · Kampanya toplam kullanılan SMTP: {live.smtpsUsedCampaignTotal ?? 0} · Dağıtım skew: {Number(live.smtpDistributionSkew ?? 0).toFixed(2)} · Bottleneck: {live.bottleneckReason ?? "none"}
+            Son 5dk kullanılan SMTP: {live.smtpsUsedLast5m ?? 0} · Kampanya toplam kullanılan SMTP: {live.smtpsUsedCampaignTotal ?? 0} · Dağıtım skew: {Number(live.smtpDistributionSkew ?? 0).toFixed(2)} ·             Bottleneck: {live.bottleneckReason ?? "none"}
+            {live.forceTargetActive ? ` · Warmup politikası: ${live.warmupPolicyResolved ?? "force_target"} · Alibaba tier atlandı: ${live.alibabaWarmupTierBypassed ? "evet" : "hayır"}` : ""}
           </div>
           <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
             DB pending: {live.dbPendingRecipients ?? 0} · DB queued: {live.dbQueuedRecipients ?? live.dbProcessingRecipients ?? 0} · DB processing: {live.dbProcessingRecipients ?? 0} · DB sent: {live.dbSentRecipients ?? 0} ·

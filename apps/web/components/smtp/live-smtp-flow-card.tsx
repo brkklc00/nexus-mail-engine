@@ -76,6 +76,14 @@ type FlowPayload = {
     avgPerSmtpRps?: number;
     workerConcurrency?: number;
     bottleneckReason?: string;
+    warmupPolicyResolved?: string;
+    forceTargetActive?: boolean;
+    alibabaWarmupTierBypassed?: boolean;
+    alibabaWarmupTierCappedCount?: number;
+    providerSafeCapAlibaba?: number;
+    providerSafeCapDefault?: number;
+    smtpsSentTodayDistinct?: number;
+    recentEventsSmtpDistinctCount?: number;
   };
   error?: string;
 };
@@ -98,6 +106,7 @@ const SMTP_STATUS_LABELS: Record<string, string> = {
 const MAX_RECENT_EVENTS = 20;
 const MAX_SMTP_ACTIVITY = 20;
 const POLL_INTERVAL_MS = 5000;
+const FETCH_TIMEOUT_MS = 10_000;
 
 export function LiveSmtpFlowCard({ compact = false }: Props) {
   const [data, setData] = useState<FlowPayload | null>(null);
@@ -107,6 +116,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
   const [filter, setFilter] = useState<"all" | "success" | "failed">("all");
   const requestControllerRef = useRef<AbortController | null>(null);
   const inFlightRef = useRef(false);
+  const lastGoodDataRef = useRef<FlowPayload | null>(null);
 
   const refresh = useCallback(async (silent = false) => {
     if (inFlightRef.current) {
@@ -116,7 +126,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
     requestControllerRef.current?.abort();
     const controller = new AbortController();
     requestControllerRef.current = controller;
-    const timeout = window.setTimeout(() => controller.abort(), 3000);
+    const timeout = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       if (!silent) {
         setLoading(true);
@@ -127,10 +137,15 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
         throw new Error(payload.error ?? "Yüklenemedi");
       }
       setData(payload);
+      lastGoodDataRef.current = payload;
       setError(null);
     } catch (fetchError) {
-      if (fetchError instanceof Error && fetchError.name === "AbortError") {
-        setError("Yüklenemedi");
+      if (silent && lastGoodDataRef.current) {
+        console.warn("[smtp.live-flow] yenileme atlandi (mevcut veri korunuyor)", {
+          name: fetchError instanceof Error ? fetchError.name : "unknown"
+        });
+      } else if (fetchError instanceof Error && fetchError.name === "AbortError") {
+        setError("Yüklenemedi (zaman asimi)");
       } else {
         setError(fetchError instanceof Error ? fetchError.message : "Yüklenemedi");
       }
@@ -169,19 +184,6 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
     if (filter === "all") return base;
     return base.filter((item) => item.status === filter);
   }, [data?.recentEvents, filter]);
-
-  const rotationMap = useMemo(() => {
-    const map = new Map<string, Set<string>>();
-    for (const event of data?.recentEvents ?? []) {
-      const set = map.get(event.campaignName) ?? new Set<string>();
-      set.add(event.smtpFromEmail);
-      map.set(event.campaignName, set);
-    }
-    return Array.from(map.entries())
-      .map(([campaignName, smtpSet]) => ({ campaignName, smtpCount: smtpSet.size }))
-      .sort((a, b) => b.smtpCount - a.smtpCount)
-      .slice(0, 5);
-  }, [data?.recentEvents]);
 
   const smtpRows = useMemo(() => (data?.smtpActivity ?? []).slice(0, MAX_SMTP_ACTIVITY), [data?.smtpActivity]);
 
@@ -242,8 +244,13 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
         <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-xs text-zinc-300">
           Uygun SMTP: {data.diagnostics.eligibleSmtp ?? 0} · Aktif lane: {data.diagnostics.activeLane ?? 0} ·
           Throttled: {data.diagnostics.throttledSmtp ?? 0} · SMTP başı hedef RPS: {Number(data.diagnostics.targetPerSmtpRps ?? 0).toFixed(2)} ·
-          Ortalama SMTP başı RPS: {Number(data.diagnostics.avgPerSmtpRps ?? 0).toFixed(2)} · Worker concurrency: {Number(data.diagnostics.workerConcurrency ?? 0)} · Son 5dk kullanılan SMTP: {Number(data.diagnostics.smtpsUsedLast5m ?? 0)} · Warmup kapasitesi: {Number(data.diagnostics.warmupPoolCapacityDaily ?? 0).toLocaleString()}/gün ·
+          Ortalama SMTP başı RPS: {Number(data.diagnostics.avgPerSmtpRps ?? 0).toFixed(2)} · Worker concurrency: {Number(data.diagnostics.workerConcurrency ?? 0)} · Son 5dk kullanılan SMTP: {Number(data.diagnostics.smtpsUsedLast5m ?? 0)} · Bugün gönderim yapan SMTP: {Number(data.diagnostics.smtpsSentTodayDistinct ?? data.diagnostics.smtpsUsedCampaignTotal ?? 0)} · Warmup kapasitesi: {Number(data.diagnostics.warmupPoolCapacityDaily ?? 0).toLocaleString()}/gün ·
           Bottleneck: {data.diagnostics.bottleneckReason ?? "none"} {data.diagnostics.bottleneckReason === "warmup_cap" ? `(${Number(data.diagnostics.warmupBottleneckSmtpCount ?? 0)} SMTP)` : ""}
+        </div>
+      ) : null}
+      {data?.diagnostics ? (
+        <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-[11px] text-zinc-400">
+          Warmup politikası: {data.diagnostics.warmupPolicyResolved ?? "-"} · Force target: {data.diagnostics.forceTargetActive ? "evet" : "hayır"} · Alibaba tier atlandı: {data.diagnostics.alibabaWarmupTierBypassed ? "evet" : "hayır"} · Provider güvenli cap (Alibaba): {Number(data.diagnostics.providerSafeCapAlibaba ?? 0)} · Provider güvenli cap (varsayılan): {Number(data.diagnostics.providerSafeCapDefault ?? 0)} · Tier ile sınırlı SMTP: {Number(data.diagnostics.alibabaWarmupTierCappedCount ?? 0)}
         </div>
       ) : null}
       {data?.diagnostics?.warmupCappedSmtpDetails && data.diagnostics.warmupCappedSmtpDetails.length > 0 ? (
@@ -323,16 +330,10 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
           </div>
           </div>
           <div className="rounded border border-border px-2 py-2">
-            <p className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">SMTP donusum aktivitesi</p>
-            {rotationMap.length === 0 ? (
-              <p className="text-xs text-zinc-500">Son donusum verisi yok.</p>
-            ) : (
-              rotationMap.map((item) => (
-                <p key={item.campaignName} className="text-xs text-zinc-300">
-                  {item.campaignName}: {item.smtpCount} SMTP kullanildi
-                </p>
-              ))
-            )}
+            <p className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">SMTP dagilimi (ozet)</p>
+            <p className="text-xs text-zinc-300">
+              Son 5 dakikada gonderim yapan SMTP: {Number(data?.diagnostics?.smtpsUsedLast5m ?? 0)} · Bugun gonderim yapan SMTP: {Number(data?.diagnostics?.smtpsSentTodayDistinct ?? data?.diagnostics?.smtpsUsedCampaignTotal ?? 0)} · Son 20 canli olayda farkli SMTP (ornek pencere): {Number(data?.diagnostics?.recentEventsSmtpDistinctCount ?? 0)}
+            </p>
           </div>
         </div>
       </div>
