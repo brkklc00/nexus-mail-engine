@@ -44,7 +44,7 @@ type AlibabaSyncResult = {
   mode: "real_api" | "mock" | "disabled";
   dateRange: { from: string; to: string };
   normalizedApiRange?: { startTime: string; endTime: string };
-  finalParams?: Array<{ startTime: string; endTime: string; length: number; nextStart: number | null }>;
+  finalParams?: Array<{ startTime: string; endTime: string; length: number; nextStart: string | null }>;
   warnings?: string[];
   credentialsPresent: boolean;
   apiRequestMade: boolean;
@@ -53,14 +53,16 @@ type AlibabaSyncResult = {
   totalRawRecords?: number;
   parsedEmails?: number;
   pagesFetched?: number;
-  nextStartLastValue?: number | null;
+  nextStartLastValue?: string | null;
   responseKeys?: string[];
   firstRecordKeys?: string[];
   scanned: number;
   matched: number;
   added: number;
+  addedToSuppression?: number;
   removedFromLists: number;
   listRemovalSkipped: number;
+  invalidEmailSkipped?: number;
   alreadySuppressed: number;
   ignoredTemporary: number;
   ignoredUnknown?: number;
@@ -498,7 +500,7 @@ export function SuppressionManager() {
               : (payload.totalCount ?? payload.totalRawRecords ?? payload.totalReportsReturned) === 0
                 ? "Alibaba baglantisi basarili. QueryInvalidAddress endpoint'i secilen aralikta invalid address kaydi dondurmedi. Bu endpoint tum gonderim hatalarini degil, Alibaba'nin invalid address listesine dusen deduplicate kayitlari dondurur."
                 : (payload.totalRawRecords ?? payload.totalReportsReturned) > 0 && (payload.parsedEmails ?? 0) === 0
-                  ? "Alibaba veri dondurdu ancak e-posta alani taninamadi. Response alanlarini kontrol edin."
+                  ? "Alibaba kayit dondurdu ancak parser e-posta alanini okuyamadi. Beklenen alan: data.mailDetail[].ToAddress"
                   : (payload.parsedEmails ?? 0) > 0 && payload.added === 0
                     ? "Alibaba kayitlari bulundu ancak hepsi zaten baskilama listesinde veya gecici kategori olarak atlandi."
                     : "Alibaba kayitlari basariyla baskilama listesine eklendi.";
@@ -824,7 +826,7 @@ export function SuppressionManager() {
               className="inline-flex items-center gap-1 rounded-lg border border-indigo-400/40 px-3 py-2 text-sm text-indigo-200 disabled:opacity-60"
             >
               {failureSyncLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldMinus className="h-4 w-4" />}
-              Kampanya hatalarindan baskilama olustur
+              Alibaba Gonderim Hatalarini Tara
             </button>
           </div>
         </div>
@@ -832,7 +834,7 @@ export function SuppressionManager() {
           Bu islem Alibaba DirectMail QueryInvalidAddress API'sinden invalid adresleri ceker. Tum basarisiz gonderimleri/bounce loglarini cekmez.
         </p>
         <p className="mt-2 rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-xs text-indigo-200">
-          Alibaba QueryInvalidAddress sadece invalid address listesine dusen kayitlari dondurur. Gonderim sirasinda olusan tum basarisizliklar burada gorunmeyebilir.
+          QueryInvalidAddress yalnizca Alibaba invalid address listesini dondurur. Tum gonderim hatalarini almak icin SenderStatisticsDetailByParam entegrasyonu ayrica kullanilmalidir.
         </p>
         <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
           <input
@@ -1068,11 +1070,12 @@ export function SuppressionManager() {
               <p>Parsed emails: {syncSummary.parsedEmails ?? 0}</p>
               <p>NextStart son deger: {syncSummary.nextStartLastValue ?? "-"}</p>
               <p>
-                Scanned: {syncSummary.scanned} | Matched: {syncSummary.matched} | Added: {syncSummary.added}
+                Scanned: {syncSummary.scanned} | Matched: {syncSummary.matched} | Added: {syncSummary.addedToSuppression ?? syncSummary.added}
               </p>
               <p>
                 Removed from lists: {syncSummary.removedFromLists} | List removal skipped: {syncSummary.listRemovalSkipped}
               </p>
+              <p>Invalid email skipped: {syncSummary.invalidEmailSkipped ?? 0}</p>
               <p>
                 Already suppressed: {syncSummary.alreadySuppressed} | Ignored temporary: {syncSummary.ignoredTemporary} | Ignored by category:{" "}
                 {syncSummary.ignoredByCategory}
@@ -1121,7 +1124,7 @@ export function SuppressionManager() {
               (syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned) > 0 &&
               (syncSummary.parsedEmails ?? 0) === 0 ? (
                 <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
-                  Alibaba veri dondurdu ancak e-posta alani taninamadi. Response alanlarini kontrol edin.
+                  Alibaba kayit dondurdu ancak parser e-posta alanini okuyamadi. Beklenen alan: data.mailDetail[].ToAddress
                 </p>
               ) : null}
               {syncSummary.mode === "real_api" &&

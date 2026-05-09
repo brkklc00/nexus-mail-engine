@@ -205,7 +205,7 @@ function buildSignedAlibabaUrl(
   fromAlibaba: string,
   toAlibaba: string,
   length: number,
-  nextStart: number | null
+  nextStart: string | null
 ): string {
   const endpoint = process.env.ALIBABA_DM_API_ENDPOINT ?? `https://dm.${credentials.region}.aliyuncs.com/`;
   const nonce = crypto.randomUUID();
@@ -224,8 +224,8 @@ function buildSignedAlibabaUrl(
     EndTime: toAlibaba,
     Length: String(Math.max(1, Math.floor(length)))
   });
-  if (typeof nextStart === "number" && Number.isFinite(nextStart) && nextStart >= 0) {
-    params.set("NextStart", String(Math.floor(nextStart)));
+  if (typeof nextStart === "string" && nextStart.trim() && nextStart.trim() !== "-") {
+    params.set("NextStart", nextStart.trim());
   }
   const sorted = [...params.entries()].sort(([a], [b]) => a.localeCompare(b));
   const canonicalized = sorted.map(([k, v]) => `${percentEncode(k)}=${percentEncode(v)}`).join("&");
@@ -240,40 +240,70 @@ function buildSignedAlibabaUrl(
   return signed.toString();
 }
 
-function extractRawAlibabaRecords(payload: any) {
-  const root = payload?.Body && typeof payload.Body === "object" ? payload.Body : payload;
-  const data = root?.Data ?? root?.data ?? root;
-  const responseKeys = Object.keys(root ?? {});
-  const candidates = [
-    data?.InvalidAddressList?.Address,
-    data?.InvalidAddressList,
-    data?.invalidAddressList,
-    root?.InvalidAddressList?.Address,
-    root?.InvalidAddressList,
-    root?.invalidAddressList,
-    data?.AddressList?.Address,
-    data?.AddressList,
-    data?.items,
-    data?.Items,
-    root?.items,
-    root?.Items
-  ];
-  let records: any[] = [];
+function collectAlibabaRecordsFromObject(value: any, collector: any[]) {
+  if (!value || typeof value !== "object") return;
+  const candidates = [value.mailDetail, value.MailDetail, value.mailDetails];
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) {
-      records = candidate;
-      break;
-    }
-    if (candidate && typeof candidate === "object") {
-      const nestedArray = Object.values(candidate).find((value) => Array.isArray(value));
-      if (Array.isArray(nestedArray)) {
-        records = nestedArray;
-        break;
-      }
+      collector.push(...candidate);
     }
   }
+  if (
+    value.ToAddress ||
+    value.toAddress ||
+    value.Email ||
+    value.email ||
+    value.Address ||
+    value.address ||
+    value.MailAddress ||
+    value.mailAddress ||
+    value.RcptTo ||
+    value.rcptTo
+  ) {
+    collector.push(value);
+  }
+}
+
+function extractAlibabaInvalidAddressRecords(payload: any) {
+  const root = payload?.Body && typeof payload.Body === "object" ? payload.Body : payload;
+  const containers: any[] = [];
+  if (root?.Data) containers.push(root.Data);
+  if (root?.data) containers.push(root.data);
+  if (payload?.Body?.Data) containers.push(payload.Body.Data);
+  if (payload?.body?.data) containers.push(payload.body.data);
+  const records: any[] = [];
+  for (const container of containers) {
+    if (Array.isArray(container)) {
+      for (const item of container) collectAlibabaRecordsFromObject(item, records);
+      continue;
+    }
+    collectAlibabaRecordsFromObject(container, records);
+  }
+  const responseKeys = Object.keys(root ?? {});
   const firstRecordKeys = records.length > 0 && records[0] && typeof records[0] === "object" ? Object.keys(records[0]) : [];
   return { records, responseKeys, firstRecordKeys };
+}
+
+function extractAlibabaNextStart(payload: any): string | null {
+  const candidates = [
+    payload?.Body?.Data?.NextStart,
+    payload?.Body?.Data?.nextStart,
+    payload?.Body?.NextStart,
+    payload?.Body?.nextStart,
+    payload?.Data?.NextStart,
+    payload?.Data?.nextStart,
+    payload?.data?.NextStart,
+    payload?.data?.nextStart,
+    payload?.NextStart,
+    payload?.nextStart
+  ];
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) continue;
+    const value = String(candidate).trim();
+    if (!value || value === "-" || value.toLowerCase() === "null") continue;
+    return value;
+  }
+  return null;
 }
 
 function toStringValue(record: any, keys: string[]): string | null {
@@ -299,6 +329,94 @@ function extractCategory(record: any, action: string): Category {
     return "invalid";
   }
   return "temporary";
+}
+
+type CandidateEntry = {
+  email: string;
+  emailNormalized: string;
+  reason: string;
+};
+
+async function applySuppressionBatch(input: {
+  candidates: CandidateEntry[];
+  removeFromLists: boolean;
+}): Promise<{
+  addedToSuppression: number;
+  alreadySuppressed: number;
+  removedFromLists: number;
+  listRemovalSkipped: number;
+}> {
+  if (input.candidates.length === 0) {
+    return {
+      addedToSuppression: 0,
+      alreadySuppressed: 0,
+      removedFromLists: 0,
+      listRemovalSkipped: 0
+    };
+  }
+  const existing = new Set<string>();
+  for (const candidateChunk of chunk(input.candidates, 2000)) {
+    const rows = await prisma.suppressionEntry.findMany({
+      where: {
+        emailNormalized: { in: candidateChunk.map((item) => item.emailNormalized) },
+        scope: "global"
+      },
+      select: { emailNormalized: true }
+    });
+    for (const row of rows) existing.add(row.emailNormalized);
+  }
+  const addable = input.candidates.filter((item) => !existing.has(item.emailNormalized));
+  let addedToSuppression = 0;
+  for (const candidateChunk of chunk(addable, 1000)) {
+    const created = await prisma.suppressionEntry.createMany({
+      data: candidateChunk.map((item) => ({
+        email: item.email,
+        emailNormalized: item.emailNormalized,
+        reason: item.reason,
+        source: "alibaba_query_invalid_address",
+        scope: "global"
+      })),
+      skipDuplicates: true
+    });
+    addedToSuppression += created.count;
+  }
+  let removedFromLists = 0;
+  let listRemovalSkipped = 0;
+  if (input.removeFromLists) {
+    const emailChunks = chunk(
+      input.candidates.map((item) => item.emailNormalized),
+      2000
+    );
+    let totalRecipientsMatched = 0;
+    for (const emailChunk of emailChunks) {
+      const matchedRecipients = await prisma.recipient.findMany({
+        where: { emailNormalized: { in: emailChunk } },
+        select: { id: true }
+      });
+      totalRecipientsMatched += matchedRecipients.length;
+      if (matchedRecipients.length === 0) continue;
+      const recipientIdChunks = chunk(
+        matchedRecipients.map((item: { id: string }) => item.id),
+        2000
+      );
+      for (const recipientIdChunk of recipientIdChunks) {
+        const deleted = await prisma.recipientListMembership.deleteMany({
+          where: { recipientId: { in: recipientIdChunk } }
+        });
+        removedFromLists += deleted.count;
+      }
+    }
+    listRemovalSkipped = Math.max(0, input.candidates.length - totalRecipientsMatched);
+  } else {
+    listRemovalSkipped = input.candidates.length;
+  }
+  const alreadySuppressed = Math.max(0, existing.size + (addable.length - addedToSuppression));
+  return {
+    addedToSuppression,
+    alreadySuppressed,
+    removedFromLists,
+    listRemovalSkipped
+  };
 }
 
 export async function POST(req: Request) {
@@ -331,14 +449,23 @@ export async function POST(req: Request) {
   let totalReportsReturned = 0; // kept for backward compatibility
   let totalRawRecords = 0;
   let parsedEmails = 0;
+  let invalidEmailSkipped = 0;
   let totalCount: number | null = null;
   let pagesFetched = 0;
-  let nextStartLastValue: number | null = null;
+  let nextStartLastValue: string | null = null;
   let responseKeys: string[] = [];
   let firstRecordKeys: string[] = [];
   let removedFromLists = 0;
   let listRemovalSkipped = 0;
-  const finalParams: Array<{ startTime: string; endTime: string; length: number; nextStart: number | null }> = [];
+  let addedToSuppression = 0;
+  let alreadySuppressed = 0;
+  let matched = 0;
+  const finalParams: Array<{ startTime: string; endTime: string; length: number; nextStart: string | null }> = [];
+  const selected = new Set(parsed.data.categories);
+  let scanned = 0;
+  let ignoredTemporary = 0;
+  let ignoredByCategory = 0;
+  let ignoredUnknown = 0;
 
   if (mode === "disabled") {
     await writeAuditLog(session.userId, "suppression.sync_alibaba", "suppression", {
@@ -365,10 +492,13 @@ export async function POST(req: Request) {
       scanned: 0,
       matched: 0,
       added: 0,
+      addedToSuppression: 0,
       removedFromLists,
+      invalidEmailSkipped,
       listRemovalSkipped,
       alreadySuppressed: 0,
       ignoredTemporary: 0,
+      ignoredUnknown: 0,
       ignoredByCategory: 0,
       errors
     });
@@ -380,15 +510,15 @@ export async function POST(req: Request) {
     }
   }
 
-  let reportRows: Array<{ email: string; emailNormalized: string; providerCode: string | null; message: string | null }> = [];
   if (mode === "real_api" && credentialsPresent && credentials) {
     try {
       const action = process.env.ALIBABA_DM_SUPPRESSION_ACTION ?? "QueryInvalidAddress";
       const requestLength = 100;
-      let nextStart: number | null = null;
+      const maxPages = Math.max(1, Number(process.env.ALIBABA_SYNC_MAX_PAGES ?? 200));
+      let nextStart: string | null = null;
       let page = 0;
-      let previousNextStart: number | null = null;
-      while (page < 200) {
+      let previousNextStart: string | null = null;
+      while (page < maxPages) {
         page += 1;
         finalParams.push({
           startTime: alibabaApiRange.startTime,
@@ -413,7 +543,7 @@ export async function POST(req: Request) {
         apiRequestMade = true;
         const response = await fetch(signedUrl, { method: "GET", cache: "no-store" });
         const payload = (await response.json().catch(() => ({}))) as any;
-        const parserData = extractRawAlibabaRecords(payload);
+        const parserData = extractAlibabaInvalidAddressRecords(payload);
         if (responseKeys.length === 0) responseKeys = parserData.responseKeys;
         if (firstRecordKeys.length === 0) firstRecordKeys = parserData.firstRecordKeys;
         if (totalCount === null) {
@@ -427,32 +557,68 @@ export async function POST(req: Request) {
 
         totalRawRecords += parserData.records.length;
         totalReportsReturned = totalRawRecords;
+        const pageCandidates = new Map<string, CandidateEntry>();
         for (const record of parserData.records) {
           const emailRaw = toStringValue(record, [
             "ToAddress",
+            "toAddress",
             "Email",
             "email",
             "Address",
             "address",
             "MailAddress",
+            "mailAddress",
             "RcptTo",
-            "Recipient",
-            "EmailAddress"
+            "rcptTo"
           ]);
-          if (!emailRaw) continue;
-          const emailNormalized = emailRaw.toLowerCase();
-          if (!isValidEmail(emailNormalized)) continue;
+          if (!emailRaw) {
+            invalidEmailSkipped += 1;
+            continue;
+          }
+          const emailNormalized = emailRaw.trim().toLowerCase();
+          if (!isValidEmail(emailNormalized)) {
+            invalidEmailSkipped += 1;
+            continue;
+          }
+          scanned += 1;
           parsedEmails += 1;
           const category = extractCategory(record, action);
-          const providerCode = toStringValue(record, ["ErrorCode", "errorCode", "Code", "ReasonCode", "Status", "status"]);
-          const message = toStringValue(record, ["Message", "message", "Reason", "reason"]);
-          reportRows.push({
-            email: emailRaw,
+          if (category === "temporary") {
+            ignoredTemporary += 1;
+            continue;
+          }
+          if (!["invalid", "hard_bounce", "complaint", "blocked_rejected"].includes(category)) {
+            ignoredUnknown += 1;
+            continue;
+          }
+          if (!selected.has(category)) {
+            ignoredByCategory += 1;
+            continue;
+          }
+          const reason =
+            category === "invalid"
+              ? "invalid_address"
+              : category === "hard_bounce"
+                ? "hard_bounce"
+                : category === "complaint"
+                  ? "complaint"
+                  : "blocked_rejected";
+          pageCandidates.set(emailNormalized, {
+            email: emailRaw.trim(),
             emailNormalized,
-            providerCode,
-            message: [message, category].filter(Boolean).join(" | ")
+            reason
           });
         }
+        const candidates = [...pageCandidates.values()];
+        matched += candidates.length;
+        const batchResult = await applySuppressionBatch({
+          candidates,
+          removeFromLists: parsed.data.removeFromLists
+        });
+        addedToSuppression += batchResult.addedToSuppression;
+        alreadySuppressed += batchResult.alreadySuppressed;
+        removedFromLists += batchResult.removedFromLists;
+        listRemovalSkipped += batchResult.listRemovalSkipped;
         if (!response.ok) {
           errors.push(payload?.Message ? String(payload.Message) : `Alibaba API request failed with status ${response.status}`);
         }
@@ -468,26 +634,8 @@ export async function POST(req: Request) {
             errors.push("Alibaba rejected StartTime/EndTime. Expected format is YYYY-MM-DD.");
           }
         }
-        const payloadNextStart =
-          typeof payload?.Body?.Data?.NextStart === "number"
-            ? payload.Body.Data.NextStart
-            : typeof payload?.Data?.NextStart === "number"
-              ? payload.Data.NextStart
-              : typeof payload?.NextStart === "number"
-                ? payload.NextStart
-                : typeof payload?.Body?.Data?.NextStart === "string"
-                  ? Number(payload.Body.Data.NextStart)
-                  : typeof payload?.Data?.NextStart === "string"
-                    ? Number(payload.Data.NextStart)
-                    : typeof payload?.NextStart === "string"
-                      ? Number(payload.NextStart)
-                      : null;
-        if (typeof payloadNextStart === "number" && Number.isFinite(payloadNextStart) && payloadNextStart > 0) {
-          nextStart = Math.floor(payloadNextStart);
-          nextStartLastValue = nextStart;
-        } else {
-          nextStart = null;
-        }
+        nextStart = extractAlibabaNextStart(payload);
+        nextStartLastValue = nextStart;
         pagesFetched = page;
         console.info("[alibaba.sync] page result", {
           page,
@@ -501,8 +649,8 @@ export async function POST(req: Request) {
         }
         previousNextStart = nextStart;
       }
-      if (pagesFetched >= 200 && nextStart !== null) {
-        warnings.push("Alibaba pagination reached safety limit (200 pages).");
+      if (pagesFetched >= maxPages && nextStart !== null) {
+        warnings.push("Cok fazla kayit var, islem guvenlik limiti nedeniyle durduruldu. Devam etmek icin tekrar calistirin.");
       }
       console.info("[alibaba.sync] parser", {
         responseKeys,
@@ -539,7 +687,7 @@ export async function POST(req: Request) {
     parsedEmails = logs.length;
     totalCount = logs.length;
     warnings.push("Mock mode aktif: Alibaba credentials/region eksik oldugu icin yerel log verisi kullanildi.");
-    reportRows = logs
+    const mockRows = logs
       .filter((log: any) => Boolean(log.recipient?.emailNormalized))
       .map((log: any) => ({
         email: log.recipient!.email,
@@ -547,113 +695,66 @@ export async function POST(req: Request) {
         providerCode: log.providerCode,
         message: log.message
       }));
-  }
-
-  const selected = new Set(parsed.data.categories);
-  let scanned = 0;
-  let ignoredTemporary = 0;
-  let ignoredByCategory = 0;
-  let ignoredUnknown = 0;
-  const candidateMap = new Map<string, { email: string; emailNormalized: string; reason: string }>();
-
-  for (const log of reportRows) {
-    if (!log.emailNormalized) continue;
-    scanned += 1;
-    const category = classify(log.providerCode, log.message);
-    if (category === "temporary") {
-      ignoredTemporary += 1;
-      continue;
-    }
-    if (!["invalid", "hard_bounce", "complaint", "blocked_rejected"].includes(category)) {
-      ignoredUnknown += 1;
-      continue;
-    }
-    if (!selected.has(category)) {
-      ignoredByCategory += 1;
-      continue;
-    }
-    candidateMap.set(log.emailNormalized, {
-      email: log.email,
-      emailNormalized: log.emailNormalized,
-      reason:
+    const candidateMap = new Map<string, CandidateEntry>();
+    for (const log of mockRows) {
+      if (!log.emailNormalized) continue;
+      const emailNormalized = String(log.emailNormalized).trim().toLowerCase();
+      if (!isValidEmail(emailNormalized)) {
+        invalidEmailSkipped += 1;
+        continue;
+      }
+      scanned += 1;
+      parsedEmails += 1;
+      const category = classify(log.providerCode, log.message);
+      if (category === "temporary") {
+        ignoredTemporary += 1;
+        continue;
+      }
+      if (!selected.has(category)) {
+        ignoredByCategory += 1;
+        continue;
+      }
+      const reason =
         category === "invalid"
           ? "invalid_address"
           : category === "hard_bounce"
             ? "hard_bounce"
             : category === "complaint"
               ? "complaint"
-              : "blocked_rejected"
-    });
-  }
-
-  const candidates = [...candidateMap.values()];
-  const existing = new Set<string>();
-  for (const candidateChunk of chunk(candidates, 1000)) {
-    const rows = await prisma.suppressionEntry.findMany({
-      where: {
-        emailNormalized: { in: candidateChunk.map((item) => item.emailNormalized) },
-        scope: "global"
-      },
-      select: { emailNormalized: true }
-    });
-    for (const row of rows) existing.add(row.emailNormalized);
-  }
-
-  const addable = candidates.filter((item) => !existing.has(item.emailNormalized));
-  let added = 0;
-  for (const candidateChunk of chunk(addable, 1000)) {
-    const created = await prisma.suppressionEntry.createMany({
-      data: candidateChunk.map((item) => ({
-        email: item.email,
-        emailNormalized: item.emailNormalized,
-        reason: item.reason,
-        source: "alibaba",
-        scope: "global"
-      })),
-      skipDuplicates: true
-    });
-    added += created.count;
-  }
-
-  if (parsed.data.removeFromLists && addable.length > 0) {
-    let totalRecipientsMatched = 0;
-    const emailChunks = chunk(
-      addable.map((item) => item.emailNormalized),
-      2000
-    );
-    for (const emailChunk of emailChunks) {
-      const matchedRecipients = await prisma.recipient.findMany({
-        where: { emailNormalized: { in: emailChunk } },
-        select: { id: true }
+              : "blocked_rejected";
+      candidateMap.set(emailNormalized, {
+        email: log.email,
+        emailNormalized,
+        reason
       });
-      totalRecipientsMatched += matchedRecipients.length;
-      if (matchedRecipients.length === 0) continue;
-      const recipientIdChunks = chunk(
-        matchedRecipients.map((item: any) => item.id),
-        2000
-      );
-      for (const recipientIdChunk of recipientIdChunks) {
-        const deleted = await prisma.recipientListMembership.deleteMany({
-          where: { recipientId: { in: recipientIdChunk } }
-        });
-        removedFromLists += deleted.count;
-      }
     }
-    listRemovalSkipped = Math.max(0, addable.length - totalRecipientsMatched);
-  } else {
-    listRemovalSkipped = addable.length;
+    const batchResult = await applySuppressionBatch({
+      candidates: [...candidateMap.values()],
+      removeFromLists: parsed.data.removeFromLists
+    });
+    matched += candidateMap.size;
+    addedToSuppression += batchResult.addedToSuppression;
+    alreadySuppressed += batchResult.alreadySuppressed;
+    removedFromLists += batchResult.removedFromLists;
+    listRemovalSkipped += batchResult.listRemovalSkipped;
+  }
+
+  if ((totalCount ?? 0) > 0 && parsedEmails === 0) {
+    warnings.push(
+      "Alibaba kayit dondurdu ancak parser e-posta alanini okuyamadi. Beklenen alan: data.mailDetail[].ToAddress"
+    );
   }
 
   console.info("[suppression.sync_alibaba] list cleanup", {
     totalSuppressedFetched: totalRawRecords,
-    totalSuppressedMatched: candidates.length,
+    totalSuppressedMatched: matched,
     removedFromLists,
     listRemovalSkipped,
     removeFromListsEnabled: parsed.data.removeFromLists
   });
   console.info("[alibaba.sync] completed", {
-    added,
-    alreadySuppressed: existing.size,
+    addedToSuppression,
+    alreadySuppressed,
     removedFromLists,
     ignoredTemporary,
     ignoredUnknown
@@ -683,11 +784,13 @@ export async function POST(req: Request) {
     firstRecordKeys,
     scanned,
     selectedCategories: parsed.data.categories,
-    matched: candidates.length,
-    added,
+    matched,
+    added: addedToSuppression,
+    addedToSuppression,
     removedFromLists,
+    invalidEmailSkipped,
     listRemovalSkipped,
-    alreadySuppressed: existing.size,
+    alreadySuppressed,
     ignoredTemporary,
     ignoredUnknown,
     ignoredByCategory
@@ -711,11 +814,13 @@ export async function POST(req: Request) {
     responseKeys,
     firstRecordKeys,
     scanned,
-    matched: candidates.length,
-    added,
+    matched,
+    added: addedToSuppression,
+    addedToSuppression,
     removedFromLists,
+    invalidEmailSkipped,
     listRemovalSkipped,
-    alreadySuppressed: existing.size,
+    alreadySuppressed,
     ignoredTemporary,
     ignoredUnknown,
     ignoredByCategory,
