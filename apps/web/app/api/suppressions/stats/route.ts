@@ -22,7 +22,8 @@ export async function GET() {
     alibabaSynced,
     addedToday,
     addedLast7Days,
-    alibabaLastSync
+    alibabaLastSyncEntry,
+    alibabaSyncStateRow
   ] = await Promise.all([
     prisma.suppressionEntry.count(),
     prisma.suppressionEntry.count({ where: { reason: { contains: "invalid", mode: "insensitive" } } }),
@@ -54,19 +55,42 @@ export async function GET() {
     }),
     prisma.suppressionEntry.count({
       where: {
-        OR: [{ source: "alibaba_sync" }, { source: "alibaba" }, { reason: { startsWith: "alibaba_" } }]
+        OR: [
+          { source: { equals: "alibaba", mode: "insensitive" } },
+          { source: { equals: "alibaba_query_invalid_address", mode: "insensitive" } },
+          { source: { equals: "alibaba_invalid_address", mode: "insensitive" } },
+          { source: { startsWith: "alibaba", mode: "insensitive" } }
+        ]
       }
     }),
     prisma.suppressionEntry.count({ where: { createdAt: { gte: startOfToday } } }),
     prisma.suppressionEntry.count({ where: { createdAt: { gte: last7d } } }),
     prisma.suppressionEntry.findFirst({
       where: {
-        OR: [{ source: "alibaba_sync" }, { source: "alibaba" }, { reason: { startsWith: "alibaba_" } }]
+        OR: [
+          { source: { equals: "alibaba", mode: "insensitive" } },
+          { source: { equals: "alibaba_query_invalid_address", mode: "insensitive" } },
+          { source: { equals: "alibaba_invalid_address", mode: "insensitive" } },
+          { source: { startsWith: "alibaba", mode: "insensitive" } }
+        ]
       },
       orderBy: { createdAt: "desc" },
       select: { createdAt: true }
+    }),
+    prisma.appSetting.findUnique({
+      where: { key: "alibaba_sync_state_v1" },
+      select: { value: true }
     })
   ]);
+
+  const syncState = (alibabaSyncStateRow?.value as any) ?? null;
+  const syncUpdatedAt =
+    typeof syncState?.completedAt === "string"
+      ? syncState.completedAt
+      : typeof syncState?.updatedAt === "string"
+        ? syncState.updatedAt
+        : null;
+  const lastSyncTime = syncUpdatedAt ?? alibabaLastSyncEntry?.createdAt?.toISOString() ?? null;
 
   return NextResponse.json({
     ok: true,
@@ -80,7 +104,7 @@ export async function GET() {
       alibabaSynced,
       addedToday,
       addedLast7Days,
-      lastSyncTime: alibabaLastSync?.createdAt?.toISOString() ?? null
+      lastSyncTime
     }
   });
 }

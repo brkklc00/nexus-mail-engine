@@ -7,9 +7,9 @@ export default async function SuppressionPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Baskilama / Kara Liste"
-        description="Istatistikler, arama odakli listeleme ve senkronizasyon kontrolleriyle olceklenebilir baskilama yonetimi."
-        action={<span className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-300">Baskilamayi yonet</span>}
+        title="Baskılama / Kara Liste"
+        description="İstatistikler, arama odaklı listeleme ve senkronizasyon kontrolleriyle ölçeklenebilir baskılama yönetimi."
+        action={<span className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-300">Baskılamayı yönet</span>}
       />
       <SuppressionManager />
     </div>

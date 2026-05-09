@@ -38,49 +38,37 @@ type QueryResponse = {
   sourceOptions: string[];
 };
 
-type AlibabaSyncResult = {
-  ok?: boolean;
-  error?: string;
-  mode: "real_api" | "mock" | "disabled";
-  dateRange: { from: string; to: string };
-  normalizedApiRange?: { startTime: string; endTime: string };
-  finalParams?: Array<{ startTime: string; endTime: string; length: number; nextStart: string | null }>;
-  warnings?: string[];
-  credentialsPresent: boolean;
-  apiRequestMade: boolean;
-  totalReportsReturned: number;
-  totalCount?: number | null;
-  totalRawRecords?: number;
-  parsedEmails?: number;
-  pagesFetched?: number;
-  nextStartLastValue?: string | null;
-  responseKeys?: string[];
-  firstRecordKeys?: string[];
-  scanned: number;
-  matched: number;
-  added: number;
-  addedToSuppression?: number;
-  removedFromLists: number;
-  listRemovalSkipped: number;
-  invalidEmailSkipped?: number;
+type AlibabaSyncStatus = {
+  status:
+    | "idle"
+    | "running"
+    | "paused"
+    | "completed"
+    | "failed"
+    | "stopped_limit";
+  startTime: string;
+  endTime: string;
+  totalCount: number;
+  pagesFetched: number;
+  rawRecords: number;
+  parsedEmails: number;
+  addedToSuppression: number;
   alreadySuppressed: number;
-  ignoredTemporary: number;
-  ignoredUnknown?: number;
-  ignoredByCategory: number;
-  errors: string[];
-};
-
-type CampaignFailureSuppressionResult = {
-  ok?: boolean;
-  error?: string;
-  scanned: number;
-  added: number;
-  alreadySuppressed: number;
-  ignoredTemporary: number;
   removedFromLists: number;
+  invalidEmailSkipped: number;
+  ignoredTemporary: number;
+  ignoredUnknown: number;
+  hasNextStart: boolean;
+  nextStartHash: string | null;
+  lastError: string | null;
+  startedAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+  message: string;
+  responseKeys: string[];
+  firstRecordKeys: string[];
+  parserPathUsed: string | null;
 };
-
-type SyncPreset = "yesterday" | "last7d" | "last30d" | "custom";
 
 type Filters = {
   q: string;
@@ -138,7 +126,7 @@ function toDateOnlyValue(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function computeSyncPresetRange(preset: Exclude<SyncPreset, "custom">): { from: string; to: string } {
+function computeSyncPresetRange(preset: "yesterday" | "last7d" | "last30d"): { from: string; to: string } {
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
@@ -159,24 +147,6 @@ function computeSyncPresetRange(preset: Exclude<SyncPreset, "custom">): { from: 
     from: toDateOnlyValue(new Date(yesterdayStart.getTime() - 29 * 24 * 60 * 60 * 1000)),
     to: toDateOnlyValue(yesterdayEnd)
   };
-}
-
-function dateKeyFromLocalInput(value: string): string | null {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function todayLocalKey(): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }
 
 export function SuppressionManager() {
@@ -213,41 +183,33 @@ export function SuppressionManager() {
   const [removeTo, setRemoveTo] = useState("");
   const [removeLoading, setRemoveLoading] = useState(false);
 
-  const [syncPreset, setSyncPreset] = useState<SyncPreset>("last30d");
-  const [syncFrom, setSyncFrom] = useState(() => computeSyncPresetRange("last30d").from);
-  const [syncTo, setSyncTo] = useState(() => computeSyncPresetRange("last30d").to);
-  const [syncCategories, setSyncCategories] = useState<Record<string, boolean>>({
-    invalid: true,
-    hard_bounce: true,
-    complaint: true,
-    blocked_rejected: true
-  });
   const [syncLoading, setSyncLoading] = useState(false);
-  const [syncSummary, setSyncSummary] = useState<AlibabaSyncResult | null>(null);
-  const [syncSummaryOpen, setSyncSummaryOpen] = useState(false);
   const [syncRemoveFromLists, setSyncRemoveFromLists] = useState(true);
-  const [failureSyncLoading, setFailureSyncLoading] = useState(false);
-  const [failureSyncSummary, setFailureSyncSummary] = useState<CampaignFailureSuppressionResult | null>(null);
+  const [syncStatus, setSyncStatus] = useState<AlibabaSyncStatus | null>(null);
+  const [syncStatusLoading, setSyncStatusLoading] = useState(false);
+  const [syncTechnicalOpen, setSyncTechnicalOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"txt" | "csv">("txt");
+  const [exportScope, setExportScope] = useState<"all" | "filtered" | "selected">("filtered");
+  const [exportReason, setExportReason] = useState("all");
+  const [exportSource, setExportSource] = useState("all");
+  const [exportDateRange, setExportDateRange] = useState("all");
+  const [exportStartDate, setExportStartDate] = useState("");
+  const [exportEndDate, setExportEndDate] = useState("");
+  const [exportLoading, setExportLoading] = useState(false);
+  const [bulkRemoveModalOpen, setBulkRemoveModalOpen] = useState(false);
+  const [bulkRemoveMode, setBulkRemoveMode] = useState<"emails" | "selected" | "filtered">("emails");
+  const [bulkRemoveText, setBulkRemoveText] = useState("");
+  const [bulkRemoveConfirm, setBulkRemoveConfirm] = useState(false);
+  const [bulkRemoveLoading, setBulkRemoveLoading] = useState(false);
 
   const pageSizeOptions = [25, 50, 100];
-  const todayKey = useMemo(() => todayLocalKey(), []);
-  const todaySelectedForSync = useMemo(() => {
-    const fromKey = dateKeyFromLocalInput(syncFrom);
-    const toKey = dateKeyFromLocalInput(syncTo);
-    return fromKey === todayKey || toKey === todayKey;
-  }, [syncFrom, syncTo, todayKey]);
   const hasFilterInput = useMemo(
     () =>
       Boolean(filters.q || filters.reason || filters.source || filters.scope !== "all" || filters.range !== "7d" || filters.from || filters.to),
     [filters]
   );
-
-  function applySyncPreset(preset: Exclude<SyncPreset, "custom">) {
-    const range = computeSyncPresetRange(preset);
-    setSyncPreset(preset);
-    setSyncFrom(range.from);
-    setSyncTo(range.to);
-  }
 
   async function loadStats() {
     setLoadingStats(true);
@@ -266,6 +228,234 @@ export function SuppressionManager() {
       toast.error("Baskilama istatistikleri yuklenemedi", err instanceof Error ? err.message : "Istek basarisiz oldu");
     } finally {
       setLoadingStats(false);
+    }
+  }
+
+  async function loadAlibabaSyncStatus() {
+    setSyncStatusLoading(true);
+    try {
+      const response = await fetch("/api/suppression/alibaba-sync/status", { cache: "no-store" });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        summary?: AlibabaSyncStatus;
+      };
+      if (!response.ok || !payload.ok || !payload.summary) {
+        throw new Error(payload.error ?? "Alibaba senkronizasyon durumu alınamadı");
+      }
+      setSyncStatus(payload.summary);
+    } catch (err) {
+      toast.error("Alibaba senkronizasyon durumu alınamadı", err instanceof Error ? err.message : "İstek başarısız oldu");
+    } finally {
+      setSyncStatusLoading(false);
+    }
+  }
+
+  async function startAlibabaSyncLast30Days() {
+    const range = computeSyncPresetRange("last30d");
+    setSyncLoading(true);
+    try {
+      const response = await fetch("/api/suppression/alibaba-sync/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          startTime: range.from,
+          endTime: range.to,
+          removeFromLists: syncRemoveFromLists
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; summary?: AlibabaSyncStatus };
+      if (!response.ok || !payload.ok || !payload.summary) {
+        throw new Error(payload.error ?? "Alibaba senkronizasyonu başlatılamadı");
+      }
+      setSyncStatus(payload.summary);
+      toast.success("Alibaba senkronizasyonu başlatıldı", payload.summary.message);
+      await loadStats();
+    } catch (err) {
+      toast.error("Alibaba senkronizasyonu başlatılamadı", err instanceof Error ? err.message : "İstek başarısız oldu");
+    } finally {
+      setSyncLoading(false);
+    }
+  }
+
+  async function continueAlibabaSync() {
+    setSyncLoading(true);
+    try {
+      const response = await fetch("/api/suppression/alibaba-sync/continue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ removeFromLists: syncRemoveFromLists })
+      });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; summary?: AlibabaSyncStatus };
+      if (!response.ok || !payload.ok || !payload.summary) {
+        throw new Error(payload.error ?? "Alibaba senkronizasyonu devam ettirilemedi");
+      }
+      setSyncStatus(payload.summary);
+      toast.success("Alibaba senkronizasyonu devam etti", payload.summary.message);
+      await loadStats();
+    } catch (err) {
+      toast.error("Alibaba senkronizasyonu devam ettirilemedi", err instanceof Error ? err.message : "İstek başarısız oldu");
+    } finally {
+      setSyncLoading(false);
+    }
+  }
+
+  async function resetAlibabaSync() {
+    const accepted = await confirm({
+      title: "Alibaba senkronizasyonu sıfırlansın mı?",
+      message: "Kayıtlı nextStart/devam durumu temizlenecek.",
+      confirmLabel: "Sıfırla",
+      cancelLabel: "İptal",
+      tone: "danger"
+    });
+    if (!accepted) return;
+    setSyncLoading(true);
+    try {
+      const response = await fetch("/api/suppression/alibaba-sync/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true })
+      });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; summary?: AlibabaSyncStatus };
+      if (!response.ok || !payload.ok || !payload.summary) {
+        throw new Error(payload.error ?? "Sıfırlama başarısız oldu");
+      }
+      setSyncStatus(payload.summary);
+      toast.info("Alibaba senkronizasyon durumu sıfırlandı");
+      await loadStats();
+    } catch (err) {
+      toast.error("Senkronizasyon sıfırlanamadı", err instanceof Error ? err.message : "İstek başarısız oldu");
+    } finally {
+      setSyncLoading(false);
+    }
+  }
+
+  function toggleSelection(id: string, checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function toggleCurrentPageSelection(checked: boolean) {
+    const ids = queryData?.items.map((row) => row.id) ?? [];
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }
+
+  async function runExport() {
+    setExportLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("format", exportFormat);
+      params.set("scope", exportScope);
+      params.set("reason", exportReason);
+      params.set("source", exportSource);
+      params.set("dateRange", exportDateRange);
+      if (exportDateRange === "custom") {
+        if (exportStartDate) params.set("startDate", exportStartDate);
+        if (exportEndDate) params.set("endDate", exportEndDate);
+      }
+      params.set("search", filters.q);
+      params.set("scopeFilter", filters.scope);
+      if (exportScope === "selected") {
+        params.set("ids", [...selectedIds].join(","));
+      }
+      const response = await fetch(`/api/suppression/export?${params.toString()}`);
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(payload.error ?? "Dışa aktarma başarısız oldu");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `suppression-export-${new Date().toISOString().slice(0, 10)}.${exportFormat}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Toplu indirme hazırlandı");
+      setExportModalOpen(false);
+    } catch (err) {
+      toast.error("Toplu indirme başarısız", err instanceof Error ? err.message : "İstek başarısız oldu");
+    } finally {
+      setExportLoading(false);
+    }
+  }
+
+  async function runBulkRemoveV2() {
+    if (!bulkRemoveConfirm) {
+      toast.warning("Lütfen onay kutusunu işaretleyin.");
+      return;
+    }
+    setBulkRemoveLoading(true);
+    try {
+      let emails: string[] = [];
+      if (bulkRemoveMode === "emails") {
+        emails = bulkRemoveText
+          .replace(/[;,]+/g, "\n")
+          .split(/\r?\n/)
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+      const response = await fetch("/api/suppression/bulk-remove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: bulkRemoveMode,
+          emails,
+          ids: bulkRemoveMode === "selected" ? [...selectedIds] : [],
+          filters:
+            bulkRemoveMode === "filtered"
+              ? {
+                  search: filters.q,
+                  reason: filters.reason || "all",
+                  source: filters.source || "all",
+                  scope: filters.scope || "all",
+                  dateRange: filters.range,
+                  startDate: filters.from,
+                  endDate: filters.to
+                }
+              : undefined,
+          confirm: true
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        scanned?: number;
+        validEmails?: number;
+        invalidSkipped?: number;
+        duplicatesSkipped?: number;
+        removed?: number;
+        notFound?: number;
+      };
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Toplu çıkartma başarısız");
+      }
+      toast.success(
+        "Toplu çıkartma tamamlandı",
+        `${payload.scanned ?? 0} e-posta tarandı, ${payload.validEmails ?? 0} geçerli bulundu, ${payload.removed ?? 0} kayıt baskılama listesinden çıkarıldı.`
+      );
+      setBulkRemoveModalOpen(false);
+      setBulkRemoveText("");
+      setBulkRemoveConfirm(false);
+      setSelectedIds(new Set());
+      await loadStats();
+      if (hasQueried) await runQuery({ ...filters, page: 1 });
+    } catch (err) {
+      toast.error("Toplu çıkartma başarısız", err instanceof Error ? err.message : "İstek başarısız oldu");
+    } finally {
+      setBulkRemoveLoading(false);
     }
   }
 
@@ -449,119 +639,6 @@ export function SuppressionManager() {
     }
   }
 
-  async function runAlibabaSync() {
-    const categories = Object.entries(syncCategories)
-      .filter(([, checked]) => checked)
-      .map(([key]) => key);
-    if (categories.length === 0) {
-      toast.warning("En az bir kategori secin");
-      return;
-    }
-    if (todaySelectedForSync) {
-      toast.warning("Alibaba DirectMail sadece tamamlanmis gunleri destekler. Bugun secimi dun olarak duzeltilecektir.");
-    }
-    const accepted = await confirm({
-      title: "Alibaba Invalid Adres Senkronizasyonu baslatilsin mi?",
-      message: "Bu islem QueryInvalidAddress API'sinden invalid adresleri ceker. Tum bounce/fail loglari bu endpoint'te yer almayabilir.",
-      confirmLabel: "Senkronize Et",
-      cancelLabel: "Iptal",
-      tone: "warning"
-    });
-    if (!accepted) return;
-
-    setSyncLoading(true);
-    try {
-      const response = await fetch("/api/suppressions/sync-alibaba", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: syncFrom,
-          to: syncTo,
-          categories,
-          removeFromLists: syncRemoveFromLists
-        })
-      });
-      const payload = (await response.json().catch(() => ({}))) as AlibabaSyncResult;
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Alibaba senkronizasyonu basarisiz oldu");
-      }
-      setSyncSummary(payload);
-      setSyncSummaryOpen(true);
-      if (Array.isArray(payload.warnings) && payload.warnings.length > 0) {
-        toast.warning(payload.warnings[0]);
-      }
-      const statusText =
-        payload.mode === "disabled"
-          ? "Alibaba senkronizasyonu yapilandirma nedeniyle devre disi."
-          : payload.mode === "mock"
-            ? "Alibaba senkronizasyonu henuz gercek API'ye bagli degil."
-            : !payload.credentialsPresent
-              ? "Alibaba kimlik bilgileri yapilandirilmamis."
-              : (payload.totalCount ?? payload.totalRawRecords ?? payload.totalReportsReturned) === 0
-                ? "Alibaba baglantisi basarili. QueryInvalidAddress endpoint'i secilen aralikta invalid address kaydi dondurmedi. Bu endpoint tum gonderim hatalarini degil, Alibaba'nin invalid address listesine dusen deduplicate kayitlari dondurur."
-                : (payload.totalRawRecords ?? payload.totalReportsReturned) > 0 && (payload.parsedEmails ?? 0) === 0
-                  ? "Alibaba kayit dondurdu ancak parser e-posta alanini okuyamadi. Beklenen alan: data.mailDetail[].ToAddress"
-                  : (payload.parsedEmails ?? 0) > 0 && payload.added === 0
-                    ? "Alibaba kayitlari bulundu ancak hepsi zaten baskilama listesinde veya gecici kategori olarak atlandi."
-                    : "Alibaba kayitlari basariyla baskilama listesine eklendi.";
-      const secondaryText =
-        (payload.totalCount ?? payload.totalRawRecords ?? payload.totalReportsReturned) === 0
-          ? "Fail/bounce raporlarini almak icin ayri delivery report/bounce endpoint'i gerekiyorsa entegrasyon ayrica eklenmelidir."
-          : undefined;
-      toast.success("Alibaba invalid adres senkronizasyonu tamamlandi", secondaryText ? `${statusText} ${secondaryText}` : statusText);
-      await loadStats();
-      if (hasQueried || hasFilterInput) {
-        await runQuery({ ...filters, page: 1 });
-      }
-    } catch (err) {
-      toast.error("Alibaba senkronizasyonu basarisiz", err instanceof Error ? err.message : "Istek basarisiz oldu");
-    } finally {
-      setSyncLoading(false);
-    }
-  }
-
-  async function runCampaignFailureSuppression() {
-    const accepted = await confirm({
-      title: "Kampanya hatalarindan baskilama olusturulsun mu?",
-      message:
-        "Sadece kalici/hard-fail hatalar baskilama listesine eklenir. Gecici timeout/throttle hatalari eklenmez.",
-      confirmLabel: "Calistir",
-      cancelLabel: "Iptal",
-      tone: "warning"
-    });
-    if (!accepted) return;
-
-    setFailureSyncLoading(true);
-    try {
-      const response = await fetch("/api/suppressions/from-campaign-failures", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: syncFrom,
-          to: syncTo,
-          removeFromLists: true
-        })
-      });
-      const payload = (await response.json().catch(() => ({}))) as CampaignFailureSuppressionResult;
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Kampanya hata taramasi basarisiz oldu");
-      }
-      setFailureSyncSummary(payload);
-      toast.success(
-        "Kampanya hata kaynakli baskilama tamamlandi",
-        `scanned ${payload.scanned}, added ${payload.added}, alreadySuppressed ${payload.alreadySuppressed}, ignoredTemporary ${payload.ignoredTemporary}, removedFromLists ${payload.removedFromLists}`
-      );
-      await loadStats();
-      if (hasQueried || hasFilterInput) {
-        await runQuery({ ...filters, page: 1 });
-      }
-    } catch (err) {
-      toast.error("Kampanya hata kaynakli baskilama basarisiz", err instanceof Error ? err.message : "Istek basarisiz oldu");
-    } finally {
-      setFailureSyncLoading(false);
-    }
-  }
-
   async function removeSingle(id: string) {
     const accepted = await confirm({
       title: "Baskilama kaydi silinsin mi?",
@@ -587,20 +664,40 @@ export function SuppressionManager() {
 
   useEffect(() => {
     void loadStats();
+    void loadAlibabaSyncStatus();
   }, []);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-zinc-400">Scalable suppression management center</p>
-        <button
-          type="button"
-          onClick={() => void loadStats()}
-          className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-zinc-200"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${loadingStats ? "animate-spin" : ""}`} />
-          Refresh stats
-        </button>
+        <p className="text-sm text-zinc-400">Baskılama operasyon merkezi</p>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setExportModalOpen(true)}
+            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-zinc-200"
+          >
+            Toplu İndir
+          </button>
+          <button
+            type="button"
+            onClick={() => setBulkRemoveModalOpen(true)}
+            className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 px-2 py-1 text-xs text-rose-200"
+          >
+            Toplu Çıkart
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void loadStats();
+              void loadAlibabaSyncStatus();
+            }}
+            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-zinc-200"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loadingStats || syncStatusLoading ? "animate-spin" : ""}`} />
+            Yenile
+          </button>
+        </div>
       </div>
 
       <section className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
@@ -812,93 +909,42 @@ export function SuppressionManager() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => void runAlibabaSync()}
-              disabled={syncLoading}
+              onClick={() => void startAlibabaSyncLast30Days()}
+              disabled={syncLoading || syncStatus?.status === "running"}
               className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 disabled:opacity-60"
             >
               {syncLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Alibaba Invalid Adres Senkronizasyonu
+              Son 30 Günü Başlat
             </button>
             <button
               type="button"
-              onClick={() => void runCampaignFailureSuppression()}
-              disabled={failureSyncLoading}
+              onClick={() => void continueAlibabaSync()}
+              disabled={syncLoading || !syncStatus?.hasNextStart}
               className="inline-flex items-center gap-1 rounded-lg border border-indigo-400/40 px-3 py-2 text-sm text-indigo-200 disabled:opacity-60"
             >
-              {failureSyncLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldMinus className="h-4 w-4" />}
-              Alibaba Gonderim Hatalarini Tara
+              Devam Et
+            </button>
+            <button
+              type="button"
+              onClick={() => setSyncTechnicalOpen((prev) => !prev)}
+              className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-sm text-zinc-200"
+            >
+              Teknik Detayları Göster
+            </button>
+            <button
+              type="button"
+              onClick={() => void resetAlibabaSync()}
+              disabled={syncLoading}
+              className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 px-3 py-2 text-sm text-rose-200 disabled:opacity-60"
+            >
+              Sıfırla
             </button>
           </div>
         </div>
         <p className="mt-2 text-xs text-zinc-400">
-          Bu islem Alibaba DirectMail QueryInvalidAddress API'sinden invalid adresleri ceker. Tum basarisiz gonderimleri/bounce loglarini cekmez.
+          QueryInvalidAddress yalnızca Alibaba invalid address listesini döndürür. Tüm gönderim hataları için
+          SenderStatisticsDetailByParam entegrasyonu ayrıca kullanılmalıdır.
         </p>
-        <p className="mt-2 rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-xs text-indigo-200">
-          QueryInvalidAddress yalnizca Alibaba invalid address listesini dondurur. Tum gonderim hatalarini almak icin SenderStatisticsDetailByParam entegrasyonu ayrica kullanilmalidir.
-        </p>
-        <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-          <input
-            type="date"
-            value={syncFrom}
-            onChange={(e) => {
-              setSyncPreset("custom");
-              setSyncFrom(e.target.value);
-            }}
-            className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-          />
-          <input
-            type="date"
-            value={syncTo}
-            onChange={(e) => {
-              setSyncPreset("custom");
-              setSyncTo(e.target.value);
-            }}
-            className="rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm"
-          />
-        </div>
-        {todaySelectedForSync ? (
-          <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
-            Alibaba DirectMail sadece tamamlanmis gunleri destekler. Gecersiz secimler dun olarak duzeltilir.
-          </p>
-        ) : null}
-        <div className="mt-2 flex flex-wrap gap-2">
-          {[
-            { id: "yesterday" as const, label: "Dun" },
-            { id: "last7d" as const, label: "Son 7 gun" },
-            { id: "last30d" as const, label: "Son 30 gun" }
-          ].map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              onClick={() => applySyncPreset(preset.id)}
-              className={`rounded-lg border px-2.5 py-1 text-xs ${
-                syncPreset === preset.id
-                  ? "border-indigo-400/50 bg-indigo-500/10 text-indigo-200"
-                  : "border-border text-zinc-300"
-              }`}
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
-        <div className="mt-2 flex flex-wrap gap-4 text-xs text-zinc-300">
-          {[
-            ["invalid", "invalid"],
-            ["hard_bounce", "hard bounce"],
-            ["complaint", "complaint"],
-            ["blocked_rejected", "blocked/rejected"]
-          ].map(([key, label]) => (
-            <label key={key} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={syncCategories[key]}
-                onChange={(e) => setSyncCategories((prev) => ({ ...prev, [key]: e.target.checked }))}
-              />
-              {label}
-            </label>
-          ))}
-        </div>
-        <p className="mt-2 text-xs text-zinc-500">Gecici hatalar senkronizasyonda ignored olarak raporlanir ve baskilamaya eklenmez.</p>
         <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
           <input
             type="checkbox"
@@ -907,17 +953,27 @@ export function SuppressionManager() {
           />
           Eklenen baskilanan e-postalari tum alici listelerinden de kaldir
         </label>
-        {syncSummary ? (
-          <p className="mt-2 text-xs text-zinc-300">
-            Son calisma: mod {syncSummary.mode}, totalCount {syncSummary.totalCount ?? "-"}, raw {syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned}, added {syncSummary.added}, removed {syncSummary.removedFromLists}
-          </p>
-        ) : null}
-        {failureSyncSummary ? (
-          <p className="mt-2 text-xs text-indigo-200">
-            Kampanya fallback ozeti: scanned {failureSyncSummary.scanned}, added {failureSyncSummary.added}, alreadySuppressed{" "}
-            {failureSyncSummary.alreadySuppressed}, ignoredTemporary {failureSyncSummary.ignoredTemporary}, removedFromLists{" "}
-            {failureSyncSummary.removedFromLists}
-          </p>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-300 md:grid-cols-5">
+          <StatCard title="Durum" value={syncStatus?.status ?? "-"} isText />
+          <StatCard title="TotalCount" value={syncStatus?.totalCount ?? 0} />
+          <StatCard title="İşlenen Sayfa" value={syncStatus?.pagesFetched ?? 0} />
+          <StatCard title="İşlenen Kayıt" value={syncStatus?.rawRecords ?? 0} />
+          <StatCard title="Parse Edilen E-posta" value={syncStatus?.parsedEmails ?? 0} />
+          <StatCard title="Eklenen" value={syncStatus?.addedToSuppression ?? 0} />
+          <StatCard title="Zaten Kayıtlı" value={syncStatus?.alreadySuppressed ?? 0} />
+          <StatCard title="Listeden Çıkarılan" value={syncStatus?.removedFromLists ?? 0} />
+          <StatCard title="Devam Bilgisi" value={syncStatus?.hasNextStart ? "Var" : "Yok"} isText />
+          <StatCard title="Son Güncelleme" value={syncStatus?.updatedAt ? new Date(syncStatus.updatedAt).toLocaleString() : "-"} isText />
+        </div>
+        <p className="mt-2 text-xs text-zinc-400">{syncStatus?.message ?? "Henüz senkronizasyon başlatılmadı."}</p>
+        {syncTechnicalOpen ? (
+          <div className="mt-2 rounded-lg border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
+            <p>responseKeys: {(syncStatus?.responseKeys ?? []).join(", ") || "-"}</p>
+            <p>firstRecordKeys: {(syncStatus?.firstRecordKeys ?? []).join(", ") || "-"}</p>
+            <p>parser path used: {syncStatus?.parserPathUsed ?? "-"}</p>
+            <p>hasNextStart: {syncStatus?.hasNextStart ? "true" : "false"}</p>
+            <p>nextStartHash: {syncStatus?.nextStartHash ?? "-"}</p>
+          </div>
         ) : null}
       </section>
 
@@ -946,9 +1002,43 @@ export function SuppressionManager() {
           </div>
         ) : (
           <div className="overflow-x-auto">
+            <div className="flex items-center justify-between border-b border-border px-4 py-2 text-xs text-zinc-300">
+              <p>{selectedIds.size} kayıt seçildi</p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportScope("selected");
+                    setExportModalOpen(true);
+                  }}
+                  disabled={selectedIds.size === 0}
+                  className="rounded border border-border px-2 py-1 disabled:opacity-50"
+                >
+                  Seçilileri İndir
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkRemoveMode("selected");
+                    setBulkRemoveModalOpen(true);
+                  }}
+                  disabled={selectedIds.size === 0}
+                  className="rounded border border-rose-500/40 px-2 py-1 text-rose-200 disabled:opacity-50"
+                >
+                  Seçilileri Çıkart
+                </button>
+              </div>
+            </div>
             <table className="w-full text-sm">
               <thead className="border-b border-border bg-zinc-900/60 text-left text-xs uppercase tracking-wider text-zinc-400">
                 <tr>
+                  <th className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={(queryData?.items.length ?? 0) > 0 && (queryData?.items.every((item) => selectedIds.has(item.id)) ?? false)}
+                      onChange={(event) => toggleCurrentPageSelection(event.target.checked)}
+                    />
+                  </th>
                   <th className="px-4 py-3">Email</th>
                   <th className="px-4 py-3">Reason</th>
                   <th className="px-4 py-3">Source</th>
@@ -960,6 +1050,13 @@ export function SuppressionManager() {
               <tbody>
                 {queryData?.items.map((entry) => (
                   <tr key={entry.id} className="border-b border-border/70 text-zinc-200">
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(entry.id)}
+                        onChange={(event) => toggleSelection(entry.id, event.target.checked)}
+                      />
+                    </td>
                     <td className="px-4 py-3 font-medium text-white">{entry.email}</td>
                     <td className="px-4 py-3">{entry.reason}</td>
                     <td className="px-4 py-3 text-zinc-400">{entry.source ?? "-"}</td>
@@ -1030,140 +1127,114 @@ export function SuppressionManager() {
         </div>
       ) : null}
 
-      {syncSummaryOpen && syncSummary ? (
+      {exportModalOpen ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl border border-border/80 bg-[#0f1420] p-4 shadow-2xl">
-            <h3 className="text-sm font-semibold text-zinc-100">Alibaba Senkronizasyon Ozeti</h3>
-            <div className="mt-2 space-y-1 text-sm text-zinc-300">
-              <p>
-                Tarih araligi: {new Date(syncSummary.dateRange.from).toLocaleString()} - {new Date(syncSummary.dateRange.to).toLocaleString()}
-              </p>
-              {syncSummary.normalizedApiRange ? (
-                <p>
-                  API araligi: StartTime={syncSummary.normalizedApiRange.startTime} | EndTime={syncSummary.normalizedApiRange.endTime}
-                </p>
-              ) : null}
-              {syncSummary.finalParams && syncSummary.finalParams.length > 0 ? (
-                <div className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
-                  <p className="font-medium">Alibaba Final Params</p>
-                  {syncSummary.finalParams.map((item, index) => (
-                    <p key={`${item.startTime}-${item.endTime}-${item.nextStart ?? "null"}-${index}`}>
-                      StartTime={item.startTime} | EndTime={item.endTime} | Length={item.length} | NextStart={item.nextStart ?? "-"}
-                    </p>
-                  ))}
-                </div>
-              ) : null}
-              {syncSummary.warnings && syncSummary.warnings.length > 0 ? (
-                <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
-                  <p className="font-medium">Warnings</p>
-                  {syncSummary.warnings.map((item) => (
-                    <p key={item}>- {item}</p>
-                  ))}
-                </div>
-              ) : null}
-              <p>Mod: {syncSummary.mode === "real_api" ? "Gercek API" : syncSummary.mode === "mock" ? "Mock" : "Devre Disi"}</p>
-              <p>Credentials: {syncSummary.credentialsPresent ? "Var" : "Yok"}</p>
-              <p>API istegi: {syncSummary.apiRequestMade ? "Yapildi" : "Yapilmadi"}</p>
-              <p>TotalCount: {syncSummary.totalCount ?? "-"}</p>
-              <p>Pages fetched: {syncSummary.pagesFetched ?? 0}</p>
-              <p>Raw records: {syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned}</p>
-              <p>Parsed emails: {syncSummary.parsedEmails ?? 0}</p>
-              <p>NextStart son deger: {syncSummary.nextStartLastValue ?? "-"}</p>
-              <p>
-                Scanned: {syncSummary.scanned} | Matched: {syncSummary.matched} | Added: {syncSummary.addedToSuppression ?? syncSummary.added}
-              </p>
-              <p>
-                Removed from lists: {syncSummary.removedFromLists} | List removal skipped: {syncSummary.listRemovalSkipped}
-              </p>
-              <p>Invalid email skipped: {syncSummary.invalidEmailSkipped ?? 0}</p>
-              <p>
-                Already suppressed: {syncSummary.alreadySuppressed} | Ignored temporary: {syncSummary.ignoredTemporary} | Ignored by category:{" "}
-                {syncSummary.ignoredByCategory}
-              </p>
-              <p>Ignored unknown: {syncSummary.ignoredUnknown ?? 0}</p>
-              {syncSummary.responseKeys && syncSummary.responseKeys.length > 0 ? (
-                <p>responseKeys: {syncSummary.responseKeys.join(", ")}</p>
-              ) : null}
-              {syncSummary.firstRecordKeys && syncSummary.firstRecordKeys.length > 0 ? (
-                <p>firstRecordKeys: {syncSummary.firstRecordKeys.join(", ")}</p>
-              ) : null}
-              {syncSummary.mode === "mock" ? (
-                <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
-                  Alibaba sync is not connected to the real API yet.
-                </p>
-              ) : null}
-              {syncSummary.mode === "disabled" ? (
-                <p className="rounded border border-zinc-500/30 bg-zinc-500/10 p-2 text-zinc-200">
-                  Alibaba sync is disabled by configuration.
-                </p>
-              ) : null}
-              {syncSummary.mode === "real_api" && !syncSummary.credentialsPresent ? (
-                <p className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-rose-200">
-                  Alibaba credentials are not configured.
-                </p>
-              ) : null}
-              {syncSummary.mode === "real_api" &&
-              syncSummary.credentialsPresent &&
-              syncSummary.apiRequestMade &&
-              (syncSummary.totalCount ?? syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned) === 0 ? (
-                <p className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
-                  Alibaba baglantisi basarili. QueryInvalidAddress endpoint'i secilen aralikta invalid address kaydi dondurmedi. Bu endpoint tum gonderim hatalarini degil, Alibaba'nin invalid address listesine dusen deduplicate kayitlari dondurur.
-                </p>
-              ) : null}
-              {syncSummary.mode === "real_api" &&
-              syncSummary.credentialsPresent &&
-              syncSummary.apiRequestMade &&
-              (syncSummary.totalCount ?? syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned) === 0 ? (
-                <p className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
-                  Fail/bounce raporlarini almak icin ayri delivery report/bounce endpoint'i gerekiyorsa entegrasyon ayrica eklenmelidir.
-                </p>
-              ) : null}
-              {syncSummary.mode === "real_api" &&
-              syncSummary.credentialsPresent &&
-              syncSummary.apiRequestMade &&
-              (syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned) > 0 &&
-              (syncSummary.parsedEmails ?? 0) === 0 ? (
-                <p className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-200">
-                  Alibaba kayit dondurdu ancak parser e-posta alanini okuyamadi. Beklenen alan: data.mailDetail[].ToAddress
-                </p>
-              ) : null}
-              {syncSummary.mode === "real_api" &&
-              syncSummary.credentialsPresent &&
-              syncSummary.apiRequestMade &&
-              (syncSummary.parsedEmails ?? 0) > 0 &&
-              syncSummary.added === 0 ? (
-                <p className="rounded border border-zinc-500/30 bg-zinc-500/10 p-2 text-zinc-200">
-                  Alibaba kayitlari bulundu ancak hepsi zaten baskilama listesinde veya gecici kategori olarak atlandi.
-                </p>
-              ) : null}
-              {syncSummary.mode === "real_api" &&
-              syncSummary.credentialsPresent &&
-              syncSummary.added > 0 ? (
-                <p className="rounded border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-200">
-                  Alibaba kayitlari basariyla baskilama listesine eklendi.
-                </p>
-              ) : null}
-              {syncSummary.errors.length > 0 ? (
-                <div className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-rose-200">
-                  <p className="font-medium">Errors</p>
-                  {syncSummary.errors.map((item) => (
-                    <p key={item}>- {item}</p>
-                  ))}
+          <div className="w-full max-w-xl rounded-2xl border border-border bg-[#0f1420] p-4">
+            <h3 className="text-sm font-semibold text-zinc-100">Baskılama Listesini İndir</h3>
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+              <label className="text-xs text-zinc-300">
+                Format
+                <select value={exportFormat} onChange={(e) => setExportFormat(e.target.value as "txt" | "csv")} className="mt-1 w-full rounded border border-border bg-zinc-900/70 px-2 py-2">
+                  <option value="txt">TXT</option>
+                  <option value="csv">CSV</option>
+                </select>
+              </label>
+              <label className="text-xs text-zinc-300">
+                Kapsam
+                <select value={exportScope} onChange={(e) => setExportScope(e.target.value as "all" | "filtered" | "selected")} className="mt-1 w-full rounded border border-border bg-zinc-900/70 px-2 py-2">
+                  <option value="all">Tüm kayıtlar</option>
+                  <option value="filtered">Filtrelenmiş kayıtlar</option>
+                  <option value="selected">Seçili kayıtlar</option>
+                </select>
+              </label>
+              <label className="text-xs text-zinc-300">
+                Sebep
+                <select value={exportReason} onChange={(e) => setExportReason(e.target.value)} className="mt-1 w-full rounded border border-border bg-zinc-900/70 px-2 py-2">
+                  <option value="all">Tüm nedenler</option>
+                  <option value="invalid_address">invalid_address</option>
+                  <option value="hard_bounce">hard_bounce</option>
+                  <option value="complaint">complaint</option>
+                  <option value="unsubscribe">unsubscribe</option>
+                  <option value="blocked/rejected">blocked/rejected</option>
+                </select>
+              </label>
+              <label className="text-xs text-zinc-300">
+                Kaynak
+                <select value={exportSource} onChange={(e) => setExportSource(e.target.value)} className="mt-1 w-full rounded border border-border bg-zinc-900/70 px-2 py-2">
+                  <option value="all">Tüm kaynaklar</option>
+                  <option value="manual">manual</option>
+                  <option value="alibaba_query_invalid_address">alibaba_query_invalid_address</option>
+                  <option value="unsubscribe_page">unsubscribe_page</option>
+                </select>
+              </label>
+              <label className="text-xs text-zinc-300">
+                Tarih aralığı
+                <select value={exportDateRange} onChange={(e) => setExportDateRange(e.target.value)} className="mt-1 w-full rounded border border-border bg-zinc-900/70 px-2 py-2">
+                  <option value="all">Tümü</option>
+                  <option value="today">Bugün</option>
+                  <option value="7d">Son 7 gün</option>
+                  <option value="30d">Son 30 gün</option>
+                  <option value="custom">Özel tarih</option>
+                </select>
+              </label>
+              {exportDateRange === "custom" ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <input type="date" value={exportStartDate} onChange={(e) => setExportStartDate(e.target.value)} className="rounded border border-border bg-zinc-900/70 px-2 py-2 text-xs" />
+                  <input type="date" value={exportEndDate} onChange={(e) => setExportEndDate(e.target.value)} className="rounded border border-border bg-zinc-900/70 px-2 py-2 text-xs" />
                 </div>
               ) : null}
             </div>
-            <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setSyncSummaryOpen(false)}
-                className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200"
-              >
-                Close
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setExportModalOpen(false)} className="rounded border border-border px-3 py-2 text-xs text-zinc-200">İptal</button>
+              <button type="button" onClick={() => void runExport()} disabled={exportLoading} className="rounded border border-border px-3 py-2 text-xs text-zinc-100 disabled:opacity-50">
+                {exportLoading ? "İndiriliyor..." : "İndir"}
               </button>
             </div>
           </div>
         </div>
       ) : null}
+
+      {bulkRemoveModalOpen ? (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-2xl border border-border bg-[#0f1420] p-4">
+            <h3 className="text-sm font-semibold text-zinc-100">Baskılama Listesinden Toplu Çıkart</h3>
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+              <button type="button" onClick={() => setBulkRemoveMode("emails")} className={`rounded border px-2 py-2 text-xs ${bulkRemoveMode === "emails" ? "border-indigo-400 text-indigo-200" : "border-border text-zinc-300"}`}>
+                E-posta listesi yapıştır
+              </button>
+              <button type="button" onClick={() => setBulkRemoveMode("selected")} className={`rounded border px-2 py-2 text-xs ${bulkRemoveMode === "selected" ? "border-indigo-400 text-indigo-200" : "border-border text-zinc-300"}`}>
+                Seçili kayıtları çıkar
+              </button>
+              <button type="button" onClick={() => setBulkRemoveMode("filtered")} className={`rounded border px-2 py-2 text-xs ${bulkRemoveMode === "filtered" ? "border-indigo-400 text-indigo-200" : "border-border text-zinc-300"}`}>
+                Filtreye göre çıkar
+              </button>
+            </div>
+            {bulkRemoveMode === "emails" ? (
+              <div className="mt-3">
+                <textarea
+                  rows={6}
+                  value={bulkRemoveText}
+                  onChange={(e) => setBulkRemoveText(e.target.value)}
+                  placeholder="Her satıra bir e-posta yazın."
+                  className="w-full rounded border border-border bg-zinc-900/70 px-3 py-2 text-sm"
+                />
+              </div>
+            ) : null}
+            <label className="mt-3 flex items-center gap-2 text-xs text-zinc-300">
+              <input type="checkbox" checked={bulkRemoveConfirm} onChange={(e) => setBulkRemoveConfirm(e.target.checked)} />
+              Eminim, bu e-postalar tekrar gönderilebilir hale gelebilir.
+            </label>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setBulkRemoveModalOpen(false)} className="rounded border border-border px-3 py-2 text-xs text-zinc-200">İptal</button>
+              <button type="button" onClick={() => void runBulkRemoveV2()} disabled={bulkRemoveLoading} className="rounded border border-rose-500/40 px-3 py-2 text-xs text-rose-200 disabled:opacity-50">
+                {bulkRemoveLoading ? "Çıkartılıyor..." : "Toplu Çıkart"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      
     </div>
   );
 }

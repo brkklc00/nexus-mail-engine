@@ -414,8 +414,37 @@ model SuppressionEntry {
   updatedAt        DateTime          @updatedAt
 
   @@unique([emailNormalized, scope], name: "emailNormalized_scope")
+  @@index([emailNormalized, createdAt])
   @@index([reason, createdAt])
+  @@index([source, createdAt])
   @@index([listId, createdAt])
+}
+
+model AlibabaSuppressionSyncState {
+  id                   String   @id @default(uuid())
+  syncType             String   @default("query_invalid_address")
+  status               String   @default("idle")
+  startTime            String
+  endTime              String
+  nextStart            String?
+  nextStartHash        String?
+  totalCount           Int      @default(0)
+  pagesFetched         Int      @default(0)
+  rawRecords           Int      @default(0)
+  parsedEmails         Int      @default(0)
+  addedToSuppression   Int      @default(0)
+  alreadySuppressed    Int      @default(0)
+  removedFromLists     Int      @default(0)
+  invalidEmailSkipped  Int      @default(0)
+  ignoredTemporary     Int      @default(0)
+  ignoredUnknown       Int      @default(0)
+  lastError            String?
+  startedAt            DateTime?
+  updatedAt            DateTime @updatedAt
+  completedAt          DateTime?
+
+  @@unique([syncType], name: "alibaba_sync_type_unique")
+  @@index([status, updatedAt])
 }
 
 model AuditLog {
