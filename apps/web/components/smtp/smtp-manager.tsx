@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   BarChart3,
@@ -26,6 +26,7 @@ import { useConfirm, useToast } from "@/components/ui/notification-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { OverlayPortal } from "@/components/ui/overlay-portal";
 import { getBulkAlibabaPreviewRows } from "@/lib/smtp-bulk-alibaba-parse";
+import { LiveSmtpFlowCard } from "@/components/smtp/live-smtp-flow-card";
 
 type Account = {
   id: string;
@@ -177,6 +178,7 @@ const dailyTargetQuickPresets = [100000, 250000, 500000, 1000000, 2000000, 50000
 const modalTabs = ["connection", "identity", "rate", "warmup", "advanced"] as const;
 type ModalTab = (typeof modalTabs)[number];
 type ProviderPreset = "alibaba" | "custom";
+type SmtpTab = "overview" | "accounts" | "live" | "advanced";
 
 function modeLabel(mode: "safe" | "balanced" | "fast" | "aggressive") {
   if (mode === "safe") return "Guvenli";
@@ -331,9 +333,16 @@ export function SmtpManager({
   const [viewMode, setViewMode] = useState<"card" | "list">(() =>
     initialAccounts.length > 10 ? "list" : "card"
   );
+  const [activeTab, setActiveTab] = useState<SmtpTab>("overview");
+  const [accountsLoaded, setAccountsLoaded] = useState(initialAccounts.length > 0);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [tableSearch, setTableSearch] = useState("");
+  const [tableStatusFilter, setTableStatusFilter] = useState<"all" | "healthy" | "throttled" | "error" | "passive">("all");
+  const [tableProviderFilter, setTableProviderFilter] = useState("all");
+  const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [accountsPage, setAccountsPage] = useState(1);
-  const [accountsPageSize, setAccountsPageSize] = useState(50);
+  const [accountsPageSize, setAccountsPageSize] = useState(25);
   const [bulkDeleteModalOpen, setBulkDeleteModalOpen] = useState(false);
   const [bulkDeleteTyped, setBulkDeleteTyped] = useState("");
   const [plannerModalOpen, setPlannerModalOpen] = useState(false);
@@ -362,7 +371,6 @@ export function SmtpManager({
   const [bulkApplyPreview, setBulkApplyPreview] = useState<BulkDistributionPreview | null>(null);
   const [bulkResetIncludeAuthErrors, setBulkResetIncludeAuthErrors] = useState(false);
   const [bulkResetSetHealthy, setBulkResetSetHealthy] = useState(false);
-  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [dailyTargetModalOpen, setDailyTargetModalOpen] = useState(false);
   const [dailyTargetInput, setDailyTargetInput] = useState(
     Math.max(100000, Number(initialDailyTargetSummary?.dailyTarget ?? 500000))
@@ -425,12 +433,37 @@ export function SmtpManager({
 
   const selectedCount = selectedIds.size;
   const selectedIdList = useMemo(() => [...selectedIds], [selectedIds]);
-  const totalAccountPages = useMemo(() => Math.max(1, Math.ceil(accounts.length / accountsPageSize)), [accounts.length, accountsPageSize]);
+  const providerOptions = useMemo(
+    () => [...new Set(accounts.map((item) => (item.providerLabel ?? "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [accounts]
+  );
+  const filteredAccounts = useMemo(() => {
+    const search = tableSearch.trim().toLowerCase();
+    return accounts.filter((item) => {
+      if (search) {
+        const haystack = `${item.fromEmail} ${item.name} ${item.host} ${item.providerLabel ?? ""}`.toLowerCase();
+        if (!haystack.includes(search)) return false;
+      }
+      if (tableProviderFilter !== "all") {
+        const provider = (item.providerLabel ?? "").trim().toLowerCase();
+        if (provider !== tableProviderFilter.toLowerCase()) return false;
+      }
+      if (tableStatusFilter === "healthy") return item.isActive && !item.isThrottled && item.healthStatus === "healthy";
+      if (tableStatusFilter === "throttled") return item.isThrottled;
+      if (tableStatusFilter === "error") return item.healthStatus === "error";
+      if (tableStatusFilter === "passive") return !item.isActive;
+      return true;
+    });
+  }, [accounts, tableProviderFilter, tableSearch, tableStatusFilter]);
+  const totalAccountPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredAccounts.length / accountsPageSize)),
+    [filteredAccounts.length, accountsPageSize]
+  );
   const pagedAccounts = useMemo(() => {
     const safePage = Math.min(accountsPage, totalAccountPages);
     const start = (safePage - 1) * accountsPageSize;
-    return accounts.slice(start, start + accountsPageSize);
-  }, [accounts, accountsPage, accountsPageSize, totalAccountPages]);
+    return filteredAccounts.slice(start, start + accountsPageSize);
+  }, [filteredAccounts, accountsPage, accountsPageSize, totalAccountPages]);
   const allVisibleSelected = pagedAccounts.length > 0 && pagedAccounts.every((a) => selectedIds.has(a.id));
 
   useEffect(() => {
@@ -438,6 +471,7 @@ export function SmtpManager({
   }, [totalAccountPages]);
 
   async function refreshSmtpSnapshot() {
+    setAccountsLoading(true);
     try {
       const response = await fetch("/api/smtp", { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as {
@@ -451,10 +485,26 @@ export function SmtpManager({
       }
       setAccounts(payload.accounts);
       setBaselineMetrics(payload.metrics);
+      setAccountsLoaded(true);
     } catch (error) {
       toast.error("SMTP list could not be refreshed", error instanceof Error ? error.message : "Unexpected error");
+    } finally {
+      setAccountsLoading(false);
     }
   }
+
+  async function openDailyTargetModal() {
+    if (!accountsLoaded && !accountsLoading) {
+      await refreshSmtpSnapshot();
+    }
+    setDailyTargetModalOpen(true);
+  }
+
+  useEffect(() => {
+    if ((activeTab === "accounts" || activeTab === "advanced") && !accountsLoaded && !accountsLoading) {
+      void refreshSmtpSnapshot();
+    }
+  }, [activeTab, accountsLoaded, accountsLoading]);
 
   function isAlibabaCandidate(host: string, providerLabel: string) {
     const h = host.toLowerCase();
@@ -564,6 +614,9 @@ export function SmtpManager({
     return "1000-2500 is suitable for high-trust SMTP accounts.";
   }, [poolSettings.rotateEvery]);
   const metrics = useMemo(() => {
+    if (!accountsLoaded && accounts.length === 0) {
+      return baselineMetrics;
+    }
     const totalSmtpAccounts = accounts.length;
     const activeSmtpAccounts = accounts.filter((item) => item.isActive).length;
     const healthySmtpAccounts = accounts.filter((item) => item.isActive && item.healthStatus === "healthy" && !item.isThrottled).length;
@@ -592,7 +645,7 @@ export function SmtpManager({
       effectiveTotalRps,
       estimatedDailyCapacity: Math.floor(effectiveTotalRps * 86400)
     };
-  }, [accounts, baselineMetrics.totalFailedToday, baselineMetrics.totalSentToday]);
+  }, [accounts, accountsLoaded, baselineMetrics]);
 
   const dailyTargetPreview = useMemo(() => {
     const activeAccounts = accounts.filter((item) => item.isActive);
@@ -1346,6 +1399,33 @@ export function SmtpManager({
     }
   }
 
+  async function bulkClearThrottleSelected() {
+    if (selectedIdList.length === 0) return;
+    setActionLoading("bulk_reset_selected");
+    try {
+      const response = await fetch("/api/smtp/reset-throttle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: "selected",
+          smtpAccountIds: selectedIdList,
+          includeAuthErrors: false,
+          setHealthy: false
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; reset?: number };
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Toplu throttle temizleme başarısız oldu");
+      }
+      toast.success("Seçili throttle temizleme tamamlandı", `${Number(payload.reset ?? 0)} SMTP güncellendi`);
+      await refreshSmtpSnapshot();
+    } catch (error) {
+      toast.error("Toplu throttle temizleme başarısız", error instanceof Error ? error.message : "Beklenmeyen hata");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function bulkDisableSelected() {
     if (selectedIdList.length === 0) return;
     setActionLoading("bulk_disable");
@@ -1526,6 +1606,54 @@ export function SmtpManager({
 
   return (
     <div className="space-y-4">
+      <section className="rounded-2xl border border-border bg-card p-3">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="text-base font-semibold text-white">SMTP Hesapları</p>
+            <p className="text-xs text-zinc-400">SMTP havuzunu yönetin, günlük hedef belirleyin ve gönderim sağlığını izleyin.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void openDailyTargetModal()}
+              className="inline-flex items-center justify-center rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white"
+            >
+              Günlük Gönderim Hedefi Ayarla
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                resetForm();
+                setShowModal(true);
+              }}
+              className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200"
+            >
+              SMTP Ekle
+            </button>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {[
+            { id: "overview" as const, label: "Genel Bakış" },
+            { id: "accounts" as const, label: "SMTP Hesapları" },
+            { id: "live" as const, label: "Canlı Akış" },
+            { id: "advanced" as const, label: "Gelişmiş Ayarlar" }
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`rounded-lg border px-3 py-1.5 text-xs ${
+                activeTab === tab.id ? "border-indigo-400/50 bg-indigo-500/10 text-indigo-200" : "border-border text-zinc-300"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {activeTab === "overview" ? (
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard title="Toplam SMTP" value={metrics.totalSmtpAccounts} icon={BarChart3} />
         <MetricCard title="Aktif SMTP" value={metrics.activeSmtpAccounts} icon={CheckCircle2} tone="success" />
@@ -1536,7 +1664,9 @@ export function SmtpManager({
         <MetricCard title="Efektif toplam RPS" value={metrics.effectiveTotalRps} icon={RefreshCw} />
         <MetricCard title="Tahmini gunluk kapasite" value={metrics.estimatedDailyCapacity} icon={BarChart3} />
       </section>
+      ) : null}
 
+      {activeTab === "overview" ? (
       <section className="rounded-2xl border border-indigo-500/30 bg-indigo-500/5 p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -1547,7 +1677,7 @@ export function SmtpManager({
           </div>
           <button
             type="button"
-            onClick={() => setDailyTargetModalOpen(true)}
+            onClick={() => void openDailyTargetModal()}
             className="inline-flex items-center justify-center rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/20"
           >
             Gunluk Gonderim Hedefi Ayarla
@@ -1562,22 +1692,29 @@ export function SmtpManager({
         <div className="mt-3 flex items-center justify-between">
           <button
             type="button"
-            onClick={() => setDailyTargetModalOpen(true)}
+            onClick={() => void openDailyTargetModal()}
             className="rounded-lg border border-indigo-500/40 px-3 py-2 text-xs text-indigo-200"
           >
             Gunluk Hedefi Degistir
           </button>
           <button
             type="button"
-            onClick={() => setShowAdvancedSettings((prev) => !prev)}
-            className="text-xs text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline"
+            onClick={() => setActiveTab("live")}
+            className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200"
           >
-            Gelismis SMTP Ayarlari
+            Canlı Akışı Aç
           </button>
         </div>
+        <div className="mt-3 grid gap-2 rounded-xl border border-border bg-zinc-900/50 p-3 text-xs text-zinc-200 md:grid-cols-2 xl:grid-cols-4">
+          <p>RPS: {metrics.effectiveTotalRps.toFixed(2)}</p>
+          <p>Gönderilen/dk: -</p>
+          <p>Başarısız/dk: -</p>
+          <p>Aktif kampanya: -</p>
+        </div>
       </section>
+      ) : null}
 
-      {showAdvancedSettings ? (
+      {activeTab === "advanced" ? (
       <section className="rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between gap-2">
           <p className="text-sm font-semibold text-white">SMTP Pool Settings</p>
@@ -1708,7 +1845,7 @@ export function SmtpManager({
       </section>
       ) : null}
 
-      {showAdvancedSettings ? (
+      {activeTab === "advanced" ? (
       <section className="rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between gap-2">
           <p className="text-sm font-semibold text-white">Global Rate Planner</p>
@@ -1749,18 +1886,19 @@ export function SmtpManager({
       </section>
       ) : null}
 
+      {activeTab === "accounts" ? (
       <section className="rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-semibold text-white">SMTP Accounts</p>
-            <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-zinc-400">{accounts.length} total</span>
+            <p className="text-sm font-semibold text-white">SMTP Hesapları</p>
+            <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-zinc-400">{filteredAccounts.length} kayıt</span>
             <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-zinc-500">
               Sayfa {accountsPage} / {totalAccountPages}
             </span>
             <div className="flex items-center rounded-lg border border-border bg-zinc-950/80 p-0.5">
               <button
                 type="button"
-                title="Card view"
+                title="Kart görünümü"
                 onClick={() => {
                   setViewMode("card");
                   setSelectedIds(new Set());
@@ -1771,11 +1909,11 @@ export function SmtpManager({
                 }`}
               >
                 <LayoutGrid className="h-3.5 w-3.5" />
-                Cards
+                Kart
               </button>
               <button
                 type="button"
-                title="List view"
+                title="Liste görünümü"
                 onClick={() => {
                   setViewMode("list");
                   setAccountsPage(1);
@@ -1785,7 +1923,7 @@ export function SmtpManager({
                 }`}
               >
                 <List className="h-3.5 w-3.5" />
-                List
+                Liste
               </button>
             </div>
             <select
@@ -1802,7 +1940,6 @@ export function SmtpManager({
             </select>
           </div>
           <div className="flex flex-wrap gap-2">
-            {showAdvancedSettings ? (
               <>
                 <button
                   type="button"
@@ -1816,7 +1953,7 @@ export function SmtpManager({
                   onClick={() => setBulkResetModalOpen(true)}
                   className="rounded-lg border border-amber-400/40 px-3 py-2 text-xs text-amber-200"
                 >
-                  Rate Limit / Throttle Temizle
+                  Toplu Throttle Temizle
                 </button>
                 <button
                   type="button"
@@ -1832,20 +1969,71 @@ export function SmtpManager({
                   SMTP Ekle
                 </button>
               </>
-            ) : null}
+          </div>
+        </div>
+
+        <div className="mb-3 grid gap-2 md:grid-cols-4">
+          <input
+            value={tableSearch}
+            onChange={(event) => {
+              setTableSearch(event.target.value);
+              setAccountsPage(1);
+            }}
+            placeholder="SMTP ara..."
+            className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs text-zinc-200"
+          />
+          <select
+            value={tableStatusFilter}
+            onChange={(event) => {
+              setTableStatusFilter(event.target.value as "all" | "healthy" | "throttled" | "error" | "passive");
+              setAccountsPage(1);
+            }}
+            className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs text-zinc-200"
+          >
+            <option value="all">Durum: Tümü</option>
+            <option value="healthy">Durum: Sağlıklı</option>
+            <option value="throttled">Durum: Sınırlandı</option>
+            <option value="error">Durum: Hatalı</option>
+            <option value="passive">Durum: Pasif</option>
+          </select>
+          <select
+            value={tableProviderFilter}
+            onChange={(event) => {
+              setTableProviderFilter(event.target.value);
+              setAccountsPage(1);
+            }}
+            className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-xs text-zinc-200"
+          >
+            <option value="all">Provider: Tümü</option>
+            {providerOptions.map((provider) => (
+              <option key={provider} value={provider}>
+                {provider}
+              </option>
+            ))}
+          </select>
+          <div className="flex items-center justify-end text-xs text-zinc-400">
+            {accountsLoading ? "Yükleniyor..." : `${filteredAccounts.length.toLocaleString()} kayıt`}
           </div>
         </div>
 
         {viewMode === "list" && selectedCount > 0 ? (
           <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-[11px] text-indigo-100">
-            <span className="font-medium text-white">{selectedCount} selected</span>
+            <span className="font-medium text-white">{selectedCount} seçili</span>
             <button
               type="button"
               disabled={!!actionLoading}
               onClick={() => void runBulkConnectionTests()}
               className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
             >
-              Bulk Test
+              Seçili test et
+            </button>
+            <button
+              type="button"
+              disabled={!!actionLoading}
+              onClick={() => void bulkClearThrottleSelected()}
+              className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
+            >
+              Seçili throttle temizle
             </button>
             <button
               type="button"
@@ -1853,23 +2041,7 @@ export function SmtpManager({
               onClick={() => void bulkDisableSelected()}
               className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
             >
-              Bulk Disable
-            </button>
-            <button
-              type="button"
-              disabled={!!actionLoading}
-              onClick={() => void bulkEnableSelected()}
-              className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
-            >
-              Bulk Enable
-            </button>
-            <button
-              type="button"
-              disabled={!!actionLoading}
-              onClick={() => void bulkArchiveSelected()}
-              className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
-            >
-              Bulk Archive
+              Seçili pasifleştir
             </button>
             <button
               type="button"
@@ -1878,25 +2050,25 @@ export function SmtpManager({
                 setBulkDeleteTyped("");
                 setBulkDeleteModalOpen(true);
               }}
-              className="rounded border border-rose-400/50 px-2 py-1 text-rose-200 hover:bg-rose-500/20 disabled:opacity-50"
+              className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
             >
-              Bulk Delete
+              Seçili sil
             </button>
             <button
               type="button"
               onClick={() => setSelectedIds(new Set())}
               className="ml-auto rounded border border-border px-2 py-1 text-zinc-400 hover:text-zinc-200"
             >
-              Clear selection
+              Seçimi temizle
             </button>
           </div>
         ) : null}
 
         {accounts.length === 0 ? (
-          <EmptyState icon="server" title="No SMTP accounts" description="Create your first account with Add SMTP." />
+          <EmptyState icon="server" title="SMTP hesabı bulunamadı" description="SMTP Ekle ile yeni hesap oluşturun." />
         ) : viewMode === "list" ? (
           <div className="overflow-x-auto rounded-xl border border-border">
-            <table className="w-full min-w-[960px] border-collapse text-left text-[11px] text-zinc-300">
+            <table className="w-full min-w-[820px] border-collapse text-left text-[11px] text-zinc-300">
               <thead className="sticky top-0 z-[1] bg-zinc-900/95 text-[10px] uppercase tracking-wide text-zinc-500">
                 <tr>
                   <th className="border-b border-border px-2 py-2">
@@ -1908,91 +2080,116 @@ export function SmtpManager({
                       title="Select all"
                     />
                   </th>
-                  <th className="border-b border-border px-2 py-2">Name</th>
-                  <th className="border-b border-border px-2 py-2">From Email</th>
-                  <th className="border-b border-border px-2 py-2">Provider</th>
-                  <th className="border-b border-border px-2 py-2">Host</th>
-                  <th className="border-b border-border px-2 py-2">Status</th>
-                  <th className="border-b border-border px-2 py-2">Target RPS</th>
-                  <th className="border-b border-border px-2 py-2">Sent / Failed</th>
-                  <th className="border-b border-border px-2 py-2">Last Test</th>
-                  <th className="border-b border-border px-2 py-2 text-right">Actions</th>
+                  <th className="border-b border-border px-2 py-2">E-posta</th>
+                  <th className="border-b border-border px-2 py-2">Durum</th>
+                  <th className="border-b border-border px-2 py-2">Hız</th>
+                  <th className="border-b border-border px-2 py-2">Bugün</th>
+                  <th className="border-b border-border px-2 py-2">Son Test</th>
+                  <th className="border-b border-border px-2 py-2 text-right">İşlemler</th>
                 </tr>
               </thead>
               <tbody>
                 {pagedAccounts.map((account) => (
-                  <tr key={account.id} className="border-b border-border/50 hover:bg-zinc-900/40">
-                    <td className="px-2 py-1.5 align-middle">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(account.id)}
-                        onChange={() => toggleRowSelected(account.id)}
-                        className="rounded border-border"
-                      />
-                    </td>
-                    <td className="max-w-[140px] truncate px-2 py-1.5 font-medium text-zinc-100" title={account.name}>
-                      {account.name}
-                    </td>
-                    <td className="max-w-[180px] truncate px-2 py-1.5 font-mono text-[10px]" title={account.fromEmail}>
-                      {account.fromEmail}
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-1.5">{account.providerLabel ?? "—"}</td>
-                    <td className="max-w-[200px] truncate px-2 py-1.5 font-mono text-[10px]" title={`${account.host}:${account.port}`}>
-                      {account.host}:{account.port}
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-1.5">
-                      <StatusBadge
-                        label={!account.isActive ? "disabled" : account.isThrottled ? "throttled" : account.healthStatus === "error" ? "error" : "healthy"}
-                        tone={!account.isActive ? "muted" : account.isThrottled ? "warning" : account.healthStatus === "error" ? "danger" : "success"}
-                      />
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{Number(account.targetRatePerSecond ?? 0).toFixed(2)}</td>
-                    <td className="whitespace-nowrap px-2 py-1.5 tabular-nums text-zinc-200">
-                      {account.sentToday} / {account.failedToday}
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-1.5 text-zinc-400">
-                      {account.lastTestAt ? new Date(account.lastTestAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
-                    </td>
-                    <td className="px-2 py-1.5">
-                      <div className="flex flex-nowrap justify-end gap-1">
-                        <button
-                          type="button"
-                          title="Test connection"
-                          onClick={() => void testConnection(account)}
-                          disabled={actionLoading === `test:${account.id}`}
-                          className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-                        >
-                          {actionLoading === `test:${account.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlugZap className="h-3.5 w-3.5" />}
-                        </button>
-                        <button
-                          type="button"
-                          title="Edit"
-                          onClick={() => void editAccount(account)}
-                          className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          title={account.isActive ? "Disable" : "Enable"}
-                          onClick={() => void toggleAccount(account)}
-                          disabled={actionLoading === `toggle:${account.id}`}
-                          className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-                        >
-                          {account.isActive ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
-                        </button>
-                        <button
-                          type="button"
-                          title="Delete"
-                          onClick={() => void removeAccount(account)}
-                          disabled={actionLoading === `delete:${account.id}`}
-                          className="rounded border border-rose-400/40 p-1.5 text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
+                  <Fragment key={account.id}>
+                    <tr className="border-b border-border/50 hover:bg-zinc-900/40">
+                      <td className="px-2 py-1.5 align-middle">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(account.id)}
+                          onChange={() => toggleRowSelected(account.id)}
+                          className="rounded border-border"
+                        />
+                      </td>
+                      <td className="max-w-[220px] truncate px-2 py-1.5 font-mono text-[10px]" title={account.fromEmail}>
+                        {account.fromEmail}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1.5">
+                        <StatusBadge
+                          label={!account.isActive ? "pasif" : account.isThrottled ? "sinirlandi" : account.healthStatus === "error" ? "hatali" : "saglikli"}
+                          tone={!account.isActive ? "muted" : account.isThrottled ? "warning" : account.healthStatus === "error" ? "danger" : "success"}
+                        />
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{Number(account.targetRatePerSecond ?? 0).toFixed(2)} rps</td>
+                      <td className="whitespace-nowrap px-2 py-1.5 tabular-nums text-zinc-200">
+                        {account.sentToday} / {account.failedToday}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1.5 text-zinc-400">
+                        {account.lastTestAt
+                          ? new Date(account.lastTestAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+                          : "—"}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <div className="flex flex-nowrap justify-end gap-1">
+                          <button
+                            type="button"
+                            title="Detay"
+                            onClick={() => setExpandedRowId((prev) => (prev === account.id ? null : account.id))}
+                            className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800"
+                          >
+                            <Info className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Test"
+                            onClick={() => void testConnection(account)}
+                            disabled={actionLoading === `test:${account.id}`}
+                            className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+                          >
+                            {actionLoading === `test:${account.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlugZap className="h-3.5 w-3.5" />}
+                          </button>
+                          <button type="button" title="Düzenle" onClick={() => void editAccount(account)} className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800">
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Throttle temizle"
+                            onClick={() => void resetThrottle(account)}
+                            disabled={actionLoading === `reset:${account.id}`}
+                            className="rounded border border-amber-400/40 p-1.5 text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          </button>
+                          <Link href={`/logs?q=${account.id}`} className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800" title="Loglar">
+                            <BarChart3 className="h-3.5 w-3.5" />
+                          </Link>
+                          <button
+                            type="button"
+                            title={account.isActive ? "Pasifleştir" : "Aktifleştir"}
+                            onClick={() => void toggleAccount(account)}
+                            disabled={actionLoading === `toggle:${account.id}`}
+                            className="rounded border border-border p-1.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+                          >
+                            {account.isActive ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
+                          </button>
+                          <button
+                            type="button"
+                            title="Sil"
+                            onClick={() => void removeAccount(account)}
+                            disabled={actionLoading === `delete:${account.id}`}
+                            className="rounded border border-rose-400/40 p-1.5 text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {expandedRowId === account.id ? (
+                      <tr className="border-b border-border/40 bg-zinc-900/30">
+                        <td colSpan={7} className="px-3 py-2 text-xs text-zinc-300">
+                          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                            <p>Provider: {account.providerLabel ?? "-"}</p>
+                            <p>Host: {account.host}:{account.port}</p>
+                            <p>Security: {account.encryption}</p>
+                            <p>Username: {account.username}</p>
+                            <p>Warmup: {account.warmupEnabled ? "Açık" : "Kapalı"}</p>
+                            <p>Warmup Tier: {account.warmupTier ?? "-"}</p>
+                            <p>Max RPS: {account.maxRatePerSecond ?? "-"}</p>
+                            <p>Son hata: {account.lastError ?? "-"}</p>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -2059,7 +2256,7 @@ export function SmtpManager({
             ))}
           </div>
         )}
-        {accounts.length > accountsPageSize ? (
+        {filteredAccounts.length > accountsPageSize ? (
           <div className="mt-3 flex items-center justify-end gap-2 text-xs text-zinc-400">
             <button
               type="button"
@@ -2083,6 +2280,9 @@ export function SmtpManager({
           </div>
         ) : null}
       </section>
+      ) : null}
+
+      {activeTab === "live" ? <LiveSmtpFlowCard /> : null}
 
       {dailyTargetModalOpen ? (
         <OverlayPortal active={dailyTargetModalOpen} lockScroll>

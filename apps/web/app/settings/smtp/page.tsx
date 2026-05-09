@@ -1,6 +1,5 @@
 import { prisma } from "@nexus/db";
 import { PageHeader } from "@/components/ui/page-header";
-import { LiveSmtpFlowCard } from "@/components/smtp/live-smtp-flow-card";
 import { SmtpManager } from "@/components/smtp/smtp-manager";
 
 export const dynamic = "force-dynamic";
@@ -13,14 +12,16 @@ function startOfToday() {
 
 export default async function SmtpSettingsPage() {
   const today = startOfToday();
-  const [accounts, warmupRows, sentAgg, failAgg, poolSettings, dailyTargetSummary] = await Promise.all([
-    prisma.smtpAccount.findMany({
-      where: { isSoftDeleted: false },
-      orderBy: { createdAt: "desc" }
+  const [totalAccounts, activeAccounts, healthyAccounts, throttledAccounts, effectiveSum, sentAgg, failAgg, poolSettings, dailyTargetSummary] = await Promise.all([
+    prisma.smtpAccount.count({ where: { isSoftDeleted: false } }),
+    prisma.smtpAccount.count({ where: { isSoftDeleted: false, isActive: true } }),
+    prisma.smtpAccount.count({
+      where: { isSoftDeleted: false, isActive: true, healthStatus: "healthy", isThrottled: false }
     }),
-    prisma.smtpWarmupStat.findMany({
-      where: { date: { gte: today } },
-      select: { smtpAccountId: true, successfulDeliveries: true, failedDeliveries: true, tierName: true, effectiveRate: true }
+    prisma.smtpAccount.count({ where: { isSoftDeleted: false, isThrottled: true } }),
+    prisma.smtpAccount.aggregate({
+      where: { isSoftDeleted: false, isActive: true, isThrottled: false },
+      _sum: { targetRatePerSecond: true }
     }),
     prisma.$queryRaw<Array<{ total: bigint }>>`
       SELECT COUNT(*)::bigint as total
@@ -37,46 +38,17 @@ export default async function SmtpSettingsPage() {
     prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }),
     prisma.appSetting.findUnique({ where: { key: "smtp_daily_target_summary" } })
   ]);
-  const warmupMap = new Map<string, { smtpAccountId: string; successfulDeliveries: number; failedDeliveries: number; tierName: string | null; effectiveRate: number | null }>(
-    warmupRows.map((row: any) => [
-      row.smtpAccountId as string,
-      {
-        smtpAccountId: row.smtpAccountId as string,
-        successfulDeliveries: Number(row.successfulDeliveries ?? 0),
-        failedDeliveries: Number(row.failedDeliveries ?? 0),
-        tierName: row.tierName ?? null,
-        effectiveRate: row.effectiveRate ?? null
-      }
-    ])
-  );
-  const enriched = accounts.map((account: any) => {
-    const warm = warmupMap.get(account.id);
-    return {
-      ...account,
-      sentToday: Number(warm?.successfulDeliveries ?? 0),
-      failedToday: Number(warm?.failedDeliveries ?? 0),
-      warmupTier: warm?.tierName ?? null,
-      effectiveRps: Number(warm?.effectiveRate ?? account.targetRatePerSecond ?? 0)
-    };
-  });
-  const totalAccounts = enriched.length;
-  const activeAccounts = enriched.filter((item: any) => item.isActive).length;
-  const healthyAccounts = enriched.filter((item: any) => item.isActive && item.healthStatus === "healthy" && !item.isThrottled).length;
-  const throttledAccounts = enriched.filter((item: any) => item.isThrottled).length;
-  const effectiveTotalRps = enriched
-    .filter((item: any) => item.isActive && !item.isThrottled)
-    .reduce((sum: number, item: any) => sum + Number(item.effectiveRps ?? 0), 0);
+  const effectiveTotalRps = Number(effectiveSum._sum.targetRatePerSecond ?? 0);
   const estimatedDailyCapacity = Math.floor(effectiveTotalRps * 86400);
 
   return (
     <div className="space-y-4">
       <PageHeader
-        title="SMTP Hesaplari"
-        description="SMTP Havuzu + Hiz Kontrolu + Isinma + Donusum Motoru merkezi."
+        title="SMTP Hesapları"
+        description="SMTP havuzunu yönetin, günlük hedef belirleyin ve gönderim sağlığını izleyin."
       />
-      <LiveSmtpFlowCard />
       <SmtpManager
-        initialAccounts={enriched as any}
+        initialAccounts={[]}
         initialMetrics={{
           totalSmtpAccounts: totalAccounts,
           activeSmtpAccounts: activeAccounts,
