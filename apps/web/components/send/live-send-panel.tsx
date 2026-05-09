@@ -78,6 +78,7 @@ type LiveEvent = {
   warmupAvgCapRps?: number;
   expectedRpsAfterApply?: number;
   dbPendingRecipients?: number;
+  dbQueuedRecipients?: number;
   dbProcessingRecipients?: number;
   dbSentRecipients?: number;
   dbFailedRecipients?: number;
@@ -85,6 +86,7 @@ type LiveEvent = {
   redisWaitingJobs?: number;
   redisActiveJobs?: number;
   schedulerBatchSize?: number;
+  requiredBuffer?: number;
   lastSchedulerEnqueued?: number;
   lastSchedulerReason?: string;
   bottleneckReason?: string;
@@ -612,7 +614,7 @@ export function LiveSendPanel() {
         <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
           Hedef hızın altında gönderim yapılıyor. Sebep: {live.bottleneckReason ?? "none"}
           {live.bottleneckReason === "warmup_cap" ? " · Warmup sınırı nedeniyle hedef hız düşüyor. Hedefi uygula butonuyla uygun SMTP’lerin warmup limitleri yükseltilebilir." : ""}
-          {live.bottleneckReason === "scheduler_underfeeding" ? " · Kampanyada bekleyen alıcı var ama kuyruk yeterince hızlı beslenmiyor." : ""}
+          {live.bottleneckReason === "scheduler_underfeeding" ? " · Kampanyada bekleyen alıcı var ama scheduler kuyruğu yeterince hızlı beslemiyor." : ""}
         </p>
       ) : null}
 
@@ -659,9 +661,9 @@ export function LiveSendPanel() {
             Bottleneck: {live.bottleneckReason ?? "none"}
           </div>
           <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
-            DB pending: {live.dbPendingRecipients ?? 0} · DB processing: {live.dbProcessingRecipients ?? 0} · DB sent: {live.dbSentRecipients ?? 0} ·
+            DB pending: {live.dbPendingRecipients ?? 0} · DB queued: {live.dbQueuedRecipients ?? live.dbProcessingRecipients ?? 0} · DB processing: {live.dbProcessingRecipients ?? 0} · DB sent: {live.dbSentRecipients ?? 0} ·
             DB failed: {live.dbFailedRecipients ?? 0} · DB skipped: {live.dbSkippedRecipients ?? 0} · Redis waiting jobs: {live.redisWaitingJobs ?? 0} · Redis active jobs: {live.redisActiveJobs ?? 0} ·
-            Scheduler batch size: {live.schedulerBatchSize ?? 0} · Last scheduler enqueued: {live.lastSchedulerEnqueued ?? 0} · Reason: {live.lastSchedulerReason ?? "unknown"}
+            Scheduler batch size: {live.schedulerBatchSize ?? 0} · Required buffer: {live.requiredBuffer ?? 0} · Last scheduler enqueued: {live.lastSchedulerEnqueued ?? 0} · Reason: {live.lastSchedulerReason ?? "unknown"}
           </div>
           {live.bottleneckReason === "warmup_cap" ? (
             <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">

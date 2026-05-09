@@ -171,7 +171,8 @@ export async function GET(req: Request) {
           _count: { _all: number };
         }>;
         const dbPendingRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "pending")?._count._all ?? 0);
-        const dbProcessingRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "queued")?._count._all ?? 0);
+        const dbQueuedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "queued")?._count._all ?? 0);
+        const dbProcessingRecipients = dbQueuedRecipients;
         const dbSentRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "sent")?._count._all ?? 0);
         const dbFailedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "failed")?._count._all ?? 0);
         const dbSkippedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "skipped")?._count._all ?? 0);
@@ -205,6 +206,7 @@ export async function GET(req: Request) {
         };
         const schedulerDiag = ((schedulerDiagRow?.value as any) ?? {}) as {
           dbPendingRecipients?: number;
+          dbQueuedRecipients?: number;
           dbProcessingRecipients?: number;
           dbSentRecipients?: number;
           dbFailedRecipients?: number;
@@ -212,6 +214,7 @@ export async function GET(req: Request) {
           redisWaitingJobs?: number;
           redisActiveJobs?: number;
           schedulerBatchSize?: number;
+          requiredBuffer?: number;
           lastSchedulerEnqueued?: number;
           lastSchedulerReason?: string;
         };
@@ -244,12 +247,17 @@ export async function GET(req: Request) {
         const redisWaitingJobs = Number(schedulerDiag.redisWaitingJobs ?? queueWaiting);
         const redisActiveJobs = Number(schedulerDiag.redisActiveJobs ?? queueObs.deliveryCounts?.active ?? 0);
         const effectiveDbPendingRecipients = Number(schedulerDiag.dbPendingRecipients ?? dbPendingRecipients ?? 0);
-        const effectiveDbProcessingRecipients = Number(schedulerDiag.dbProcessingRecipients ?? dbProcessingRecipients ?? 0);
+        const effectiveDbQueuedRecipients = Number(schedulerDiag.dbQueuedRecipients ?? dbQueuedRecipients ?? 0);
+        const effectiveDbProcessingRecipients = Number(schedulerDiag.dbProcessingRecipients ?? dbProcessingRecipients ?? effectiveDbQueuedRecipients);
         const effectiveDbSentRecipients = Number(schedulerDiag.dbSentRecipients ?? dbSentRecipients ?? 0);
         const effectiveDbFailedRecipients = Number(schedulerDiag.dbFailedRecipients ?? dbFailedRecipients ?? 0);
         const effectiveDbSkippedRecipients = Number(schedulerDiag.dbSkippedRecipients ?? dbSkippedRecipients ?? 0);
-        if (effectiveDbPendingRecipients <= 0 && redisWaitingJobs <= 0 && redisActiveJobs <= 1) bottleneckReason = "queue_empty";
-        else if (effectiveDbPendingRecipients > 0 && redisWaitingJobs <= 0) bottleneckReason = "scheduler_underfeeding";
+        const requiredBuffer = Math.max(
+          Number(schedulerDiag.schedulerBatchSize ?? 0),
+          Number(schedulerDiag.requiredBuffer ?? Math.ceil(Math.max(0, targetTotalRps) * 60))
+        );
+        if (effectiveDbPendingRecipients <= 0 && effectiveDbQueuedRecipients <= 0 && redisWaitingJobs <= 0 && redisActiveJobs <= 1) bottleneckReason = "queue_empty";
+        else if (effectiveDbPendingRecipients > 0 && redisWaitingJobs <= 1) bottleneckReason = "scheduler_underfeeding";
         else if (healthyCount < 2) bottleneckReason = "too_few_eligible_smtps";
         else if (throttledCount > 0) bottleneckReason = "throttle";
         else if (warmupCappedCount > 0) bottleneckReason = "warmup_cap";
@@ -292,6 +300,7 @@ export async function GET(req: Request) {
             warmupAvgCapRps: warmupCappedCount > 0 ? Number((warmupCapTotalRps / Math.max(1, healthyCount)).toFixed(4)) : 0,
             expectedRpsAfterApply: Number(providerCapTotalRps.toFixed(4)),
             dbPendingRecipients: effectiveDbPendingRecipients,
+            dbQueuedRecipients: effectiveDbQueuedRecipients,
             dbProcessingRecipients: effectiveDbProcessingRecipients,
             dbSentRecipients: effectiveDbSentRecipients,
             dbFailedRecipients: effectiveDbFailedRecipients,
@@ -299,6 +308,7 @@ export async function GET(req: Request) {
             redisWaitingJobs,
             redisActiveJobs,
             schedulerBatchSize: Number(schedulerDiag.schedulerBatchSize ?? 0),
+            requiredBuffer,
             lastSchedulerEnqueued: Number(schedulerDiag.lastSchedulerEnqueued ?? 0),
             lastSchedulerReason: String(schedulerDiag.lastSchedulerReason ?? "unknown"),
             bottleneckReason,

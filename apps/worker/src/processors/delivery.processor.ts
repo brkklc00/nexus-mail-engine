@@ -16,10 +16,12 @@ const WORKER_SETTINGS_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SETTI
 const WORKER_SMTP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SMTP_CACHE_MS ?? 30_000));
 const WORKER_QUOTA_CACHE_MS = Math.max(500, Number(process.env.WORKER_QUOTA_CACHE_MS ?? 3_000));
 const RATE_APPLY_LOG_INTERVAL_MS = Math.max(10_000, Number(process.env.RATE_APPLY_LOG_INTERVAL_MS ?? 60_000));
+const RATE_APPLY_DIAG_CACHE_MS = Math.max(5_000, Number(process.env.RATE_APPLY_DIAG_CACHE_MS ?? 10_000));
 let cachedPoolSetting: { value: unknown; expiresAt: number } | null = null;
 const smtpPoolCache = new Map<string, { rows: any[]; expiresAt: number }>();
 const smtpQuotaCache = new Map<string, { value: { dailySent: number; hourlySent: number; minuteSent: number }; expiresAt: number }>();
 const lastRateApplyLogByLane = new Map<string, { ts: number; effectiveRate: number; bottleneck: string }>();
+let cachedRateApplyDiagnostics: { value: Record<string, unknown>; expiresAt: number } | null = null;
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -125,6 +127,7 @@ async function findCampaignForDelivery(campaignId: string) {
     smtpAccountId: true,
     smtpPoolConfig: true,
     throttleReason: true,
+    effectiveRate: true,
     totalTargeted: true,
     totalFailed: true,
     totalSkipped: true,
@@ -225,6 +228,20 @@ async function buildTrackedHtml(html: string, campaignId: string, recipientId: s
     return withMeta.replace("</body>", `${pixel}</body>`);
   }
   return `${withMeta}${pixel}`;
+}
+
+async function readSchedulerDiagnostics() {
+  const now = Date.now();
+  if (cachedRateApplyDiagnostics && cachedRateApplyDiagnostics.expiresAt > now) {
+    return cachedRateApplyDiagnostics.value;
+  }
+  const row = await prisma.appSetting.findUnique({ where: { key: "scheduler_runtime_diagnostics" } }).catch(() => null);
+  const value = ((row?.value as any) ?? {}) as Record<string, unknown>;
+  cachedRateApplyDiagnostics = {
+    value,
+    expiresAt: now + RATE_APPLY_DIAG_CACHE_MS
+  };
+  return value;
 }
 
 async function finalizeCampaignIfDone(campaignId: string) {
@@ -465,13 +482,22 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
       bottleneck
     });
     const targetTotalRps = Number((((campaign as any).smtpPoolConfig as any)?.targetTotalRps ?? 0));
+    const schedulerDiag = await readSchedulerDiagnostics();
+    const dbPendingRecipients = Number(schedulerDiag.dbPendingRecipients ?? 0);
+    const redisWaitingJobs = Number(schedulerDiag.redisWaitingJobs ?? 0);
+    const redisActiveJobs = Number(schedulerDiag.redisActiveJobs ?? 0);
+    const actualRps = Number((campaign as any).effectiveRate ?? 0);
     const activeLanes = Math.max(1, activePool.length);
     const avgPerSmtpRps = Number((enforcedRate / activeLanes).toFixed(4));
     console.info("[rate.apply]", {
       campaignId: campaign.id,
       targetTotalRps,
+      actualRps,
       activeLanes,
       eligibleSmtp: activeLanes,
+      dbPendingRecipients,
+      redisWaitingJobs,
+      redisActiveJobs,
       avgPerSmtpRps,
       smtpEmail: selected.fromEmail,
       resolvedRatePerSecond: enforcedRate,

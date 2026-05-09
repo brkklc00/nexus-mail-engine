@@ -47,6 +47,7 @@ type FlowPayload = {
     expectedRpsAfterApply?: number;
     targetPerSmtpRps?: number;
     dbPendingRecipients?: number;
+    dbQueuedRecipients?: number;
     dbProcessingRecipients?: number;
     dbSentRecipients?: number;
     dbFailedRecipients?: number;
@@ -54,6 +55,7 @@ type FlowPayload = {
     redisWaitingJobs?: number;
     redisActiveJobs?: number;
     schedulerBatchSize?: number;
+    requiredBuffer?: number;
     lastSchedulerEnqueued?: number;
     lastSchedulerReason?: string;
     avgPerSmtpRps?: number;
@@ -231,14 +233,14 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
       ) : null}
       {data?.diagnostics?.bottleneckReason === "scheduler_underfeeding" ? (
         <p className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-2 text-xs text-amber-200">
-          Kampanyada bekleyen alıcı var ama kuyruk yeterince hızlı beslenmiyor.
+          Kampanyada bekleyen alıcı var ama scheduler kuyruğu yeterince hızlı beslemiyor.
         </p>
       ) : null}
       {data?.diagnostics ? (
         <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-xs text-zinc-300">
-          DB pending: {Number(data.diagnostics.dbPendingRecipients ?? 0)} · DB processing: {Number(data.diagnostics.dbProcessingRecipients ?? 0)} · DB sent: {Number(data.diagnostics.dbSentRecipients ?? 0)} ·
+          DB pending: {Number(data.diagnostics.dbPendingRecipients ?? 0)} · DB queued: {Number(data.diagnostics.dbQueuedRecipients ?? data.diagnostics.dbProcessingRecipients ?? 0)} · DB processing: {Number(data.diagnostics.dbProcessingRecipients ?? 0)} · DB sent: {Number(data.diagnostics.dbSentRecipients ?? 0)} ·
           DB failed: {Number(data.diagnostics.dbFailedRecipients ?? 0)} · DB skipped: {Number(data.diagnostics.dbSkippedRecipients ?? 0)} · Redis waiting: {Number(data.diagnostics.redisWaitingJobs ?? 0)} · Redis active: {Number(data.diagnostics.redisActiveJobs ?? 0)} ·
-          Scheduler batch: {Number(data.diagnostics.schedulerBatchSize ?? 0)} · Son enqueue: {Number(data.diagnostics.lastSchedulerEnqueued ?? 0)} · Sebep: {data.diagnostics.lastSchedulerReason ?? "unknown"}
+          Scheduler batch: {Number(data.diagnostics.schedulerBatchSize ?? 0)} · Required buffer: {Number(data.diagnostics.requiredBuffer ?? 0)} · Son enqueue: {Number(data.diagnostics.lastSchedulerEnqueued ?? 0)} · Sebep: {data.diagnostics.lastSchedulerReason ?? "unknown"}
         </div>
       ) : null}
 

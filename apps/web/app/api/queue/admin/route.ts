@@ -3,7 +3,7 @@ import { prisma } from "@nexus/db";
 import { campaignQueue, deadLetterQueue, deliveryQueue, retryQueue } from "@nexus/queue";
 import { getSession } from "@/server/auth/session";
 
-const ACTIVE_CAMPAIGN_STATUSES = new Set(["running", "queued", "processing", "sending", "paused", "pending"]);
+const ACTIVE_CAMPAIGN_STATUSES = new Set(["running", "queued", "paused", "pending", "partially_completed"]);
 const STALE_CAMPAIGN_STATUSES = new Set(["canceled", "completed", "failed", "partially_completed", "deleted"]);
 const JOB_SCAN_CHUNK_SIZE = 2000;
 const CAMPAIGN_LOOKUP_CHUNK_SIZE = 2000;
