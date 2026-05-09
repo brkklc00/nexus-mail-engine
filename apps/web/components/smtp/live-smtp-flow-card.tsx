@@ -229,6 +229,11 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
           Bottleneck: {data.diagnostics.bottleneckReason ?? "none"} {data.diagnostics.bottleneckReason === "warmup_cap" ? `(${Number(data.diagnostics.warmupBottleneckSmtpCount ?? 0)} SMTP)` : ""}
         </div>
       ) : null}
+      {data?.diagnostics?.bottleneckReason === "scheduler_underfeeding" ? (
+        <p className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-2 text-xs text-amber-200">
+          Kampanyada bekleyen alıcı var ama kuyruk yeterince hızlı beslenmiyor.
+        </p>
+      ) : null}
       {data?.diagnostics ? (
         <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-xs text-zinc-300">
           DB pending: {Number(data.diagnostics.dbPendingRecipients ?? 0)} · DB processing: {Number(data.diagnostics.dbProcessingRecipients ?? 0)} · DB sent: {Number(data.diagnostics.dbSentRecipients ?? 0)} ·

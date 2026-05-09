@@ -612,6 +612,7 @@ export function LiveSendPanel() {
         <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
           Hedef hızın altında gönderim yapılıyor. Sebep: {live.bottleneckReason ?? "none"}
           {live.bottleneckReason === "warmup_cap" ? " · Warmup sınırı nedeniyle hedef hız düşüyor. Hedefi uygula butonuyla uygun SMTP’lerin warmup limitleri yükseltilebilir." : ""}
+          {live.bottleneckReason === "scheduler_underfeeding" ? " · Kampanyada bekleyen alıcı var ama kuyruk yeterince hızlı beslenmiyor." : ""}
         </p>
       ) : null}
 

@@ -22,7 +22,9 @@ export async function recoverCampaignQueuesOnBoot() {
   if (campaignIds.length === 0) {
     console.info("[worker.recovery] campaigns resumed", {
       campaigns: 0,
-      queuedRecipients: 0,
+      pendingRecipients: 0,
+      enqueued: 0,
+      skippedSent: 0,
       staleProcessingReset: 0
     });
     return;
@@ -37,22 +39,31 @@ export async function recoverCampaignQueuesOnBoot() {
     data: { sendStatus: "pending" }
   });
 
-  const pendingRecipients = await prisma.campaignRecipient.findMany({
-    where: {
-      campaignId: { in: campaignIds },
-      sendStatus: "pending"
-    },
-    select: {
-      campaignId: true,
-      recipientId: true,
-      smtpAccountId: true
-    },
-    take: 20000
-  });
+  const [pendingRecipients, skippedSent] = await Promise.all([
+    prisma.campaignRecipient.findMany({
+      where: {
+        campaignId: { in: campaignIds },
+        sendStatus: "pending"
+      },
+      select: {
+        campaignId: true,
+        recipientId: true,
+        smtpAccountId: true
+      },
+      take: 20000
+    }),
+    prisma.campaignRecipient.count({
+      where: {
+        campaignId: { in: campaignIds },
+        sendStatus: "sent"
+      }
+    })
+  ]);
 
   const campaignTemplateVersion = new Map<string, number>(
     campaigns.map((item: { id: string; template: { version: number } }) => [item.id, Number(item.template.version ?? 1)])
   );
+  let enqueued = 0;
   for (const row of pendingRecipients) {
     const version = Number(campaignTemplateVersion.get(row.campaignId) ?? 1);
     await deliveryQueue.add(
@@ -69,11 +80,14 @@ export async function recoverCampaignQueuesOnBoot() {
         jobId: safeJobId(`delivery_${row.campaignId}_${row.recipientId}_${version}`)
       }
     );
+    enqueued += 1;
   }
 
   console.info("[worker.recovery] campaigns resumed", {
     campaigns: campaigns.length,
-    queuedRecipients: pendingRecipients.length,
+    pendingRecipients: pendingRecipients.length,
+    enqueued,
+    skippedSent,
     staleProcessingReset: staleReset.count
   });
 }
