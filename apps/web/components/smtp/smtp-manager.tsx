@@ -153,6 +153,19 @@ type PoolSettings = {
   cooldownAfterErrorSec: number;
 };
 
+type BulkTestScope = "all_active" | "healthy" | "throttled" | "error" | "selected" | "filtered";
+type BulkTestType = "connection" | "send_test_email" | "both";
+type BulkTestResult = {
+  smtpId: string;
+  fromEmail: string;
+  provider: string;
+  status: "success" | "failed" | "skipped";
+  error?: string;
+  latencyMs?: number;
+  testedAt: string;
+  testType: BulkTestType;
+};
+
 const defaultPoolSettings: PoolSettings = {
   sendingMode: "pool",
   useAllActiveByDefault: true,
@@ -350,6 +363,7 @@ export function SmtpManager({
   const [plannerIncludeThrottled, setPlannerIncludeThrottled] = useState(false);
   const [bulkWarmupModalOpen, setBulkWarmupModalOpen] = useState(false);
   const [bulkResetModalOpen, setBulkResetModalOpen] = useState(false);
+  const [bulkTestModalOpen, setBulkTestModalOpen] = useState(false);
   const [bulkScope, setBulkScope] = useState<BulkScope>("all_active");
   const [bulkPreset, setBulkPreset] = useState<BulkPreset>("balanced");
   const [bulkDailyTarget, setBulkDailyTarget] = useState(1000000);
@@ -371,6 +385,22 @@ export function SmtpManager({
   const [bulkApplyPreview, setBulkApplyPreview] = useState<BulkDistributionPreview | null>(null);
   const [bulkResetIncludeAuthErrors, setBulkResetIncludeAuthErrors] = useState(false);
   const [bulkResetSetHealthy, setBulkResetSetHealthy] = useState(false);
+  const [bulkTestScope, setBulkTestScope] = useState<BulkTestScope>("all_active");
+  const [bulkTestType, setBulkTestType] = useState<BulkTestType>("connection");
+  const [bulkTestRecipient, setBulkTestRecipient] = useState(process.env.NEXT_PUBLIC_SMTP_TEST_RECIPIENT ?? "");
+  const [bulkTestConcurrency, setBulkTestConcurrency] = useState(5);
+  const [bulkTestTimeoutSeconds, setBulkTestTimeoutSeconds] = useState(30);
+  const [bulkTestUpdateHealth, setBulkTestUpdateHealth] = useState(true);
+  const [bulkTestClearThrottleOnSuccess, setBulkTestClearThrottleOnSuccess] = useState(false);
+  const [bulkTestNoAutoDisable, setBulkTestNoAutoDisable] = useState(true);
+  const [bulkTestOnlyActive, setBulkTestOnlyActive] = useState(true);
+  const [bulkTestJobId, setBulkTestJobId] = useState<string | null>(null);
+  const [bulkTestStatus, setBulkTestStatus] = useState<"idle" | "running" | "completed" | "failed">("idle");
+  const [bulkTestTotal, setBulkTestTotal] = useState(0);
+  const [bulkTestProcessed, setBulkTestProcessed] = useState(0);
+  const [bulkTestResults, setBulkTestResults] = useState<BulkTestResult[]>([]);
+  const [bulkTestSummary, setBulkTestSummary] = useState({ success: 0, failed: 0, skipped: 0 });
+  const [bulkTestShowOnlyFailed, setBulkTestShowOnlyFailed] = useState(false);
   const [dailyTargetModalOpen, setDailyTargetModalOpen] = useState(false);
   const [dailyTargetInput, setDailyTargetInput] = useState(
     Math.max(100000, Number(initialDailyTargetSummary?.dailyTarget ?? 500000))
@@ -458,6 +488,10 @@ export function SmtpManager({
       return true;
     });
   }, [accounts, tableProviderFilter, tableSearch, tableStatusFilter]);
+  const bulkTestVisibleResults = useMemo(
+    () => (bulkTestShowOnlyFailed ? bulkTestResults.filter((item) => item.status === "failed") : bulkTestResults),
+    [bulkTestResults, bulkTestShowOnlyFailed]
+  );
   const totalAccountPages = useMemo(
     () => Math.max(1, Math.ceil(filteredAccounts.length / accountsPageSize)),
     [filteredAccounts.length, accountsPageSize]
@@ -508,6 +542,39 @@ export function SmtpManager({
       void refreshSmtpSnapshot();
     }
   }, [activeTab, accountsLoaded, accountsLoading]);
+
+  useEffect(() => {
+    if (!bulkTestJobId || bulkTestStatus !== "running") return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const status = await pollBulkTestJob(bulkTestJobId);
+        if (cancelled) return;
+        if (status === "completed" || status === "failed") {
+          if (status === "completed") {
+            toast.success("Toplu SMTP testi tamamlandı");
+            await refreshSmtpSnapshot();
+          } else {
+            toast.error("Toplu SMTP testi başarısız oldu");
+          }
+          return;
+        }
+      } catch (error) {
+        if (!cancelled) {
+          toast.error("Toplu test durumu alınamadı", error instanceof Error ? error.message : "Beklenmeyen hata");
+          setBulkTestStatus("failed");
+        }
+        return;
+      }
+      setTimeout(() => {
+        if (!cancelled) void tick();
+      }, 1000);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+    };
+  }, [bulkTestJobId, bulkTestStatus]);
 
   function isAlibabaCandidate(host: string, providerLabel: string) {
     const h = host.toLowerCase();
@@ -1386,23 +1453,118 @@ export function SmtpManager({
     });
   }
 
-  async function runBulkConnectionTests() {
-    if (selectedIdList.length === 0) return;
+  function openBulkTestModal() {
+    setBulkTestScope(selectedCount > 0 ? "selected" : "all_active");
+    setBulkTestType("connection");
+    setBulkTestConcurrency(5);
+    setBulkTestTimeoutSeconds(30);
+    setBulkTestJobId(null);
+    setBulkTestStatus("idle");
+    setBulkTestTotal(0);
+    setBulkTestProcessed(0);
+    setBulkTestResults([]);
+    setBulkTestSummary({ success: 0, failed: 0, skipped: 0 });
+    setBulkTestShowOnlyFailed(false);
+    setBulkTestModalOpen(true);
+  }
+
+  async function pollBulkTestJob(jobId: string) {
+    const response = await fetch(`/api/smtp/bulk-test/${jobId}/status`, { cache: "no-store" });
+    const payload = (await response.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      status?: "running" | "completed" | "failed";
+      total?: number;
+      queuedOrProcessed?: number;
+      results?: BulkTestResult[];
+      summary?: { success: number; failed: number; skipped: number };
+    };
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error ?? "Toplu SMTP test durumu alınamadı");
+    }
+    setBulkTestStatus(payload.status ?? "running");
+    setBulkTestTotal(Number(payload.total ?? 0));
+    setBulkTestProcessed(Number(payload.queuedOrProcessed ?? 0));
+    setBulkTestResults(Array.isArray(payload.results) ? payload.results : []);
+    setBulkTestSummary(
+      payload.summary ?? { success: 0, failed: 0, skipped: 0 }
+    );
+    return payload.status ?? "running";
+  }
+
+  async function startBulkSmtpTest() {
+    if ((bulkTestType === "send_test_email" || bulkTestType === "both") && !bulkTestRecipient.trim()) {
+      toast.warning("Test alıcı e-postası gerekli", "Test maili gönderimi için geçerli bir alıcı girin.");
+      return;
+    }
     setActionLoading("bulk_test");
-    let ok = 0;
-    let fail = 0;
     try {
-      for (const id of selectedIdList) {
-        const acc = accounts.find((a) => a.id === id);
-        if (!acc) continue;
-        const success = await testConnectionById(id, acc.name, { silent: true });
-        if (success) ok += 1;
-        else fail += 1;
+      const response = await fetch("/api/smtp/bulk-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: bulkTestScope,
+          ids: bulkTestScope === "selected" ? selectedIdList : undefined,
+          filters:
+            bulkTestScope === "filtered"
+              ? {
+                  search: tableSearch,
+                  status: tableStatusFilter,
+                  provider: tableProviderFilter
+                }
+              : undefined,
+          testType: bulkTestType,
+          testRecipient: bulkTestRecipient.trim() || undefined,
+          concurrency: bulkTestConcurrency,
+          timeoutSeconds: bulkTestTimeoutSeconds,
+          updateHealth: bulkTestUpdateHealth,
+          clearThrottleOnSuccess: bulkTestClearThrottleOnSuccess,
+          onlyActive: bulkTestOnlyActive,
+          noAutoDisable: bulkTestNoAutoDisable
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; jobId?: string };
+      if (!response.ok || !payload.ok || !payload.jobId) {
+        throw new Error(payload.error ?? "Toplu SMTP testi başlatılamadı");
       }
-      toast.success("Bulk test finished", `${ok} succeeded, ${fail} failed`);
+      setBulkTestJobId(payload.jobId);
+      setBulkTestStatus("running");
+      toast.info("Toplu SMTP testi başlatıldı");
+    } catch (error) {
+      toast.error("Toplu SMTP testi başlatılamadı", error instanceof Error ? error.message : "Beklenmeyen hata");
     } finally {
       setActionLoading(null);
     }
+  }
+
+  function downloadBulkTestCsv() {
+    if (bulkTestResults.length === 0) return;
+    const rows = [
+      ["smtpId", "fromEmail", "provider", "testType", "status", "latencyMs", "error", "testedAt"].join(","),
+      ...bulkTestResults.map((item) =>
+        [
+          item.smtpId,
+          item.fromEmail,
+          item.provider,
+          item.testType,
+          item.status,
+          String(item.latencyMs ?? ""),
+          String(item.error ?? ""),
+          item.testedAt
+        ]
+          .map((v) => `"${String(v).replaceAll('"', '""')}"`)
+          .join(",")
+      )
+    ].join("\n");
+    const blob = new Blob([rows], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `smtp-bulk-test-${new Date().toISOString().slice(0, 19)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   async function bulkClearThrottleSelected() {
@@ -1949,6 +2111,13 @@ export function SmtpManager({
               <>
                 <button
                   type="button"
+                  onClick={() => openBulkTestModal()}
+                  className="rounded-lg border border-blue-400/40 px-3 py-2 text-xs text-blue-200"
+                >
+                  Toplu SMTP Test Et
+                </button>
+                <button
+                  type="button"
                   onClick={() => setBulkWarmupModalOpen(true)}
                   className="rounded-lg border border-emerald-400/40 px-3 py-2 text-xs text-emerald-200"
                 >
@@ -2028,7 +2197,7 @@ export function SmtpManager({
             <button
               type="button"
               disabled={!!actionLoading}
-              onClick={() => void runBulkConnectionTests()}
+              onClick={() => openBulkTestModal()}
               className="rounded border border-indigo-400/50 px-2 py-1 hover:bg-indigo-500/20 disabled:opacity-50"
             >
               Seçili test et
@@ -2660,6 +2829,175 @@ export function SmtpManager({
                   ) : null}
                 </div>
               ) : null}
+            </div>
+          </div>
+        </OverlayPortal>
+      ) : null}
+
+      {bulkTestModalOpen ? (
+        <OverlayPortal active={bulkTestModalOpen} lockScroll>
+          <div className="fixed inset-0 z-[56] bg-black/70 p-4 backdrop-blur-sm" onClick={() => setBulkTestModalOpen(false)}>
+            <div className="mx-auto mt-8 w-full max-w-5xl rounded-2xl border border-border bg-zinc-950 p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <p className="text-sm font-semibold text-white">Toplu SMTP Testi</p>
+              <p className="mt-1 text-xs text-zinc-400">Seçili veya filtrelenmiş SMTP hesaplarının bağlantı ve gönderim testini çalıştırın.</p>
+
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                <Field label="Kapsam">
+                  <SelectInput
+                    value={bulkTestScope}
+                    onChange={(value) => setBulkTestScope(value as BulkTestScope)}
+                    options={[
+                      { value: "all_active", label: "Tüm aktif SMTP’ler" },
+                      { value: "healthy", label: "Sadece sağlıklı SMTP’ler" },
+                      { value: "throttled", label: "Sadece sınırlandırılmış SMTP’ler" },
+                      { value: "error", label: "Sadece hatalı SMTP’ler" },
+                      { value: "selected", label: "Seçili SMTP’ler" },
+                      { value: "filtered", label: "Mevcut filtre sonucu" }
+                    ]}
+                  />
+                </Field>
+                <Field label="Test tipi">
+                  <SelectInput
+                    value={bulkTestType}
+                    onChange={(value) => setBulkTestType(value as BulkTestType)}
+                    options={[
+                      { value: "connection", label: "Bağlantı testi" },
+                      { value: "send_test_email", label: "Test maili gönder" },
+                      { value: "both", label: "Bağlantı + test maili" }
+                    ]}
+                  />
+                </Field>
+                <Field label="Test alıcı e-postası" helper="Test maili için zorunlu">
+                  <TextInput value={bulkTestRecipient} onChange={setBulkTestRecipient} type="email" />
+                </Field>
+                <Field label="Eşzamanlı test sayısı">
+                  <SelectInput
+                    value={String(bulkTestConcurrency)}
+                    onChange={(value) => setBulkTestConcurrency(Math.max(1, Math.min(20, Number(value))))}
+                    options={[
+                      { value: "1", label: "1" },
+                      { value: "2", label: "2" },
+                      { value: "5", label: "5" },
+                      { value: "10", label: "10" },
+                      { value: "20", label: "20" }
+                    ]}
+                  />
+                </Field>
+                <Field label="Timeout" helper="saniye">
+                  <NumberInput value={bulkTestTimeoutSeconds} onChange={(value) => setBulkTestTimeoutSeconds(Math.max(5, Math.min(120, value)))} />
+                </Field>
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-zinc-300 md:grid-cols-2">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={bulkTestUpdateHealth} onChange={(e) => setBulkTestUpdateHealth(e.target.checked)} />
+                  Test sonrası sağlık durumunu güncelle
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={bulkTestClearThrottleOnSuccess}
+                    onChange={(e) => setBulkTestClearThrottleOnSuccess(e.target.checked)}
+                  />
+                  Başarılı olanların throttle durumunu temizle
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={bulkTestNoAutoDisable} onChange={(e) => setBulkTestNoAutoDisable(e.target.checked)} />
+                  Hatalıları pasif yapma, sadece durumunu güncelle
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={bulkTestOnlyActive} onChange={(e) => setBulkTestOnlyActive(e.target.checked)} />
+                  Sadece aktif SMTP’leri test et
+                </label>
+              </div>
+
+              {bulkTestScope === "selected" ? (
+                <p className="mt-2 text-xs text-indigo-200">{selectedCount} SMTP seçildi</p>
+              ) : null}
+              {bulkTestScope === "filtered" ? (
+                <p className="mt-2 text-xs text-indigo-200">Mevcut filtre sonucu: {filteredAccounts.length.toLocaleString()} SMTP</p>
+              ) : null}
+
+              <div className="mt-3 rounded-xl border border-border bg-zinc-900/30 p-3">
+                <p className="text-xs text-zinc-400">
+                  {bulkTestProcessed} / {bulkTestTotal} test edildi
+                </p>
+                <div className="mt-2 h-2 w-full rounded bg-zinc-800">
+                  <div
+                    className="h-2 rounded bg-indigo-500 transition-all"
+                    style={{ width: `${bulkTestTotal > 0 ? Math.min(100, Math.round((bulkTestProcessed / bulkTestTotal) * 100)) : 0}%` }}
+                  />
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                  <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-200">Başarılı: {bulkTestSummary.success}</div>
+                  <div className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-rose-200">Başarısız: {bulkTestSummary.failed}</div>
+                  <div className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-200">Atlandı: {bulkTestSummary.skipped}</div>
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBulkTestShowOnlyFailed((prev) => !prev)}
+                  className="rounded-lg border border-rose-400/40 px-3 py-2 text-xs text-rose-200"
+                >
+                  Başarısızları filtrele
+                </button>
+                <button type="button" onClick={() => downloadBulkTestCsv()} className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200">
+                  Sonuçları CSV indir
+                </button>
+              </div>
+
+              <div className="mt-3 max-h-56 overflow-auto rounded-xl border border-border">
+                <table className="w-full border-collapse text-left text-[11px] text-zinc-300">
+                  <thead className="sticky top-0 bg-zinc-900/95 text-zinc-500">
+                    <tr>
+                      <th className="border-b border-border px-2 py-1">SMTP</th>
+                      <th className="border-b border-border px-2 py-1">Provider</th>
+                      <th className="border-b border-border px-2 py-1">Test tipi</th>
+                      <th className="border-b border-border px-2 py-1">Durum</th>
+                      <th className="border-b border-border px-2 py-1">Süre</th>
+                      <th className="border-b border-border px-2 py-1">Hata</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bulkTestVisibleResults.map((item) => (
+                      <tr key={`${item.smtpId}-${item.testedAt}-${item.status}`} className="border-b border-border/60 last:border-0">
+                        <td className="px-2 py-1 font-mono text-[10px]">{item.fromEmail}</td>
+                        <td className="px-2 py-1">{item.provider}</td>
+                        <td className="px-2 py-1">
+                          {item.testType === "connection" ? "Bağlantı testi" : item.testType === "send_test_email" ? "Test maili gönder" : "Bağlantı + test maili"}
+                        </td>
+                        <td className="px-2 py-1">{item.status === "success" ? "Başarılı" : item.status === "failed" ? "Başarısız" : "Atlandı"}</td>
+                        <td className="px-2 py-1">{item.latencyMs ? `${item.latencyMs} ms` : "-"}</td>
+                        <td className="px-2 py-1">{item.error ?? "-"}</td>
+                      </tr>
+                    ))}
+                    {bulkTestVisibleResults.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-2 py-3 text-center text-zinc-500">
+                          Henüz sonuç yok.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button type="button" onClick={() => setBulkTestModalOpen(false)} className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-300">
+                  {bulkTestStatus === "running" ? "Kapat" : "İptal"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void startBulkSmtpTest()}
+                  disabled={actionLoading === "bulk_test" || bulkTestStatus === "running"}
+                  className="rounded-lg border border-indigo-500/50 bg-indigo-500/20 px-3 py-2 text-xs text-indigo-100 disabled:opacity-50"
+                >
+                  {actionLoading === "bulk_test" ? <Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> : null}
+                  Testi Başlat
+                </button>
+              </div>
             </div>
           </div>
         </OverlayPortal>
