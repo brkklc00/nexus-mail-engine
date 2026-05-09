@@ -33,6 +33,24 @@ type ActiveSmtpRow = {
   fromEmail: string | null;
   isThrottled: boolean | null;
   healthStatus: string | null;
+  host: string;
+  providerLabel: string | null;
+  isActive: boolean;
+  isSoftDeleted: boolean;
+  cooldownUntil: Date | null;
+  throttleReason: string | null;
+  lastError: string | null;
+  username: string;
+  passwordEncrypted: string;
+  port: number;
+  targetRatePerSecond: number;
+  maxRatePerSecond: number | null;
+  warmupEnabled: boolean;
+  warmupStartRps: number;
+  warmupIncrementStep: number;
+  warmupMaxRps: number | null;
+  alibabaRateCap: number | null;
+  alibabaWarmupMaxRatePerSecond: number | null;
 };
 
 type RecentLogRow = {
@@ -74,6 +92,32 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
+  function isAlibabaProvider(providerLabel: string | null | undefined, host: string | null | undefined) {
+    const provider = String(providerLabel ?? "").toLowerCase();
+    const smtpHost = String(host ?? "").toLowerCase();
+    return provider.includes("alibaba") || provider.includes("aliyun") || smtpHost.includes("smtpdm");
+  }
+  function smtpEligibilityReason(smtp: ActiveSmtpRow): string | null {
+    if (!smtp.isActive) return "disabled";
+    if (smtp.isSoftDeleted) return "archived";
+    if (!smtp.host || !smtp.port || !smtp.username || !smtp.fromEmail || !smtp.passwordEncrypted) return "missing_credentials";
+    const authText = `${smtp.healthStatus ?? ""} ${smtp.throttleReason ?? ""} ${smtp.lastError ?? ""}`.toLowerCase();
+    if (authText.includes("auth_failed") || authText.includes("authentication") || authText.includes("invalid credentials")) return "auth_failed";
+    if (smtp.healthStatus === "error") return "unhealthy";
+    if (smtp.isThrottled && smtp.cooldownUntil && smtp.cooldownUntil.getTime() > Date.now()) return "throttled";
+    return null;
+  }
+  function computeWarmupRate(smtp: ActiveSmtpRow, delivered: number, desiredRps: number) {
+    if (!smtp.warmupEnabled) return desiredRps;
+    const maxWarmup = Math.max(
+      Number(smtp.warmupMaxRps ?? 0),
+      Number(smtp.alibabaWarmupMaxRatePerSecond ?? 0),
+      Number(smtp.targetRatePerSecond ?? 0)
+    );
+    const progressRate = Number(smtp.warmupStartRps ?? 1) + Math.floor(delivered / 1000) * Number(smtp.warmupIncrementStep ?? 1);
+    return Math.min(desiredRps, Math.max(0.01, Math.min(maxWarmup || desiredRps, progressRate)));
+  }
+
   const dayStart = startOfToday();
   const minuteAgo = oneMinuteAgo();
   try {
@@ -103,7 +147,25 @@ export async function GET() {
               id: true,
               fromEmail: true,
               isThrottled: true,
-              healthStatus: true
+              healthStatus: true,
+              host: true,
+              providerLabel: true,
+              isActive: true,
+              isSoftDeleted: true,
+              cooldownUntil: true,
+              throttleReason: true,
+              lastError: true,
+              username: true,
+              passwordEncrypted: true,
+              port: true,
+              targetRatePerSecond: true,
+              maxRatePerSecond: true,
+              warmupEnabled: true,
+              warmupStartRps: true,
+              warmupIncrementStep: true,
+              warmupMaxRps: true,
+              alibabaRateCap: true,
+              alibabaWarmupMaxRatePerSecond: true
             }
           }),
           prisma.campaignLog.findMany({
@@ -215,11 +277,36 @@ export async function GET() {
       targetTotalRps?: number;
       globalRps?: number;
       usableSmtpCount?: number;
+      targetPerSmtpRps?: number;
     };
     const targetTotalRps = Number(dailySummary.targetTotalRps ?? dailySummary.globalRps ?? 0);
-    const usableSmtpCount = Number(dailySummary.usableSmtpCount ?? 0);
+    const targetPerSmtpRps = Number(dailySummary.targetPerSmtpRps ?? 0);
+    const eligiblePool = (activeSmtps as ActiveSmtpRow[]).filter((item) => smtpEligibilityReason(item) === null);
+    const usableSmtpCount = Number(dailySummary.usableSmtpCount ?? eligiblePool.length);
     const throttledCount = (activeSmtps as ActiveSmtpRow[]).filter((item) => item.isThrottled).length;
-    const warmupCappedCount = warmupRows.filter((row) => Number(row.successfulDeliveries ?? 0) < 5000).length;
+    const alibabaSafeCap = Math.max(1, Number(process.env.ALIBABA_PROVIDER_SAFE_MAX_RPS ?? 15));
+    const defaultProviderSafeCap = Math.max(1, Number(process.env.SMTP_DEFAULT_PROVIDER_SAFE_MAX_RPS ?? 5));
+    let warmupCapTotalRps = 0;
+    let providerCapTotalRps = 0;
+    let throttleCapTotalRps = 0;
+    let warmupCappedCount = 0;
+    for (const smtp of eligiblePool) {
+      const delivered = Number(warmupMap.get(smtp.id)?.successfulDeliveries ?? 0);
+      const providerCap = isAlibabaProvider(smtp.providerLabel, smtp.host) ? alibabaSafeCap : defaultProviderSafeCap;
+      const desired = Math.max(
+        0.01,
+        Math.min(
+          Number(smtp.maxRatePerSecond ?? smtp.targetRatePerSecond ?? 1),
+          providerCap,
+          targetPerSmtpRps > 0 ? targetPerSmtpRps : providerCap
+        )
+      );
+      providerCapTotalRps += desired;
+      const warmupRate = computeWarmupRate(smtp, delivered, desired);
+      warmupCapTotalRps += warmupRate;
+      if (warmupRate + 0.0001 < desired) warmupCappedCount += 1;
+      throttleCapTotalRps += smtp.isThrottled ? Math.max(0.01, warmupRate * 0.5) : warmupRate;
+    }
     let bottleneckReason = "none";
     if (queuePending <= 0) bottleneckReason = "queue_empty";
     else if (usableSmtpCount > 0 && usableSmtpCount < 2) bottleneckReason = "too_few_eligible_smtps";
@@ -254,6 +341,13 @@ export async function GET() {
         activeLane: Math.max(0, usableSmtpCount - throttledCount),
         throttledSmtp: throttledCount,
         warmupCappedSmtp: warmupCappedCount,
+        warmupCapTotalRps: Number(warmupCapTotalRps.toFixed(4)),
+        throttleCapTotalRps: Number(throttleCapTotalRps.toFixed(4)),
+        providerCapTotalRps: Number(providerCapTotalRps.toFixed(4)),
+        warmupPoolCapacityDaily: Math.floor(warmupCapTotalRps * 86400),
+        warmupBottleneckSmtpCount: warmupCappedCount,
+        expectedRpsAfterApply: Number(providerCapTotalRps.toFixed(4)),
+        targetPerSmtpRps: Number(targetPerSmtpRps.toFixed(4)),
         avgPerSmtpRps: usableSmtpCount > 0 ? Number((currentRps / usableSmtpCount).toFixed(3)) : 0,
         workerConcurrency: Number(process.env.WORKER_CONCURRENCY ?? 0),
         bottleneckReason

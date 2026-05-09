@@ -10,7 +10,7 @@ const WORKER_DB_READ_CONCURRENCY = Math.max(1, Math.min(5, Number(process.env.WO
 const WORKER_SETTINGS_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SETTINGS_CACHE_MS ?? 30_000));
 const WORKER_SMTP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SMTP_CACHE_MS ?? 30_000));
 const WORKER_CAMPAIGN_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_CAMPAIGN_CACHE_MS ?? 10_000));
-const WORKER_WARMUP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_WARMUP_CACHE_MS ?? 30_000));
+const WORKER_WARMUP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_WARMUP_CACHE_MS ?? 3_000));
 const SMTP_LANE_MAX_INFLIGHT = Math.max(1, Number(process.env.SMTP_LANE_MAX_INFLIGHT ?? 2));
 const SMTP_RATE_CACHE_MS = Math.max(500, Number(process.env.SMTP_RATE_CACHE_MS ?? 3000));
 const SMTP_THROTTLE_EXPIRE_CHECK_MS = Math.max(5_000, Number(process.env.SMTP_THROTTLE_EXPIRE_CHECK_MS ?? 30_000));
@@ -26,6 +26,8 @@ let cachedPoolSettings: {
 let cachedActiveCampaigns: { data: any[]; expiresAt: number } | null = null;
 let cachedSmtpState: { data: any[]; expiresAt: number; key: string } | null = null;
 let cachedWarmupState: { data: any[]; expiresAt: number; key: string } | null = null;
+let lastRuntimeCacheBustTs = 0;
+let lastRuntimeCacheBustReadAt = 0;
 let lastThrottleExpireSweepAt = 0;
 
 function smtpEligibilityReason(smtp: any): string | null {
@@ -94,6 +96,21 @@ function idempotencyKey(campaignId: string, recipientId: string, templateVersion
 }
 
 export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
+  const nowForCacheBust = Date.now();
+  if (nowForCacheBust - lastRuntimeCacheBustReadAt >= 3_000) {
+    lastRuntimeCacheBustReadAt = nowForCacheBust;
+    const bust = (await withSchedulerReadSlot(() =>
+      prisma.appSetting.findUnique({ where: { key: "smtp_runtime_cache_bust" } }).catch(() => null)
+    )) as { value?: unknown } | null;
+    const bustTs = Number(((bust?.value as any) ?? {}).ts ?? 0);
+    if (Number.isFinite(bustTs) && bustTs > lastRuntimeCacheBustTs) {
+      lastRuntimeCacheBustTs = bustTs;
+      cachedPoolSettings = null;
+      cachedActiveCampaigns = null;
+      cachedSmtpState = null;
+      cachedWarmupState = null;
+    }
+  }
   const nowForSweep = Date.now();
   if (nowForSweep - lastThrottleExpireSweepAt >= SMTP_THROTTLE_EXPIRE_CHECK_MS) {
     lastThrottleExpireSweepAt = nowForSweep;

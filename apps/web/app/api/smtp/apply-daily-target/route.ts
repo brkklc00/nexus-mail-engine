@@ -15,6 +15,7 @@ const schema = z.object({
   useAllEligibleParallel: z.boolean().optional().default(true),
   updateWorkerPoolSettings: z.boolean().optional().default(true),
   applyToRunningCampaigns: z.boolean().optional().default(true),
+  updateWarmupToTarget: z.boolean().optional().default(true),
   excludeUnhealthy: z.boolean().optional().default(true),
   enforceSuppressionChecks: z.boolean().optional().default(true)
 });
@@ -180,12 +181,17 @@ export async function POST(req: Request) {
 
   let providerCapped = false;
   let warmupProtected = false;
+  let warmupBottleneckSmtpCount = 0;
+  let warmupPoolCapacityRps = 0;
+  let providerCapPoolRps = 0;
+  let throttleCapPoolRps = 0;
   let clearedExpiredThrottle = 0;
   let updated = 0;
 
   for (const smtp of usable) {
     const providerSafeCap = isAlibabaProvider(smtp) ? alibabaSafeCap : defaultProviderSafeCap;
     let desiredRps = Math.min(providerSafeCap, targetPerSmtpRps);
+    providerCapPoolRps += desiredRps;
     if (desiredRps < targetPerSmtpRps) {
       providerCapped = true;
     }
@@ -200,11 +206,29 @@ export async function POST(req: Request) {
     }
     if (recommendedWarmupCap < desiredRps) {
       warmupProtected = true;
+      warmupBottleneckSmtpCount += 1;
+    }
+    warmupPoolCapacityRps += Math.min(desiredRps, recommendedWarmupCap);
+    if (smtp.isThrottled && smtp.cooldownUntil && smtp.cooldownUntil.getTime() > now) {
+      throttleCapPoolRps += Math.max(0.01, Math.min(desiredRps, recommendedWarmupCap) * 0.5);
+    } else {
+      throttleCapPoolRps += Math.max(0.01, Math.min(desiredRps, recommendedWarmupCap));
     }
 
     const safeEffective = roundRate(desiredRps);
     const warmupStartRps = roundRate(Math.max(0.1, Math.min(safeEffective, Math.max(0.5, safeEffective * 0.35))));
     const warmupIncrementStep = roundRate(Math.max(0.1, Math.min(2, safeEffective * 0.5)));
+    const targetWarmupCap = roundRate(
+      Math.min(
+        providerSafeCap,
+        Math.max(
+          Number(smtp.warmupMaxRps ?? 0),
+          Number(recommendedWarmupCap),
+          Number(parsed.data.warmupPolicy === "force_target" ? safeEffective : recommendedWarmupCap),
+          Number(parsed.data.updateWarmupToTarget ? safeEffective : 0)
+        )
+      )
+    );
 
     const updateData: any = {
       targetRatePerSecond: safeEffective,
@@ -213,16 +237,8 @@ export async function POST(req: Request) {
       warmupEnabled: parsed.data.warmupAutoAdjust ? true : undefined,
       warmupStartRps: roundRate(warmupStartRps),
       warmupIncrementStep: roundRate(warmupIncrementStep),
-      warmupMaxRps: roundRate(
-        Math.min(
-          providerSafeCap,
-          Math.max(
-            Number(smtp.warmupMaxRps ?? 0),
-            Number(recommendedWarmupCap),
-            Number(parsed.data.warmupPolicy === "force_target" ? safeEffective : recommendedWarmupCap)
-          )
-        )
-      ),
+      warmupMaxRps: targetWarmupCap,
+      alibabaWarmupMaxRatePerSecond: isAlibabaProvider(smtp) ? targetWarmupCap : null,
       dailyCap: perSmtpDailyCap,
       hourlyCap: perSmtpHourlyCap,
       minuteCap: perSmtpMinuteCap
@@ -251,6 +267,7 @@ export async function POST(req: Request) {
   }
   if (warmupProtected) {
     warnings.push("Bazı SMTP'lerde warmup sınırı hedef hızı geçici olarak kısıtlıyor.");
+    warnings.push("Warmup sınırı nedeniyle hedef hız düşüyor. Hedefi uygula butonuyla uygun SMTP’lerin warmup limitleri yükseltilebilir.");
   }
   if (usableSmtpCount < 3) {
     warnings.push("Uygun SMTP sayısı düşük, hedef hıza erişim sınırlı olabilir.");
@@ -336,6 +353,11 @@ export async function POST(req: Request) {
     perSmtpRps: Number((updated > 0 ? effectiveGlobalRps / updated : 0).toFixed(6)),
     targetTotalRps,
     targetPerSmtpRps,
+    warmupPoolCapacityRps: Number(warmupPoolCapacityRps.toFixed(6)),
+    providerCapPoolRps: Number(providerCapPoolRps.toFixed(6)),
+    throttleCapPoolRps: Number(throttleCapPoolRps.toFixed(6)),
+    warmupBottleneckSmtpCount,
+    warmupPoolCapacityDaily: Math.floor(warmupPoolCapacityRps * 86400),
     perSmtpDailyCap,
     perSmtpHourlyCap,
     perSmtpMinuteCap,
@@ -357,6 +379,22 @@ export async function POST(req: Request) {
       value: summary as any
     }
   });
+  await prisma.appSetting.upsert({
+    where: { key: "smtp_runtime_cache_bust" },
+    create: {
+      key: "smtp_runtime_cache_bust",
+      value: {
+        ts: Date.now(),
+        source: "apply_daily_target"
+      } as any
+    },
+    update: {
+      value: {
+        ts: Date.now(),
+        source: "apply_daily_target"
+      } as any
+    }
+  });
 
   await writeAuditLog(session.userId, "smtp.apply_daily_target", "smtp_account", {
     dailyTarget: summary.dailyTarget,
@@ -376,6 +414,11 @@ export async function POST(req: Request) {
     perSmtpRps: summary.targetPerSmtpRps,
     targetTotalRps: summary.targetTotalRps,
     targetPerSmtpRps: summary.targetPerSmtpRps,
+    warmupPoolCapacityRps: summary.warmupPoolCapacityRps,
+    providerCapPoolRps: summary.providerCapPoolRps,
+    throttleCapPoolRps: summary.throttleCapPoolRps,
+    warmupBottleneckSmtpCount: summary.warmupBottleneckSmtpCount,
+    warmupPoolCapacityDaily: summary.warmupPoolCapacityDaily,
     perSmtpDailyCap: summary.perSmtpDailyCap,
     perSmtpHourlyCap: summary.perSmtpHourlyCap,
     perSmtpMinuteCap: summary.perSmtpMinuteCap,

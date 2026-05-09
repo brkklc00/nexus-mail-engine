@@ -39,6 +39,13 @@ type FlowPayload = {
     activeLane?: number;
     throttledSmtp?: number;
     warmupCappedSmtp?: number;
+    warmupCapTotalRps?: number;
+    throttleCapTotalRps?: number;
+    providerCapTotalRps?: number;
+    warmupPoolCapacityDaily?: number;
+    warmupBottleneckSmtpCount?: number;
+    expectedRpsAfterApply?: number;
+    targetPerSmtpRps?: number;
     avgPerSmtpRps?: number;
     workerConcurrency?: number;
     bottleneckReason?: string;
@@ -207,8 +214,9 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
       {data?.diagnostics ? (
         <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-xs text-zinc-300">
           Uygun SMTP: {data.diagnostics.eligibleSmtp ?? 0} · Aktif lane: {data.diagnostics.activeLane ?? 0} ·
-          Throttled: {data.diagnostics.throttledSmtp ?? 0} · Ortalama SMTP başı RPS: {Number(data.diagnostics.avgPerSmtpRps ?? 0).toFixed(2)} ·
-          Bottleneck: {data.diagnostics.bottleneckReason ?? "none"}
+          Throttled: {data.diagnostics.throttledSmtp ?? 0} · SMTP başı hedef RPS: {Number(data.diagnostics.targetPerSmtpRps ?? 0).toFixed(2)} ·
+          Ortalama SMTP başı RPS: {Number(data.diagnostics.avgPerSmtpRps ?? 0).toFixed(2)} · Warmup kapasitesi: {Number(data.diagnostics.warmupPoolCapacityDaily ?? 0).toLocaleString()}/gün ·
+          Bottleneck: {data.diagnostics.bottleneckReason ?? "none"} {data.diagnostics.bottleneckReason === "warmup_cap" ? `(${Number(data.diagnostics.warmupBottleneckSmtpCount ?? 0)} SMTP)` : ""}
         </div>
       ) : null}
 

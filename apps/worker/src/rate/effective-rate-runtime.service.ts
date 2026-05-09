@@ -23,12 +23,18 @@ export async function getEffectiveRateForSmtp(smtpAccountId: string) {
   });
   const deliveredSuccessCount = warmupAgg._sum.successfulDeliveries ?? 0;
 
+  const normalizedAlibabaWarmupCap = Math.max(
+    Number(smtp.alibabaWarmupMaxRatePerSecond ?? 0),
+    Number(smtp.warmupMaxRps ?? 0),
+    Number(smtp.targetRatePerSecond ?? 0)
+  );
+
   const decision = calculateEffectiveRate({
     smtpHost: smtp.host,
     targetRatePerSecond: smtp.targetRatePerSecond,
     alibabaRateCap: smtp.alibabaRateCap,
     maxRatePerSecond: smtp.maxRatePerSecond,
-    alibabaWarmupMaxRatePerSecond: smtp.alibabaWarmupMaxRatePerSecond,
+    alibabaWarmupMaxRatePerSecond: normalizedAlibabaWarmupCap > 0 ? normalizedAlibabaWarmupCap : undefined,
     deliveredSuccessCount,
     warmupLadder: DEFAULT_ALIBABA_LADDER
   });
@@ -43,7 +49,7 @@ export async function getEffectiveRateForSmtp(smtpAccountId: string) {
 
   if (smtp.warmupEnabled) {
     const customWarmupRate = Math.min(
-      smtp.warmupMaxRps ?? Number.MAX_SAFE_INTEGER,
+      Math.max(Number(smtp.warmupMaxRps ?? 0), Number(smtp.targetRatePerSecond ?? 0), normalizedAlibabaWarmupCap || 0),
       smtp.warmupStartRps + Math.floor(deliveredSuccessCount / 1000) * smtp.warmupIncrementStep
     );
     return {

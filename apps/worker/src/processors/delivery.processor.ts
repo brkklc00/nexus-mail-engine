@@ -582,6 +582,21 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     });
     await finalizeCampaignIfDone(campaign.id);
   } catch (error) {
+    if (error instanceof Error && error.message === "rate_limited_wait_timeout") {
+      await safeCreateCampaignLog({
+        campaignId: campaign.id,
+        recipientId: recipient.id,
+        eventType: "rate_limited_delayed",
+        status: "skipped",
+        message: "Rate token bulunamadı; alıcı başarısız işaretlenmeden yeniden denenecek.",
+        metadata: {
+          smtpAccountId: selected.id,
+          effectiveRate: enforcedRate,
+          waitTimeoutMs: maxWaitMs
+        }
+      });
+      throw error;
+    }
     const failed = await transitionCampaignRecipientStatus({
       campaignId: campaign.id,
       recipientId: recipient.id,

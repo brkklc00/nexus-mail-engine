@@ -88,6 +88,7 @@ type PlannerPreview = {
 type DailyTargetSummary = {
   dailyTarget: number;
   mode: "safe" | "balanced" | "fast" | "aggressive";
+  warmupPolicy?: "automatic_recommended" | "force_target" | "conservative";
   scope: "healthy_active" | "all_active" | "selected";
   usableSmtpCount: number;
   globalRps: number;
@@ -99,6 +100,8 @@ type DailyTargetSummary = {
   updated: number;
   skipped: number;
   warnings: string[];
+  warmupPoolCapacityDaily?: number;
+  warmupBottleneckSmtpCount?: number;
   updatedAt?: string;
 };
 
@@ -417,11 +420,19 @@ export function SmtpManager({
   const [dailyTargetUseAllEligibleParallel, setDailyTargetUseAllEligibleParallel] = useState(true);
   const [dailyTargetUpdateWorkerPool, setDailyTargetUpdateWorkerPool] = useState(true);
   const [dailyTargetApplyRunningCampaigns, setDailyTargetApplyRunningCampaigns] = useState(true);
+  const [dailyTargetWarmupPolicy, setDailyTargetWarmupPolicy] = useState<"automatic_recommended" | "force_target" | "conservative">(
+    (initialDailyTargetSummary?.warmupPolicy as any) ?? "automatic_recommended"
+  );
+  const [dailyTargetUpdateWarmupToTarget, setDailyTargetUpdateWarmupToTarget] = useState(true);
   const [dailyTargetExcludeUnhealthy, setDailyTargetExcludeUnhealthy] = useState(true);
   const [dailyTargetEnforceSuppression, setDailyTargetEnforceSuppression] = useState(true);
   const [dailyTargetSummary, setDailyTargetSummary] = useState<DailyTargetSummary>({
     dailyTarget: Math.max(100000, Number(initialDailyTargetSummary?.dailyTarget ?? 500000)),
     mode: ((initialDailyTargetSummary?.mode as any) ?? "balanced") as "safe" | "balanced" | "fast" | "aggressive",
+    warmupPolicy: ((initialDailyTargetSummary?.warmupPolicy as any) ?? "automatic_recommended") as
+      | "automatic_recommended"
+      | "force_target"
+      | "conservative",
     scope: ((initialDailyTargetSummary?.scope as any) ?? "healthy_active") as "healthy_active" | "all_active" | "selected",
     usableSmtpCount: Math.max(1, Number(initialDailyTargetSummary?.usableSmtpCount ?? initialMetrics.healthySmtpAccounts ?? 1)),
     globalRps: Number(initialDailyTargetSummary?.globalRps ?? 0),
@@ -800,8 +811,9 @@ export function SmtpManager({
           dailyTarget: Math.max(1, Number(dailyTargetInput || 1)),
           scope: dailyTargetScope,
           smtpAccountIds: dailyTargetScope === "selected" ? [...selectedIds] : undefined,
-          warmupPolicy: dailyTargetMode === "safe" ? "conservative" : dailyTargetMode === "aggressive" ? "force_target" : "automatic_recommended",
+          warmupPolicy: dailyTargetWarmupPolicy,
           warmupAutoAdjust: dailyTargetWarmupAutoAdjust,
+          updateWarmupToTarget: dailyTargetUpdateWarmupToTarget,
           forceTargetForWarmed: dailyTargetForceTargetForWarmed,
           clearExpiredThrottle: dailyTargetClearExpiredThrottle,
           useAllEligibleParallel: dailyTargetUseAllEligibleParallel,
@@ -818,6 +830,10 @@ export function SmtpManager({
       setDailyTargetSummary({
         dailyTarget: Number(payload.dailyTarget ?? dailyTargetInput),
         mode: (payload.mode ?? dailyTargetMode) as "safe" | "balanced" | "fast" | "aggressive",
+        warmupPolicy: (payload.warmupPolicy ?? dailyTargetWarmupPolicy) as
+          | "automatic_recommended"
+          | "force_target"
+          | "conservative",
         scope: (payload.scope ?? dailyTargetScope) as "healthy_active" | "all_active" | "selected",
         usableSmtpCount: Number(payload.usableSmtpCount ?? 0),
         globalRps: Number(payload.globalRps ?? 0),
@@ -826,6 +842,8 @@ export function SmtpManager({
         perSmtpDailyCap: Number(payload.perSmtpDailyCap ?? 0),
         perSmtpHourlyCap: Number(payload.perSmtpHourlyCap ?? 0),
         perSmtpMinuteCap: Number(payload.perSmtpMinuteCap ?? 0),
+        warmupPoolCapacityDaily: Number(payload.warmupPoolCapacityDaily ?? 0),
+        warmupBottleneckSmtpCount: Number(payload.warmupBottleneckSmtpCount ?? 0),
         updated: Number(payload.updated ?? 0),
         skipped: Number(payload.skipped ?? 0),
         warnings: Array.isArray(payload.warnings) ? payload.warnings : []
@@ -1852,11 +1870,26 @@ export function SmtpManager({
           </button>
         </div>
         <div className="mt-3 grid gap-2 rounded-xl border border-border bg-zinc-900/50 p-3 text-xs text-zinc-200 md:grid-cols-2 xl:grid-cols-4">
-          <p>Gunluk hedef: {Number(dailyTargetSummary.dailyTarget || 0).toLocaleString()}</p>
+          <p>Global günlük hedef: {Number(dailyTargetSummary.dailyTarget || 0).toLocaleString()}/gün</p>
           <p>Uygun SMTP: {Number(dailyTargetSummary.usableSmtpCount || 0)}</p>
           <p>SMTP basi hiz: {Number(dailyTargetSummary.perSmtpRps || 0).toFixed(2)}/s</p>
           <p>Beklenen toplam hiz: {Number(dailyTargetSummary.effectiveGlobalRps || dailyTargetSummary.globalRps || 0).toFixed(2)}/s</p>
+          <p>
+            Warmup politikası:{" "}
+            {dailyTargetSummary.warmupPolicy === "force_target"
+              ? "hedef hıza geç"
+              : dailyTargetSummary.warmupPolicy === "conservative"
+                ? "koruyucu"
+                : "otomatik önerilen"}
+          </p>
+          <p>Warmup efektif havuz kapasitesi: {Number(dailyTargetSummary.warmupPoolCapacityDaily ?? 0).toLocaleString()}/gün</p>
+          <p>Warmup bottleneck SMTP: {Number(dailyTargetSummary.warmupBottleneckSmtpCount ?? 0)}</p>
         </div>
+        {Number(dailyTargetSummary.warmupBottleneckSmtpCount ?? 0) > 0 ? (
+          <p className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            Warmup sınırı nedeniyle hedef hız düşüyor. Hedefi uygula butonuyla uygun SMTP’lerin warmup limitleri yükseltilebilir.
+          </p>
+        ) : null}
         <div className="mt-3 flex items-center justify-between">
           <button
             type="button"
@@ -2472,6 +2505,17 @@ export function SmtpManager({
                 <Field label="Gunluk hedef" helper="Ornek: 100000, 500000, 1000000, 5000000">
                   <NumberInput value={dailyTargetInput} onChange={(value) => setDailyTargetInput(Math.max(1, value))} />
                 </Field>
+                <Field label="Warmup politikası" helper="Hedef hıza ulaşım için warmup davranışı">
+                  <SelectInput
+                    value={dailyTargetWarmupPolicy}
+                    onChange={(value) => setDailyTargetWarmupPolicy(value as "automatic_recommended" | "force_target" | "conservative")}
+                    options={[
+                      { value: "automatic_recommended", label: "Otomatik önerilen" },
+                      { value: "force_target", label: "Hedef hıza geç" },
+                      { value: "conservative", label: "Koruyucu" }
+                    ]}
+                  />
+                </Field>
                 <Field label="Mod secimi" helper="Gonderim hizi ve warmup guvenlik carpani">
                   <SelectInput
                     value={dailyTargetMode}
@@ -2528,6 +2572,7 @@ export function SmtpManager({
               <div className="mt-3 grid grid-cols-1 gap-2 rounded-xl border border-border bg-zinc-900/40 p-3 text-xs text-zinc-300 md:grid-cols-2">
                 <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetUseAllEligibleParallel} onChange={(e) => setDailyTargetUseAllEligibleParallel(e.target.checked)} /> Tüm uygun SMTP’leri paralel kullan</label>
                 <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetWarmupAutoAdjust} onChange={(e) => setDailyTargetWarmupAutoAdjust(e.target.checked)} /> Warmup limitlerini hedefe göre otomatik ayarla</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetUpdateWarmupToTarget} onChange={(e) => setDailyTargetUpdateWarmupToTarget(e.target.checked)} /> Hedef hıza geçmek için warmup sınırlarını güncelle</label>
                 <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetForceTargetForWarmed} onChange={(e) => setDailyTargetForceTargetForWarmed(e.target.checked)} /> Hedef hıza geç: yeterli geçmişi olan SMTP’lerde ısınma sınırını kaldır</label>
                 <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetClearExpiredThrottle} onChange={(e) => setDailyTargetClearExpiredThrottle(e.target.checked)} /> Süresi geçmiş throttle durumlarını temizle</label>
                 <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetUpdateWorkerPool} onChange={(e) => setDailyTargetUpdateWorkerPool(e.target.checked)} /> Worker/pool hız ayarlarını hedefe göre güncelle</label>

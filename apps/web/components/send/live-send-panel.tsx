@@ -70,6 +70,13 @@ type LiveEvent = {
   throttledSmtpCount?: number;
   eligibleSmtpCount?: number;
   avgPerSmtpRps?: number;
+  targetPerSmtpRps?: number;
+  warmupCapTotalRps?: number;
+  throttleCapTotalRps?: number;
+  providerCapTotalRps?: number;
+  warmupBottleneckSmtpCount?: number;
+  warmupAvgCapRps?: number;
+  expectedRpsAfterApply?: number;
   bottleneckReason?: string;
 };
 
@@ -80,6 +87,7 @@ export function LiveSendPanel() {
   const [campaignId, setCampaignId] = useState("");
   const [live, setLive] = useState<LiveEvent | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
+  const [showActiveSmtps, setShowActiveSmtps] = useState(false);
   const [loadingBootstrap, setLoadingBootstrap] = useState(true);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<null | "create" | "pause" | "resume" | "cancel">(null);
@@ -153,13 +161,35 @@ export function LiveSendPanel() {
   useEffect(() => {
     if (!campaignId) return;
     const source = new EventSource(`/send/stream?campaignId=${campaignId}`);
+    let previous: LiveEvent | null = null;
     source.addEventListener("progress", (evt) => {
       const payload = JSON.parse((evt as MessageEvent).data) as LiveEvent;
       setLive(payload);
-      setLogs((prev) => [
-        `status=${payload.status} sent=${payload.sent} failed=${payload.failed} rate=${payload.effectiveRate}/s`,
-        ...prev
-      ].slice(0, 12));
+      const nextLogs: string[] = [];
+      if (!previous) {
+        nextLogs.push("campaign_started");
+      } else {
+        if ((payload.activeLaneCount ?? 0) > (previous.activeLaneCount ?? 0)) {
+          nextLogs.push(`lane_started (+${(payload.activeLaneCount ?? 0) - (previous.activeLaneCount ?? 0)})`);
+        }
+        const sentDelta = (payload.sent ?? 0) - (previous.sent ?? 0);
+        if (sentDelta > 0) nextLogs.push(`sent (+${sentDelta})`);
+        const failedDelta = (payload.failed ?? 0) - (previous.failed ?? 0);
+        if (failedDelta > 0) nextLogs.push(`failed (+${failedDelta})`);
+        if (Math.abs((payload.effectiveRate ?? 0) - (previous.effectiveRate ?? 0)) >= 0.2) {
+          nextLogs.push(`rate_updated (${Number(payload.effectiveRate ?? 0).toFixed(2)}/s)`);
+        }
+        if (payload.bottleneckReason === "warmup_cap" && previous.bottleneckReason !== "warmup_cap") {
+          nextLogs.push("warmup_cap_detected");
+        }
+        if (payload.throttleReason && payload.throttleReason !== previous.throttleReason) {
+          nextLogs.push(`throttle_applied (${payload.throttleReason})`);
+        }
+      }
+      if (nextLogs.length > 0) {
+        setLogs((prev) => [...nextLogs, ...prev].slice(0, 20));
+      }
+      previous = payload;
     });
     source.addEventListener("done", (evt) => {
       const payload = JSON.parse((evt as MessageEvent).data) as { status: string };
@@ -571,6 +601,7 @@ export function LiveSendPanel() {
       {live && (live.targetTotalRps ?? 0) > 0 && (live.effectiveRate ?? 0) < (live.targetTotalRps ?? 0) * 0.8 ? (
         <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
           Hedef hızın altında gönderim yapılıyor. Sebep: {live.bottleneckReason ?? "none"}
+          {live.bottleneckReason === "warmup_cap" ? " · Warmup sınırı nedeniyle hedef hız düşüyor. Hedefi uygula butonuyla uygun SMTP’lerin warmup limitleri yükseltilebilir." : ""}
         </p>
       ) : null}
 
@@ -584,7 +615,17 @@ export function LiveSendPanel() {
           </div>
           {live.activeSmtps && live.activeSmtps.length > 0 ? (
             <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
-              Active SMTPs: {live.activeSmtps.map((smtp) => smtp.name).join(", ")}
+              {live.activeSmtps.length} SMTP aktif
+              <button
+                type="button"
+                onClick={() => setShowActiveSmtps((prev) => !prev)}
+                className="ml-2 rounded border border-border px-1.5 py-0.5 text-[10px] text-zinc-200"
+              >
+                Aktif SMTP’leri göster
+              </button>
+              {showActiveSmtps ? (
+                <p className="mt-1 text-[11px] text-zinc-400">{live.activeSmtps.map((smtp) => smtp.name).join(", ")}</p>
+              ) : null}
             </div>
           ) : null}
           {live.perSmtpSent && live.perSmtpSent.length > 0 ? (
@@ -601,7 +642,19 @@ export function LiveSendPanel() {
           ) : null}
           <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
             Hedef toplam RPS: {Number(live.targetTotalRps ?? 0).toFixed(2)} · Gerçek RPS: {Number(live.effectiveRate ?? 0).toFixed(2)} ·
-            Aktif lane: {live.activeLaneCount ?? 0} · Uygun SMTP: {live.eligibleSmtpCount ?? 0}
+            Aktif lane: {live.activeLaneCount ?? 0} · Uygun SMTP: {live.eligibleSmtpCount ?? 0} · SMTP başı hedef RPS: {Number(live.targetPerSmtpRps ?? 0).toFixed(2)} ·
+            SMTP başı efektif ortalama RPS: {Number(live.avgPerSmtpRps ?? 0).toFixed(2)} · Warmup cap toplamı: {Number(live.warmupCapTotalRps ?? 0).toFixed(2)} ·
+            Throttle cap toplamı: {Number(live.throttleCapTotalRps ?? 0).toFixed(2)} · Provider cap toplamı: {Number(live.providerCapTotalRps ?? 0).toFixed(2)} ·
+            Bottleneck: {live.bottleneckReason ?? "none"}
+          </div>
+          {live.bottleneckReason === "warmup_cap" ? (
+            <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">
+              Warmup cap nedeniyle sınırlanan SMTP: {live.warmupBottleneckSmtpCount ?? 0} · Ortalama warmup cap: {Number(live.warmupAvgCapRps ?? 0).toFixed(2)} RPS ·
+              Hedef uygulanırsa beklenen RPS: {Number(live.expectedRpsAfterApply ?? 0).toFixed(2)}
+            </div>
+          ) : null}
+          <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
+            Global günlük hedef: {Number(live.dailyTarget ?? 0).toLocaleString()}/gün
           </div>
         </div>
       ) : null}
