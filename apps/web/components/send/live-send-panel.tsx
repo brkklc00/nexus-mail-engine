@@ -77,7 +77,11 @@ type LiveEvent = {
   warmupBottleneckSmtpCount?: number;
   warmupAvgCapRps?: number;
   expectedRpsAfterApply?: number;
-  dbQueuedRecipients?: number;
+  dbPendingRecipients?: number;
+  dbProcessingRecipients?: number;
+  dbSentRecipients?: number;
+  dbFailedRecipients?: number;
+  dbSkippedRecipients?: number;
   redisWaitingJobs?: number;
   redisActiveJobs?: number;
   schedulerBatchSize?: number;
@@ -654,7 +658,8 @@ export function LiveSendPanel() {
             Bottleneck: {live.bottleneckReason ?? "none"}
           </div>
           <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
-            DB queued recipients: {live.dbQueuedRecipients ?? 0} · Redis waiting jobs: {live.redisWaitingJobs ?? 0} · Redis active jobs: {live.redisActiveJobs ?? 0} ·
+            DB pending: {live.dbPendingRecipients ?? 0} · DB processing: {live.dbProcessingRecipients ?? 0} · DB sent: {live.dbSentRecipients ?? 0} ·
+            DB failed: {live.dbFailedRecipients ?? 0} · DB skipped: {live.dbSkippedRecipients ?? 0} · Redis waiting jobs: {live.redisWaitingJobs ?? 0} · Redis active jobs: {live.redisActiveJobs ?? 0} ·
             Scheduler batch size: {live.schedulerBatchSize ?? 0} · Last scheduler enqueued: {live.lastSchedulerEnqueued ?? 0} · Reason: {live.lastSchedulerReason ?? "unknown"}
           </div>
           {live.bottleneckReason === "warmup_cap" ? (

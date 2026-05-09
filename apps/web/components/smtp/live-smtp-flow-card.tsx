@@ -46,7 +46,11 @@ type FlowPayload = {
     warmupBottleneckSmtpCount?: number;
     expectedRpsAfterApply?: number;
     targetPerSmtpRps?: number;
-    dbQueuedRecipients?: number;
+    dbPendingRecipients?: number;
+    dbProcessingRecipients?: number;
+    dbSentRecipients?: number;
+    dbFailedRecipients?: number;
+    dbSkippedRecipients?: number;
     redisWaitingJobs?: number;
     redisActiveJobs?: number;
     schedulerBatchSize?: number;
@@ -227,7 +231,8 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
       ) : null}
       {data?.diagnostics ? (
         <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-xs text-zinc-300">
-          DB queued: {Number(data.diagnostics.dbQueuedRecipients ?? 0)} · Redis waiting: {Number(data.diagnostics.redisWaitingJobs ?? 0)} · Redis active: {Number(data.diagnostics.redisActiveJobs ?? 0)} ·
+          DB pending: {Number(data.diagnostics.dbPendingRecipients ?? 0)} · DB processing: {Number(data.diagnostics.dbProcessingRecipients ?? 0)} · DB sent: {Number(data.diagnostics.dbSentRecipients ?? 0)} ·
+          DB failed: {Number(data.diagnostics.dbFailedRecipients ?? 0)} · DB skipped: {Number(data.diagnostics.dbSkippedRecipients ?? 0)} · Redis waiting: {Number(data.diagnostics.redisWaitingJobs ?? 0)} · Redis active: {Number(data.diagnostics.redisActiveJobs ?? 0)} ·
           Scheduler batch: {Number(data.diagnostics.schedulerBatchSize ?? 0)} · Son enqueue: {Number(data.diagnostics.lastSchedulerEnqueued ?? 0)} · Sebep: {data.diagnostics.lastSchedulerReason ?? "unknown"}
         </div>
       ) : null}

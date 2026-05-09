@@ -37,10 +37,10 @@ export async function recoverCampaignQueuesOnBoot() {
     data: { sendStatus: "pending" }
   });
 
-  const queuedRecipients = await prisma.campaignRecipient.findMany({
+  const pendingRecipients = await prisma.campaignRecipient.findMany({
     where: {
       campaignId: { in: campaignIds },
-      sendStatus: { in: ["pending", "queued"] }
+      sendStatus: "pending"
     },
     select: {
       campaignId: true,
@@ -53,7 +53,7 @@ export async function recoverCampaignQueuesOnBoot() {
   const campaignTemplateVersion = new Map<string, number>(
     campaigns.map((item: { id: string; template: { version: number } }) => [item.id, Number(item.template.version ?? 1)])
   );
-  for (const row of queuedRecipients) {
+  for (const row of pendingRecipients) {
     const version = Number(campaignTemplateVersion.get(row.campaignId) ?? 1);
     await deliveryQueue.add(
       "deliver_recovery",
@@ -73,7 +73,7 @@ export async function recoverCampaignQueuesOnBoot() {
 
   console.info("[worker.recovery] campaigns resumed", {
     campaigns: campaigns.length,
-    queuedRecipients: queuedRecipients.length,
+    queuedRecipients: pendingRecipients.length,
     staleProcessingReset: staleReset.count
   });
 }

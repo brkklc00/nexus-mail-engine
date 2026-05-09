@@ -193,20 +193,30 @@ export async function GET() {
         3000
       );
 
-    const [dailySummaryRow, workerSnapshotRow, schedulerDiagRow, dbQueuedRecipients] = await Promise.all([
+    const [dailySummaryRow, workerSnapshotRow, schedulerDiagRow, dbStatusRowsRaw] = await Promise.all([
       prisma.appSetting.findUnique({ where: { key: "smtp_daily_target_summary" } }).catch(() => null),
       prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }).catch(() => null),
       prisma.appSetting.findUnique({ where: { key: "scheduler_runtime_diagnostics" } }).catch(() => null),
-      prisma.campaignRecipient.count({
+      prisma.campaignRecipient.groupBy({
+        by: ["sendStatus"],
         where: {
-          sendStatus: "queued",
           campaign: {
             status: { in: ["running", "queued", "partially_completed"] },
             isDeleted: false
           }
-        }
-      }).catch(() => 0)
+        },
+        _count: { _all: true }
+      }).catch(() => [])
     ]);
+    const dbStatusRows = (Array.isArray(dbStatusRowsRaw) ? dbStatusRowsRaw : []) as Array<{
+      sendStatus: "pending" | "queued" | "sent" | "failed" | "skipped";
+      _count: { _all: number };
+    }>;
+    const dbPendingRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "pending")?._count._all ?? 0);
+    const dbProcessingRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "queued")?._count._all ?? 0);
+    const dbSentRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "sent")?._count._all ?? 0);
+    const dbFailedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "failed")?._count._all ?? 0);
+    const dbSkippedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "skipped")?._count._all ?? 0);
 
     const smtpIds = (activeSmtps as ActiveSmtpRow[]).map((smtp) => smtp.id);
     const warmupRows = smtpIds.length
@@ -318,7 +328,11 @@ export async function GET() {
       throttleCapTotalRps += smtp.isThrottled ? Math.max(0.01, warmupRate * 0.5) : warmupRate;
     }
     const schedulerDiag = ((schedulerDiagRow?.value as any) ?? {}) as {
-      dbQueuedRecipients?: number;
+      dbPendingRecipients?: number;
+      dbProcessingRecipients?: number;
+      dbSentRecipients?: number;
+      dbFailedRecipients?: number;
+      dbSkippedRecipients?: number;
       redisWaitingJobs?: number;
       redisActiveJobs?: number;
       schedulerBatchSize?: number;
@@ -332,10 +346,14 @@ export async function GET() {
     const redisActiveJobs =
       Number(schedulerDiag.redisActiveJobs ?? 0) ||
       (Number(deliveryCounts.active ?? 0) + Number(retryCounts.active ?? 0));
-    const dbQueued = Number(schedulerDiag.dbQueuedRecipients ?? dbQueuedRecipients ?? 0);
+    const effectiveDbPendingRecipients = Number(schedulerDiag.dbPendingRecipients ?? dbPendingRecipients ?? 0);
+    const effectiveDbProcessingRecipients = Number(schedulerDiag.dbProcessingRecipients ?? dbProcessingRecipients ?? 0);
+    const effectiveDbSentRecipients = Number(schedulerDiag.dbSentRecipients ?? dbSentRecipients ?? 0);
+    const effectiveDbFailedRecipients = Number(schedulerDiag.dbFailedRecipients ?? dbFailedRecipients ?? 0);
+    const effectiveDbSkippedRecipients = Number(schedulerDiag.dbSkippedRecipients ?? dbSkippedRecipients ?? 0);
     let bottleneckReason = "none";
-    if (dbQueued <= 0 && redisWaitingJobs <= 0) bottleneckReason = "queue_empty";
-    else if (dbQueued > 0 && redisWaitingJobs <= 0) bottleneckReason = "scheduler_underfeeding";
+    if (effectiveDbPendingRecipients <= 0 && redisWaitingJobs <= 0 && redisActiveJobs <= 1) bottleneckReason = "queue_empty";
+    else if (effectiveDbPendingRecipients > 0 && redisWaitingJobs <= 0) bottleneckReason = "scheduler_underfeeding";
     else if (usableSmtpCount > 0 && usableSmtpCount < 2) bottleneckReason = "too_few_eligible_smtps";
     else if (throttledCount > 0) bottleneckReason = "throttle";
     else if (warmupCappedCount > 0) bottleneckReason = "warmup_cap";
@@ -377,7 +395,11 @@ export async function GET() {
         targetPerSmtpRps: Number(targetPerSmtpRps.toFixed(4)),
         avgPerSmtpRps: usableSmtpCount > 0 ? Number((currentRps / usableSmtpCount).toFixed(3)) : 0,
         workerConcurrency: Number(process.env.WORKER_CONCURRENCY ?? 0),
-        dbQueuedRecipients: dbQueued,
+        dbPendingRecipients: effectiveDbPendingRecipients,
+        dbProcessingRecipients: effectiveDbProcessingRecipients,
+        dbSentRecipients: effectiveDbSentRecipients,
+        dbFailedRecipients: effectiveDbFailedRecipients,
+        dbSkippedRecipients: effectiveDbSkippedRecipients,
         redisWaitingJobs,
         redisActiveJobs,
         schedulerBatchSize: Number(schedulerDiag.schedulerBatchSize ?? 0),

@@ -15,9 +15,11 @@ const renderer = new MailTemplateRenderer();
 const WORKER_SETTINGS_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SETTINGS_CACHE_MS ?? 30_000));
 const WORKER_SMTP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SMTP_CACHE_MS ?? 30_000));
 const WORKER_QUOTA_CACHE_MS = Math.max(500, Number(process.env.WORKER_QUOTA_CACHE_MS ?? 3_000));
+const RATE_APPLY_LOG_INTERVAL_MS = Math.max(10_000, Number(process.env.RATE_APPLY_LOG_INTERVAL_MS ?? 60_000));
 let cachedPoolSetting: { value: unknown; expiresAt: number } | null = null;
 const smtpPoolCache = new Map<string, { rows: any[]; expiresAt: number }>();
 const smtpQuotaCache = new Map<string, { value: { dailySent: number; hourlySent: number; minuteSent: number }; expiresAt: number }>();
+const lastRateApplyLogByLane = new Map<string, { ts: number; effectiveRate: number; bottleneck: string }>();
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -444,17 +446,38 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     campaignId: campaign.id,
     activePoolSmtpCount: Math.max(1, activePool.length)
   });
-  console.info("[rate.apply]", {
-    smtpEmail: selected.fromEmail,
-    targetRatePerSecond: selected.targetRatePerSecond,
-    maxRatePerSecond: selected.maxRatePerSecond,
-    dailyCap: selected.dailyCap,
-    hourlyCap: selected.hourlyCap,
-    minuteCap: selected.minuteCap,
-    resolvedRatePerSecond: decision.effectiveRatePerSecond
-  });
   const safetyRate = await applySafetyToRate(selected.id, decision.effectiveRatePerSecond);
   const enforcedRate = Math.max(0.01, safetyRate.rate);
+  const laneKey = `${campaign.id}:${selected.id}`;
+  const bottleneck =
+    safetyRate.reason ??
+    (decision.reasons.some((reason) => reason.includes("warmup")) ? "warmup_cap" : decision.reasons.length > 0 ? "rate_limit" : "none");
+  const lastRateApply = lastRateApplyLogByLane.get(laneKey);
+  const now = Date.now();
+  const changedEnough =
+    !lastRateApply ||
+    Math.abs(lastRateApply.effectiveRate - enforcedRate) >= Math.max(0.2, lastRateApply.effectiveRate * 0.15) ||
+    lastRateApply.bottleneck !== bottleneck;
+  if (!lastRateApply || changedEnough || now - lastRateApply.ts >= RATE_APPLY_LOG_INTERVAL_MS) {
+    lastRateApplyLogByLane.set(laneKey, {
+      ts: now,
+      effectiveRate: enforcedRate,
+      bottleneck
+    });
+    const targetTotalRps = Number((((campaign as any).smtpPoolConfig as any)?.targetTotalRps ?? 0));
+    const activeLanes = Math.max(1, activePool.length);
+    const avgPerSmtpRps = Number((enforcedRate / activeLanes).toFixed(4));
+    console.info("[rate.apply]", {
+      campaignId: campaign.id,
+      targetTotalRps,
+      activeLanes,
+      eligibleSmtp: activeLanes,
+      avgPerSmtpRps,
+      smtpEmail: selected.fromEmail,
+      resolvedRatePerSecond: enforcedRate,
+      bottleneck
+    });
+  }
   const dynamicDelayMs = Math.max(10, Math.min(1000, Math.round(1000 / enforcedRate)));
   const maxWaitMs = Math.max(1_000, Number(process.env.RATE_LIMIT_WAIT_TIMEOUT_MS ?? 60_000));
   await safeCreateCampaignLog({

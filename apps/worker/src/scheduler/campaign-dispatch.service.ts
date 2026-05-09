@@ -35,7 +35,11 @@ let lastDiagnosticsWriteAt = 0;
 export type SchedulerDispatchResult = {
   dispatched: number;
   backfilled: number;
-  dbQueuedRecipients: number;
+  dbPendingRecipients: number;
+  dbProcessingRecipients: number;
+  dbSentRecipients: number;
+  dbFailedRecipients: number;
+  dbSkippedRecipients: number;
   redisWaitingJobs: number;
   redisActiveJobs: number;
   schedulerBatchSize: number;
@@ -146,6 +150,7 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
   }
 
   const campaignTake = Math.max(1, Math.min(100, Number(process.env.SCHEDULER_CAMPAIGN_TAKE ?? 20)));
+  const initialRecipientsTakePerCampaign = Math.max(20, Math.min(maxJobs, Number(process.env.SCHEDULER_RECIPIENTS_TAKE_PER_CAMPAIGN ?? 200)));
   const nowMs = Date.now();
   const campaignRows = cachedActiveCampaigns && cachedActiveCampaigns.expiresAt > nowMs
     ? cachedActiveCampaigns.data
@@ -171,14 +176,6 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
         select: {
           version: true
         }
-      },
-      recipients: {
-        where: { sendStatus: "pending" },
-        take: recipientsTakePerCampaign,
-        select: {
-          recipientId: true,
-          smtpAccountId: true
-        }
       }
     },
     orderBy: [{ createdAt: "asc" }],
@@ -198,23 +195,22 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
     }, 0).toFixed(4)
   );
   const laneCount = Math.max(1, activeCampaigns.length);
-  const scaledTargetBatch = Math.max(0, Math.ceil(targetTotalRpsAllCampaigns * 40));
+  const scaledTargetBatch = Math.max(0, Math.ceil(targetTotalRpsAllCampaigns * 30));
   const scaledLaneBatch = Math.max(0, laneCount * SMTP_LANE_MAX_INFLIGHT * 50);
-  const computedBatch = Math.max(maxJobs, scaledTargetBatch, scaledLaneBatch);
+  const requiredBuffer = Math.max(maxJobs, scaledTargetBatch);
+  const computedBatch = Math.max(requiredBuffer, scaledLaneBatch);
   const schedulerBatchSize = Math.max(50, Math.min(10_000, computedBatch));
-  const recipientsTakePerCampaign = Math.max(20, Math.min(schedulerBatchSize, Number(process.env.SCHEDULER_RECIPIENTS_TAKE_PER_CAMPAIGN ?? 200)));
+  const recipientsTakePerCampaign = Math.max(initialRecipientsTakePerCampaign, Math.min(schedulerBatchSize, Number(process.env.SCHEDULER_RECIPIENTS_TAKE_PER_CAMPAIGN ?? 200)));
 
   for (const campaign of activeCampaigns) {
-    if (Array.isArray(campaign.recipients) && campaign.recipients.length < recipientsTakePerCampaign) {
-      const rows = (await withSchedulerReadSlot(() =>
-        prisma.campaignRecipient.findMany({
-          where: { campaignId: campaign.id, sendStatus: "pending" },
-          take: recipientsTakePerCampaign,
-          select: { recipientId: true, smtpAccountId: true }
-        })
-      )) as any[];
-      campaign.recipients = rows;
-    }
+    const rows = (await withSchedulerReadSlot(() =>
+      prisma.campaignRecipient.findMany({
+        where: { campaignId: campaign.id, sendStatus: "pending" },
+        take: recipientsTakePerCampaign,
+        select: { recipientId: true, smtpAccountId: true }
+      })
+    )) as any[];
+    campaign.recipients = rows;
   }
 
   const slots = activeCampaigns.map((campaign: any) => ({
@@ -442,21 +438,30 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
   }
 
   const campaignIds = activeCampaigns.map((item: any) => item.id);
-  const [deliveryCounts, retryCounts, dbQueuedRecipientsRaw] = await Promise.all([
+  const [deliveryCounts, retryCounts, dbStatusRowsRaw] = await Promise.all([
     deliveryQueue.getJobCounts().catch(() => ({ waiting: 0, wait: 0, active: 0 } as any)),
     retryQueue.getJobCounts().catch(() => ({ waiting: 0, wait: 0, active: 0 } as any)),
     campaignIds.length > 0
       ? withSchedulerReadSlot(() =>
-          prisma.campaignRecipient.count({
+          prisma.campaignRecipient.groupBy({
+            by: ["sendStatus"],
             where: {
-              campaignId: { in: campaignIds },
-              sendStatus: "queued"
-            }
+              campaignId: { in: campaignIds }
+            },
+            _count: { _all: true }
           })
         )
-      : Promise.resolve(0)
+      : Promise.resolve([])
   ]);
-  const dbQueuedRecipients = Number(dbQueuedRecipientsRaw ?? 0);
+  const dbStatusRows = (Array.isArray(dbStatusRowsRaw) ? dbStatusRowsRaw : []) as Array<{
+    sendStatus: "pending" | "queued" | "sent" | "failed" | "skipped";
+    _count: { _all: number };
+  }>;
+  const dbPendingRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "pending")?._count._all ?? 0);
+  const dbProcessingRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "queued")?._count._all ?? 0);
+  const dbSentRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "sent")?._count._all ?? 0);
+  const dbFailedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "failed")?._count._all ?? 0);
+  const dbSkippedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "skipped")?._count._all ?? 0);
   const redisWaitingJobs = Number(deliveryCounts.waiting ?? (deliveryCounts as any).wait ?? 0) + Number(retryCounts.waiting ?? (retryCounts as any).wait ?? 0);
   const redisActiveJobs = Number(deliveryCounts.active ?? 0) + Number(retryCounts.active ?? 0);
   const minWaitingTarget = Math.max(200, Math.ceil(targetTotalRpsAllCampaigns * 10));
@@ -469,8 +474,8 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
     lastSchedulerReason = "base_batch";
   }
 
-  if (campaignIds.length > 0 && redisWaitingJobs < minWaitingTarget && dbQueuedRecipients > 0) {
-    const backfillLimit = Math.max(500, Math.min(5_000, minWaitingTarget - redisWaitingJobs));
+  if (campaignIds.length > 0 && redisWaitingJobs < minWaitingTarget && dbPendingRecipients > 0) {
+    const backfillLimit = Math.max(500, Math.min(5_000, requiredBuffer - redisWaitingJobs));
     const queuedRows = (await withSchedulerReadSlot(() =>
       prisma.campaignRecipient.findMany({
         where: {
@@ -527,7 +532,11 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
         create: {
           key: "scheduler_runtime_diagnostics",
           value: {
-            dbQueuedRecipients,
+            dbPendingRecipients,
+            dbProcessingRecipients,
+            dbSentRecipients,
+            dbFailedRecipients,
+            dbSkippedRecipients,
             redisWaitingJobs,
             redisActiveJobs,
             schedulerBatchSize,
@@ -539,7 +548,11 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
         },
         update: {
           value: {
-            dbQueuedRecipients,
+            dbPendingRecipients,
+            dbProcessingRecipients,
+            dbSentRecipients,
+            dbFailedRecipients,
+            dbSkippedRecipients,
             redisWaitingJobs,
             redisActiveJobs,
             schedulerBatchSize,
@@ -556,7 +569,11 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
   return {
     dispatched,
     backfilled,
-    dbQueuedRecipients,
+    dbPendingRecipients,
+    dbProcessingRecipients,
+    dbSentRecipients,
+    dbFailedRecipients,
+    dbSkippedRecipients,
     redisWaitingJobs,
     redisActiveJobs,
     schedulerBatchSize,

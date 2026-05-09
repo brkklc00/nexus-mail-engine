@@ -252,7 +252,7 @@ const schedulerInterval = setInterval(async () => {
       });
     }
     const dispatchStats = await dispatchFairBatch(schedulerBatchSize);
-    if ((dispatchStats.lastSchedulerEnqueued ?? 0) === 0 && (dispatchStats.dbQueuedRecipients ?? 0) > 0) {
+    if ((dispatchStats.lastSchedulerEnqueued ?? 0) === 0 && (dispatchStats.dbPendingRecipients ?? 0) > 0) {
       console.warn("[scheduler.underfeeding]", dispatchStats);
     }
   } catch (error) {
