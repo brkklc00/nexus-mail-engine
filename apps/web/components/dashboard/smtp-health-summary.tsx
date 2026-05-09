@@ -24,7 +24,7 @@ export function SmtpHealthSummary({
   smtpStates: SmtpSummary[];
 }) {
   return (
-    <div className="rounded-2xl border border-border bg-card p-4">
+    <div className="flex h-full min-h-[620px] flex-col rounded-2xl border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <BarChart3 className="h-4 w-4 text-zinc-400" />
@@ -40,7 +40,7 @@ export function SmtpHealthSummary({
         <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-amber-300">Sinirlandi: {smtpTotals.throttled}</div>
         <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-rose-300">Hata: {smtpTotals.error}</div>
       </div>
-      <div className="space-y-2">
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {smtpStates.length === 0 ? (
           <EmptyState
             icon="chart-bar"
@@ -48,20 +48,22 @@ export function SmtpHealthSummary({
             description="Hesaplar eklendikten sonra SMTP saglik ve sinirlama durumu burada gorunur."
           />
         ) : (
-          smtpStates.map((smtp) => (
-            <div key={smtp.id} className="rounded-xl border border-border bg-zinc-900/60 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-medium text-white">{smtp.name}</p>
-                <StatusBadge
-                  label={smtp.isThrottled ? "throttled" : "healthy"}
-                  tone={smtp.isThrottled ? "warning" : "success"}
-                />
+          <div className="space-y-2">
+            {smtpStates.map((smtp) => (
+              <div key={smtp.id} className="rounded-xl border border-border bg-zinc-900/60 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-white">{smtp.name}</p>
+                  <StatusBadge
+                    label={smtp.isThrottled ? "throttled" : "healthy"}
+                    tone={smtp.isThrottled ? "warning" : "success"}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-zinc-400">
+                  Saglayici: {smtp.providerLabel ?? "ozel"} · {smtp.throttleReason ?? "Aktif sinirlama yok"}
+                </p>
               </div>
-              <p className="mt-1 text-xs text-zinc-400">
-                Saglayici: {smtp.providerLabel ?? "ozel"} · {smtp.throttleReason ?? "Aktif sinirlama yok"}
-              </p>
-            </div>
-          ))
+            ))}
+          </div>
         )}
       </div>
     </div>

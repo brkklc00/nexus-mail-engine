@@ -154,7 +154,7 @@ export function QueueObservabilityWidget() {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <div className="flex h-full min-h-[620px] flex-col rounded-lg border border-border bg-card p-4">
       <h3 className="text-sm text-zinc-300">Kuyruk Gozlemlenebilirligi</h3>
       {!data && !error ? (
         <div className="mt-3 flex items-center gap-2 text-xs text-zinc-400">
@@ -180,7 +180,7 @@ export function QueueObservabilityWidget() {
           </p>
         ))}
       </div>
-      <div className="mt-3 rounded bg-zinc-900/60 p-3 text-xs text-zinc-300">
+      <div className="mt-3 max-h-32 overflow-y-auto rounded bg-zinc-900/60 p-3 text-xs text-zinc-300">
         <p className="mb-1 uppercase tracking-wider text-zinc-400">Sinirlama Durumu</p>
         {(data?.throttledStates ?? []).length === 0 ? <p>Sinirlanan SMTP yok.</p> : null}
         {(data?.throttledStates ?? []).map((item) => (
@@ -190,7 +190,7 @@ export function QueueObservabilityWidget() {
           </div>
         ))}
       </div>
-      <div className="mt-3 rounded bg-zinc-900/60 p-3 text-xs text-zinc-300">
+      <div className="mt-3 max-h-28 overflow-y-auto rounded bg-zinc-900/60 p-3 text-xs text-zinc-300">
         <p className="mb-1 uppercase tracking-wider text-zinc-400">Paylasilan Guvenlik</p>
         {(data?.sharedSafety ?? []).slice(0, 4).map((item) => (
           <p key={item.smtpAccountId}>

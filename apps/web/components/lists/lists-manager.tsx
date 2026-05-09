@@ -388,6 +388,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
 
   const [lists, setLists] = useState(initialLists);
   const [selectedId, setSelectedId] = useState(initialLists[0]?.id ?? "");
+  const [librarySearch, setLibrarySearch] = useState("");
   const [selectedSummary, setSelectedSummary] = useState<ListSummary>(initialLists[0]?.summary ?? EMPTY_SUMMARY);
   const [actionState, setActionState] = useState<ActionState>(null);
   const [importProgress, setImportProgress] = useState<ImportProgress>(EMPTY_IMPORT_PROGRESS);
@@ -416,6 +417,11 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   });
 
   const selected = useMemo(() => lists.find((item) => item.id === selectedId) ?? null, [lists, selectedId]);
+  const filteredLists = useMemo(() => {
+    const token = librarySearch.trim().toLowerCase();
+    if (!token) return lists;
+    return lists.filter((item) => item.name.toLowerCase().includes(token));
+  }, [lists, librarySearch]);
 
   async function sendImportChunk(
     listId: string,
@@ -911,8 +917,8 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   const etaSeconds = rowsPerSecond > 0 ? Math.ceil(remainingRows / rowsPerSecond) : 0;
 
   return (
-    <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px_1fr]">
-      <section className="rounded-2xl border border-border bg-card p-4">
+    <div className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-[320px_1fr]">
+      <section className="h-full rounded-2xl border border-border bg-card p-4 xl:min-h-[760px]">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium text-zinc-200">List Library</h3>
           <button
@@ -924,11 +930,19 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
             New
           </button>
         </div>
-        <div className="mt-4 space-y-2">
-          {lists.length === 0 ? (
-            <p className="text-xs text-zinc-500">No lists yet.</p>
+        <div className="mt-3">
+          <input
+            value={librarySearch}
+            onChange={(e) => setLibrarySearch(e.target.value)}
+            placeholder="Liste ara..."
+            className="w-full rounded-lg border border-border bg-zinc-900/70 px-3 py-2 text-sm text-zinc-100"
+          />
+        </div>
+        <div className="mt-3 max-h-[560px] space-y-2 overflow-y-auto pr-1">
+          {filteredLists.length === 0 ? (
+            <p className="text-xs text-zinc-500">Liste bulunamadi</p>
           ) : (
-            lists.map((list) => (
+            filteredLists.map((list) => (
               <button
                 key={list.id}
                 type="button"
@@ -947,7 +961,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         </div>
       </section>
 
-      <section className="space-y-4 rounded-2xl border border-border bg-card p-4">
+      <section className="h-full space-y-4 rounded-2xl border border-border bg-card p-4 xl:min-h-[760px]">
         {selected ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">

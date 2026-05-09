@@ -61,12 +61,6 @@ function getAliasFromUrl(raw: string) {
   return value.replace(/^\/+/, "");
 }
 
-function resolveDisplayAlias(item: Pick<ShortLinkItem, "alias" | "shortUrl">) {
-  if (item.alias) return item.alias;
-  const fromUrl = getAliasFromUrl(item.shortUrl);
-  return fromUrl || item.shortUrl;
-}
-
 function normalizeItem(raw: any): ShortLinkItem {
   const alias = raw?.alias ? String(raw.alias) : getAliasFromUrl(String(raw?.url ?? raw?.short_url ?? raw?.shortUrl ?? ""));
   const fullShortUrl = composeFullShortUrl(String(raw?.shortUrl ?? raw?.url ?? raw?.short_url ?? alias ?? ""));
@@ -145,11 +139,9 @@ export function ShortLinksManager() {
 
   const stats = useMemo(() => {
     const totalClicks = items.reduce((sum, item) => sum + item.clicks, 0);
-    const top = [...items].sort((a, b) => b.clicks - a.clicks)[0] ?? null;
     return {
       totalLinks: total,
-      totalClicks,
-      top
+      totalClicks
     };
   }, [items, total]);
 
@@ -226,58 +218,76 @@ export function ShortLinksManager() {
     await loadLinks();
   }
 
-  const topClicked = useMemo(() => [...items].sort((a, b) => b.clicks - a.clicks).slice(0, 5), [items]);
   const aliasPreview = form.url.trim();
   const previewShortUrl = composeFullShortUrl(aliasPreview);
   const editingBaseUrl = editing ? composeFullShortUrl(editing.alias ?? getAliasFromUrl(editing.shortUrl)) : null;
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-        <Card title="Total links" value={stats.totalLinks} />
-        <Card title="Total clicks" value={stats.totalClicks} />
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <Card title="Toplam link" value={stats.totalLinks} />
+        <Card title="Toplam tiklama" value={stats.totalClicks} />
         <Card title="Shortener base" value={SHORT_BASE} />
-        <Card
-          title="Top clicked"
-          value={stats.top ? `${resolveDisplayAlias(stats.top)} (${stats.top.clicks})` : "-"}
-          tooltip={stats.top?.shortUrl ?? "-"}
-        />
       </div>
 
       <section className="rounded-2xl border border-border bg-card p-3">
         <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
-          <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Ara" value={filters.search} onChange={(e) => setFilters((s) => ({ ...s, search: e.target.value }))} />
-          <select className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.search_by} onChange={(e) => setFilters((s) => ({ ...s, search_by: e.target.value }))}>
-            <option value="url">Search by short URL</option>
-            <option value="location_url">Search by destination</option>
-          </select>
-          <select className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.is_enabled} onChange={(e) => setFilters((s) => ({ ...s, is_enabled: e.target.value }))}>
-            <option value="all">Enabled: all</option>
-            <option value="1">Enabled only</option>
-            <option value="0">Disabled only</option>
-          </select>
-          <select className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.type} onChange={(e) => setFilters((s) => ({ ...s, type: e.target.value }))}>
-            <option value="">Type: all</option>
-            <option value="redirect">redirect</option>
-            <option value="frame">frame</option>
-          </select>
-          <select className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.order_by} onChange={(e) => setFilters((s) => ({ ...s, order_by: e.target.value }))}>
-            <option value="clicks">Order: clicks</option>
-            <option value="datetime_create">Order: created date</option>
-            <option value="url">Order: URL</option>
-          </select>
-          <input type="datetime-local" className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.datetime_start} onChange={(e) => setFilters((s) => ({ ...s, datetime_start: e.target.value }))} />
-          <input type="datetime-local" className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.datetime_end} onChange={(e) => setFilters((s) => ({ ...s, datetime_end: e.target.value }))} />
-          <select className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={String(resultsPerPage)} onChange={(e) => setResultsPerPage(Number(e.target.value))}>
-            <option value="10">10 rows</option>
-            <option value="25">25 rows</option>
-            <option value="50">50 rows</option>
-            <option value="100">100 rows</option>
-          </select>
+          <div>
+            <p className="mb-1 text-xs text-zinc-400">Arama</p>
+            <input className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Ara" value={filters.search} onChange={(e) => setFilters((s) => ({ ...s, search: e.target.value }))} />
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-zinc-400">Arama turu</p>
+            <select className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.search_by} onChange={(e) => setFilters((s) => ({ ...s, search_by: e.target.value }))}>
+              <option value="url">Kisa URL</option>
+              <option value="location_url">Hedef URL</option>
+            </select>
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-zinc-400">Durum</p>
+            <select className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.is_enabled} onChange={(e) => setFilters((s) => ({ ...s, is_enabled: e.target.value }))}>
+              <option value="all">Tum durumlar</option>
+              <option value="1">Sadece aktif</option>
+              <option value="0">Sadece pasif</option>
+            </select>
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-zinc-400">Link tipi</p>
+            <select className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.type} onChange={(e) => setFilters((s) => ({ ...s, type: e.target.value }))}>
+              <option value="">Tum tipler</option>
+              <option value="redirect">redirect</option>
+              <option value="frame">frame</option>
+            </select>
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-zinc-400">Siralama</p>
+            <select className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.order_by} onChange={(e) => setFilters((s) => ({ ...s, order_by: e.target.value }))}>
+              <option value="clicks">Tiklama</option>
+              <option value="datetime_create">Olusturma tarihi</option>
+              <option value="url">URL</option>
+            </select>
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-zinc-400">Baslangic tarihi</p>
+            <input type="datetime-local" className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.datetime_start} onChange={(e) => setFilters((s) => ({ ...s, datetime_start: e.target.value }))} />
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-zinc-400">Bitis tarihi</p>
+            <input type="datetime-local" className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={filters.datetime_end} onChange={(e) => setFilters((s) => ({ ...s, datetime_end: e.target.value }))} />
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-zinc-400">Sayfa basina</p>
+            <select className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={String(resultsPerPage)} onChange={(e) => setResultsPerPage(Number(e.target.value))}>
+              <option value="10">10 satir</option>
+              <option value="25">25 satir</option>
+              <option value="50">50 satir</option>
+              <option value="100">100 satir</option>
+            </select>
+          </div>
           <div className="flex gap-2">
             <button className="inline-flex items-center gap-2 rounded border border-border px-3 py-2 text-sm" onClick={() => void loadLinks()}>
               <RefreshCcw className="h-4 w-4" />
-              Refresh stats
+              Yenile
             </button>
             <button
               className="inline-flex items-center gap-2 rounded bg-accent px-3 py-2 text-sm text-white"
@@ -289,13 +299,13 @@ export function ShortLinksManager() {
               }}
             >
               <Link2 className="h-4 w-4" />
-              Create link
+              Link olustur
             </button>
           </div>
         </div>
         <div className="mt-2">
           <button className="rounded border border-border px-3 py-1 text-xs text-zinc-300" onClick={() => { setPage(1); void loadLinks(); }}>
-            Apply filters
+            Filtreleri uygula
           </button>
         </div>
       </section>
@@ -366,32 +376,21 @@ export function ShortLinksManager() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-3">
-        <p className="text-xs uppercase tracking-wide text-zinc-400">Top clicked links</p>
-        <div className="mt-2 grid gap-2 md:grid-cols-2">
-          {topClicked.map((item) => (
-            <div key={item.id} className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300" title={item.shortUrl}>
-              <p className="truncate text-zinc-100">
-                {resolveDisplayAlias(item)} ({item.clicks})
-              </p>
-              <p className="truncate text-zinc-400">{item.destinationUrl}</p>
-              <p className="mt-1 truncate text-zinc-500">{item.shortUrl}</p>
-            </div>
-          ))}
-          {topClicked.length === 0 ? <p className="text-xs text-zinc-500">No links yet.</p> : null}
-        </div>
-      </section>
-
       {openCreate ? (
         <OverlayPortal active={openCreate} lockScroll>
           <div className="fixed inset-0 z-50 bg-black/60 p-4" onClick={() => setOpenCreate(false)}>
             <div className="mx-auto w-full max-w-2xl rounded-2xl border border-border bg-zinc-950 p-4" onClick={(e) => e.stopPropagation()}>
               <p className="text-sm font-semibold text-white">{editing ? "Kisa link duzenle" : "Kisa link olustur"}</p>
               <div className="mt-3 grid gap-2">
-                <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Destination URL (required)" value={form.location_url} onChange={(e) => setForm((s) => ({ ...s, location_url: e.target.value }))} />
                 <label className="space-y-1">
-                  <span className="text-xs text-zinc-400">Short alias</span>
+                  <span className="text-xs text-zinc-400">Hedef URL</span>
+                  <input className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Destination URL (required)" value={form.location_url} onChange={(e) => setForm((s) => ({ ...s, location_url: e.target.value }))} />
+                  <p className="text-[11px] text-zinc-500">Kullanici bu adrese yonlendirilir.</p>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs text-zinc-400">Kisa link adi / Alias</span>
                   <input className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="Custom alias (optional)" value={form.url} onChange={(e) => setForm((s) => ({ ...s, url: e.target.value }))} />
+                  <p className="text-[11px] text-zinc-500">Bos birakirsaniz sistem otomatik kisa link olusturur.</p>
                 </label>
                 <div className="rounded border border-border bg-zinc-900/40 px-3 py-2 text-xs text-zinc-300">
                   <p className="text-zinc-400">Short URL preview</p>
@@ -417,19 +416,31 @@ export function ShortLinksManager() {
                   </div>
                 ) : null}
                 <div className="grid gap-2 md:grid-cols-3">
-                  <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="UTM source" value={form.utm_source} onChange={(e) => setForm((s) => ({ ...s, utm_source: e.target.value }))} />
-                  <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="UTM medium" value={form.utm_medium} onChange={(e) => setForm((s) => ({ ...s, utm_medium: e.target.value }))} />
-                  <input className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="UTM campaign" value={form.utm_campaign} onChange={(e) => setForm((s) => ({ ...s, utm_campaign: e.target.value }))} />
+                  <label className="space-y-1">
+                    <span className="text-xs text-zinc-400">UTM Source</span>
+                    <input className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="UTM source" value={form.utm_source} onChange={(e) => setForm((s) => ({ ...s, utm_source: e.target.value }))} />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs text-zinc-400">UTM Medium</span>
+                    <input className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="UTM medium" value={form.utm_medium} onChange={(e) => setForm((s) => ({ ...s, utm_medium: e.target.value }))} />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs text-zinc-400">UTM Campaign</span>
+                    <input className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" placeholder="UTM campaign" value={form.utm_campaign} onChange={(e) => setForm((s) => ({ ...s, utm_campaign: e.target.value }))} />
+                  </label>
                 </div>
-                <select className="rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={String(form.http_status_code)} onChange={(e) => setForm((s) => ({ ...s, http_status_code: Number(e.target.value) as 301 | 302 | 307 | 308 }))}>
-                  <option value="301">301</option>
-                  <option value="302">302</option>
-                  <option value="307">307</option>
-                  <option value="308">308</option>
-                </select>
+                <label className="space-y-1">
+                  <span className="text-xs text-zinc-400">Yonlendirme kodu</span>
+                  <select className="w-full rounded border border-border bg-zinc-900 px-3 py-2 text-sm" value={String(form.http_status_code)} onChange={(e) => setForm((s) => ({ ...s, http_status_code: Number(e.target.value) as 301 | 302 | 307 | 308 }))}>
+                    <option value="301">301</option>
+                    <option value="302">302</option>
+                    <option value="307">307</option>
+                    <option value="308">308</option>
+                  </select>
+                </label>
                 <label className="flex items-center gap-2 rounded border border-border bg-zinc-900/40 px-3 py-2 text-xs text-zinc-300">
                   <input type="checkbox" checked={form.forward_query_parameters_is_enabled} onChange={(e) => setForm((s) => ({ ...s, forward_query_parameters_is_enabled: e.target.checked }))} />
-                  Forward query parameters
+                  Query parametrelerini aktar
                 </label>
               </div>
               <div className="mt-3 flex gap-2">
