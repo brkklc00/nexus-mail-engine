@@ -64,6 +64,13 @@ type LiveEvent = {
   currentRotation?: string;
   perSmtpSent?: Array<{ smtpAccountId: string; smtpName: string; sent: number }>;
   queue?: { waiting: number; active: number; failed: number };
+  targetTotalRps?: number;
+  dailyTarget?: number;
+  activeLaneCount?: number;
+  throttledSmtpCount?: number;
+  eligibleSmtpCount?: number;
+  avgPerSmtpRps?: number;
+  bottleneckReason?: string;
 };
 
 export function LiveSendPanel() {
@@ -220,7 +227,7 @@ export function LiveSendPanel() {
     }
     const confirmed = await confirm({
         title: "Bu kampanya baslatilsin mi?",
-      message: `Kampanya Adi: ${form.name}\nSablon: ${selectedTemplate?.title ?? "-"}\nHedef: ${form.targetMode === "list" ? selectedList?.name ?? "-" : form.targetMode === "saved_segment" ? selectedSegment?.name ?? "-" : "Ad-hoc segment"}\nTahmini alici sayisi: ${estimatedTarget.toLocaleString()}\nGonderim Stratejisi: ${form.strategy}\nSMTP Degisim Araligi: ${form.rotateEvery}\nTahmini hiz: ${estimatedRate.toFixed(2)}/s\n\nGonderim, aktif SMTP havuzu uzerinden otomatik olarak dagitilacaktir.`,
+      message: `Kampanya Adi: ${form.name}\nSablon: ${selectedTemplate?.title ?? "-"}\nHedef: ${form.targetMode === "list" ? selectedList?.name ?? "-" : form.targetMode === "saved_segment" ? selectedSegment?.name ?? "-" : "Ad-hoc segment"}\nTahmini alici sayisi: ${estimatedTarget.toLocaleString()}\nTahmini hiz: ${estimatedRate.toFixed(2)}/s\n\nBu kampanya ${usableSmtpOptions.length} uygun SMTP ile paralel gönderilecek.`,
         confirmLabel: "Olustur ve Baslat",
         cancelLabel: "Iptal",
       tone: "warning"
@@ -487,9 +494,9 @@ export function LiveSendPanel() {
         <p>Tahmini hiz: {estimatedRate.toFixed(2)}/s</p>
       </div>
       <div className="grid grid-cols-1 gap-2 rounded-md border border-border bg-zinc-900/30 p-3 text-xs text-zinc-300 md:grid-cols-3">
-        <p>Gonderim: Aktif SMTP havuzu</p>
-        <p>Strateji: {form.strategy}</p>
-        <p>SMTP havuzu otomatik kullanilacak</p>
+        <p>Gonderim: Tum uygun SMTP havuzu</p>
+        <p>Tahmini aktif lane: {usableSmtpOptions.length}</p>
+        <p>Bu kampanya paralel SMTP pool modu ile calisir</p>
       </div>
       {targetZero ? (
         <p className="flex items-center gap-1 text-xs text-amber-300">
@@ -561,6 +568,11 @@ export function LiveSendPanel() {
         <Metric label="Kuyruk Aktif" value={live?.queue?.active ?? 0} />
         <Metric label="Kuyruk Basarisiz" value={live?.queue?.failed ?? 0} />
       </div>
+      {live && (live.targetTotalRps ?? 0) > 0 && (live.effectiveRate ?? 0) < (live.targetTotalRps ?? 0) * 0.8 ? (
+        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          Hedef hızın altında gönderim yapılıyor. Sebep: {live.bottleneckReason ?? "none"}
+        </p>
+      ) : null}
 
       {live ? (
         <div className="space-y-2">
@@ -587,6 +599,10 @@ export function LiveSendPanel() {
               </div>
             </div>
           ) : null}
+          <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
+            Hedef toplam RPS: {Number(live.targetTotalRps ?? 0).toFixed(2)} · Gerçek RPS: {Number(live.effectiveRate ?? 0).toFixed(2)} ·
+            Aktif lane: {live.activeLaneCount ?? 0} · Uygun SMTP: {live.eligibleSmtpCount ?? 0}
+          </div>
         </div>
       ) : null}
 

@@ -101,6 +101,19 @@ function isMissingCampaignSoftDeleteColumn(message: string): boolean {
   return /column .*isdeleted.* does not exist/i.test(message);
 }
 
+function smtpEligibilityReason(smtp: any): string | null {
+  if (!smtp?.isActive) return "disabled";
+  if (smtp?.isSoftDeleted) return "archived";
+  if (!smtp?.host || !smtp?.port || !smtp?.username || !smtp?.fromEmail || !smtp?.passwordEncrypted) return "missing_credentials";
+  const authText = `${smtp?.healthStatus ?? ""} ${smtp?.throttleReason ?? ""} ${smtp?.lastError ?? ""}`.toLowerCase();
+  if (authText.includes("auth_failed") || authText.includes("authentication") || authText.includes("invalid credentials")) {
+    return "auth_failed";
+  }
+  if (smtp?.healthStatus === "error") return "unhealthy";
+  if (smtp?.isThrottled && smtp?.cooldownUntil && new Date(smtp.cooldownUntil).getTime() > Date.now()) return "throttled";
+  return null;
+}
+
 async function findCampaignForDelivery(campaignId: string) {
   const select = {
     id: true,
@@ -310,16 +323,19 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
   if (!smtpPoolCache.get(poolCacheKey) || (smtpPoolCache.get(poolCacheKey)?.expiresAt ?? 0) <= nowMs) {
     smtpPoolCache.set(poolCacheKey, { rows: activePool as any[], expiresAt: nowMs + WORKER_SMTP_CACHE_MS });
   }
-  const selectedSmtp =
-    activePool.find((smtp: any) => smtp.id === payload.smtpAccountId) ??
-    activePool[0];
-  if (!selectedSmtp) {
+  if (activePool.length === 0) {
     throw new Error("smtp_pool_exhausted");
   }
-  if (selectedSmtp.id !== payload.smtpAccountId) {
+  const eligiblePool = activePool.filter((smtp: any) => smtpEligibilityReason(smtp) === null);
+  const fallbackSmtp = eligiblePool.find((smtp: any) => smtp.id === payload.smtpAccountId) ?? eligiblePool[0];
+  if (!fallbackSmtp) {
+    throw new Error("smtp_pool_exhausted");
+  }
+  const selected = fallbackSmtp;
+  if (selected.id !== payload.smtpAccountId) {
     await prisma.campaignRecipient.updateMany({
       where: { campaignId: campaign.id, recipientId: recipient.id },
-      data: { smtpAccountId: selectedSmtp.id }
+      data: { smtpAccountId: selected.id }
     });
   }
   if (campaign.status !== "running") {
@@ -353,10 +369,40 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     return;
   }
 
-  const quotaUsage = await readSmtpQuotaUsage(selectedSmtp.id);
-  const dailyCap = Number(selectedSmtp.dailyCap ?? 0);
-  const hourlyCap = Number(selectedSmtp.hourlyCap ?? 0);
-  const minuteCap = Number(selectedSmtp.minuteCap ?? 0);
+  const suppressed = await prisma.suppressionEntry.findFirst({
+    where: {
+      emailNormalized: recipient.emailNormalized,
+      scope: "global"
+    },
+    select: { id: true }
+  });
+  if (suppressed || recipient.status === "unsubscribed") {
+    const skipped = await transitionCampaignRecipientStatus({
+      campaignId: campaign.id,
+      recipientId: recipient.id,
+      to: "skipped"
+    });
+    if (skipped) {
+      await prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { totalSkipped: { increment: 1 } }
+      });
+      await safeCreateCampaignLog({
+        campaignId: campaign.id,
+        recipientId: recipient.id,
+        eventType: "suppression_skip",
+        status: "skipped",
+        message: "Recipient skipped due to suppression/unsubscribe safety checks."
+      });
+    }
+    await finalizeCampaignIfDone(campaign.id);
+    return;
+  }
+
+  const quotaUsage = await readSmtpQuotaUsage(selected.id);
+  const dailyCap = Number(selected.dailyCap ?? 0);
+  const hourlyCap = Number(selected.hourlyCap ?? 0);
+  const minuteCap = Number(selected.minuteCap ?? 0);
   const capReached =
     (dailyCap > 0 && quotaUsage.dailySent >= dailyCap) ||
     (hourlyCap > 0 && quotaUsage.hourlySent >= hourlyCap) ||
@@ -377,9 +423,9 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
         recipientId: recipient.id,
         eventType: "smtp_quota_reached",
         status: "skipped",
-        message: `SMTP quota reached for ${selectedSmtp.id}`,
+        message: `SMTP quota reached for ${selected.id}`,
         metadata: {
-          smtpAccountId: selectedSmtp.id,
+          smtpAccountId: selected.id,
           dailyCap,
           hourlyCap,
           minuteCap,
@@ -394,20 +440,20 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
   }
 
   const decision = await getEffectiveSendRate({
-    smtpAccountId: selectedSmtp.id,
+    smtpAccountId: selected.id,
     campaignId: campaign.id,
     activePoolSmtpCount: Math.max(1, activePool.length)
   });
   console.info("[rate.apply]", {
-    smtpEmail: selectedSmtp.fromEmail,
-    targetRatePerSecond: selectedSmtp.targetRatePerSecond,
-    maxRatePerSecond: selectedSmtp.maxRatePerSecond,
-    dailyCap: selectedSmtp.dailyCap,
-    hourlyCap: selectedSmtp.hourlyCap,
-    minuteCap: selectedSmtp.minuteCap,
+    smtpEmail: selected.fromEmail,
+    targetRatePerSecond: selected.targetRatePerSecond,
+    maxRatePerSecond: selected.maxRatePerSecond,
+    dailyCap: selected.dailyCap,
+    hourlyCap: selected.hourlyCap,
+    minuteCap: selected.minuteCap,
     resolvedRatePerSecond: decision.effectiveRatePerSecond
   });
-  const safetyRate = await applySafetyToRate(selectedSmtp.id, decision.effectiveRatePerSecond);
+  const safetyRate = await applySafetyToRate(selected.id, decision.effectiveRatePerSecond);
   const enforcedRate = Math.max(0.01, safetyRate.rate);
   const dynamicDelayMs = Math.max(10, Math.min(1000, Math.round(1000 / enforcedRate)));
   const maxWaitMs = Math.max(1_000, Number(process.env.RATE_LIMIT_WAIT_TIMEOUT_MS ?? 60_000));
@@ -415,7 +461,7 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     campaignId: campaign.id,
     eventType: "campaign_rate_debug",
     status: "success",
-    idempotencyKey: `campaign_rate_debug:${campaign.id}:${selectedSmtp.id}`,
+    idempotencyKey: `campaign_rate_debug:${campaign.id}:${selected.id}`,
     message: "Resolved effective send rate for SMTP lane.",
     metadata: {
       globalRate: decision.globalRatePerSecond,
@@ -425,7 +471,7 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     }
   });
   for (let waitedMs = 0; waitedMs <= maxWaitMs; waitedMs += dynamicDelayMs) {
-    if (canDispatch(`smtp:${selectedSmtp.id}`, enforcedRate)) {
+    if (canDispatch(`smtp:${selected.id}`, enforcedRate)) {
       break;
     }
     await sleep(dynamicDelayMs);
@@ -447,24 +493,24 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
   const trackedHtml = await buildTrackedHtml(rendered.html, campaign.id, recipient.id);
 
   const transporter = nodemailer.createTransport({
-    host: selectedSmtp.host,
-    port: selectedSmtp.port,
-    secure: selectedSmtp.encryption === "ssl",
-    requireTLS: selectedSmtp.encryption === "tls" || selectedSmtp.encryption === "starttls",
+    host: selected.host,
+    port: selected.port,
+    secure: selected.encryption === "ssl",
+    requireTLS: selected.encryption === "tls" || selected.encryption === "starttls",
     auth: {
-      user: selectedSmtp.username,
-      pass: decryptSmtpSecret(selectedSmtp.passwordEncrypted)
+      user: selected.username,
+      pass: decryptSmtpSecret(selected.passwordEncrypted)
     }
   });
 
   try {
     await transporter.sendMail({
-      from: `"${selectedSmtp.fromName ?? "Nexus"}" <${selectedSmtp.fromEmail}>`,
+      from: `"${selected.fromName ?? "Nexus"}" <${selected.fromEmail}>`,
       to: recipient.email,
       subject: campaign.subject,
       html: trackedHtml,
       text: rendered.text,
-      replyTo: selectedSmtp.replyTo ?? undefined
+      replyTo: selected.replyTo ?? undefined
     });
 
     const transitioned = await transitionCampaignRecipientStatus({
@@ -489,12 +535,12 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
       prisma.smtpWarmupStat.upsert({
         where: {
           smtpAccountId_date: {
-            smtpAccountId: selectedSmtp.id,
+            smtpAccountId: selected.id,
             date: beginOfDay()
           }
         },
         create: {
-          smtpAccountId: selectedSmtp.id,
+          smtpAccountId: selected.id,
           date: beginOfDay(),
           successfulDeliveries: 1,
           tierName: decision.warmupTierName,
@@ -513,9 +559,9 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
       eventType: "sent",
       status: "success",
       idempotencyKey: payload.idempotencyKey,
-      message: `Delivered via ${selectedSmtp.host}`,
+      message: `Delivered via ${selected.host}`,
       metadata: {
-        smtpAccountId: selectedSmtp.id,
+        smtpAccountId: selected.id,
         effectiveRate: enforcedRate,
         globalRate: decision.globalRatePerSecond,
         parallelSMTP: decision.parallelSmtpCount,
@@ -524,9 +570,9 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
         warmupTier: decision.warmupTierName
       }
     });
-    await recordDeliveryOutcome(selectedSmtp.id, false);
+    await recordDeliveryOutcome(selected.id, false);
     await prisma.smtpAccount.update({
-      where: { id: selectedSmtp.id },
+      where: { id: selected.id },
       data: {
         healthStatus: "healthy",
         lastError: null,
@@ -550,12 +596,12 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
         prisma.smtpWarmupStat.upsert({
           where: {
             smtpAccountId_date: {
-              smtpAccountId: selectedSmtp.id,
+              smtpAccountId: selected.id,
               date: beginOfDay()
             }
           },
           create: {
-            smtpAccountId: selectedSmtp.id,
+            smtpAccountId: selected.id,
             date: beginOfDay(),
             failedDeliveries: 1
           },
@@ -565,7 +611,7 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
         })
       ]);
     }
-    await recordDeliveryOutcome(selectedSmtp.id, true);
+    await recordDeliveryOutcome(selected.id, true);
     const now = Date.now();
     const poolSetting = cachedPoolSetting && cachedPoolSetting.expiresAt > now
       ? cachedPoolSetting
@@ -579,7 +625,7 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     const cooldownSec = Number((poolSetting?.value as any)?.cooldownAfterErrorSec ?? 0);
     const cooldownUntil = cooldownSec > 0 ? new Date(Date.now() + cooldownSec * 1000) : null;
     await prisma.smtpAccount.update({
-      where: { id: selectedSmtp.id },
+      where: { id: selected.id },
       data: {
         healthStatus: "error",
         lastError: error instanceof Error ? error.message.slice(0, 500) : "delivery_failed",

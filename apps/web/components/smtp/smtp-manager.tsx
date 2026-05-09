@@ -381,9 +381,12 @@ export function SmtpManager({
   const [dailyTargetScope, setDailyTargetScope] = useState<"healthy_active" | "all_active" | "selected">(
     (initialDailyTargetSummary?.scope as any) ?? "healthy_active"
   );
-  const [dailyTargetResetThrottle, setDailyTargetResetThrottle] = useState(false);
-  const [dailyTargetClearCooldown, setDailyTargetClearCooldown] = useState(false);
-  const [dailyTargetClearLastError, setDailyTargetClearLastError] = useState(false);
+  const [dailyTargetWarmupAutoAdjust, setDailyTargetWarmupAutoAdjust] = useState(true);
+  const [dailyTargetForceTargetForWarmed, setDailyTargetForceTargetForWarmed] = useState(true);
+  const [dailyTargetClearExpiredThrottle, setDailyTargetClearExpiredThrottle] = useState(true);
+  const [dailyTargetUseAllEligibleParallel, setDailyTargetUseAllEligibleParallel] = useState(true);
+  const [dailyTargetUpdateWorkerPool, setDailyTargetUpdateWorkerPool] = useState(true);
+  const [dailyTargetApplyRunningCampaigns, setDailyTargetApplyRunningCampaigns] = useState(true);
   const [dailyTargetExcludeUnhealthy, setDailyTargetExcludeUnhealthy] = useState(true);
   const [dailyTargetEnforceSuppression, setDailyTargetEnforceSuppression] = useState(true);
   const [dailyTargetSummary, setDailyTargetSummary] = useState<DailyTargetSummary>({
@@ -728,12 +731,15 @@ export function SmtpManager({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           dailyTarget: Math.max(1, Number(dailyTargetInput || 1)),
-          mode: dailyTargetMode,
           scope: dailyTargetScope,
           smtpAccountIds: dailyTargetScope === "selected" ? [...selectedIds] : undefined,
-          resetThrottle: dailyTargetResetThrottle,
-          clearCooldown: dailyTargetClearCooldown,
-          clearLastError: dailyTargetClearLastError,
+          warmupPolicy: dailyTargetMode === "safe" ? "conservative" : dailyTargetMode === "aggressive" ? "force_target" : "automatic_recommended",
+          warmupAutoAdjust: dailyTargetWarmupAutoAdjust,
+          forceTargetForWarmed: dailyTargetForceTargetForWarmed,
+          clearExpiredThrottle: dailyTargetClearExpiredThrottle,
+          useAllEligibleParallel: dailyTargetUseAllEligibleParallel,
+          updateWorkerPoolSettings: dailyTargetUpdateWorkerPool,
+          applyToRunningCampaigns: dailyTargetApplyRunningCampaigns,
           excludeUnhealthy: dailyTargetExcludeUnhealthy,
           enforceSuppressionChecks: dailyTargetEnforceSuppression
         })
@@ -2351,9 +2357,12 @@ export function SmtpManager({
               </div>
 
               <div className="mt-3 grid grid-cols-1 gap-2 rounded-xl border border-border bg-zinc-900/40 p-3 text-xs text-zinc-300 md:grid-cols-2">
-                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetResetThrottle} onChange={(e) => setDailyTargetResetThrottle(e.target.checked)} /> Throttle durumlarini temizle</label>
-                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetClearCooldown} onChange={(e) => setDailyTargetClearCooldown(e.target.checked)} /> Cooldown temizle</label>
-                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetClearLastError} onChange={(e) => setDailyTargetClearLastError(e.target.checked)} /> Son hata bilgisini temizle</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetUseAllEligibleParallel} onChange={(e) => setDailyTargetUseAllEligibleParallel(e.target.checked)} /> Tüm uygun SMTP’leri paralel kullan</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetWarmupAutoAdjust} onChange={(e) => setDailyTargetWarmupAutoAdjust(e.target.checked)} /> Warmup limitlerini hedefe göre otomatik ayarla</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetForceTargetForWarmed} onChange={(e) => setDailyTargetForceTargetForWarmed(e.target.checked)} /> Hedef hıza geç: yeterli geçmişi olan SMTP’lerde ısınma sınırını kaldır</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetClearExpiredThrottle} onChange={(e) => setDailyTargetClearExpiredThrottle(e.target.checked)} /> Süresi geçmiş throttle durumlarını temizle</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetUpdateWorkerPool} onChange={(e) => setDailyTargetUpdateWorkerPool(e.target.checked)} /> Worker/pool hız ayarlarını hedefe göre güncelle</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetApplyRunningCampaigns} onChange={(e) => setDailyTargetApplyRunningCampaigns(e.target.checked)} /> Mevcut çalışan kampanyalara uygula</label>
                 <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetExcludeUnhealthy} onChange={(e) => setDailyTargetExcludeUnhealthy(e.target.checked)} /> Sagliksiz SMTP'leri dahil etme</label>
                 <label className="flex items-center gap-2 md:col-span-2"><input type="checkbox" checked={dailyTargetEnforceSuppression} onChange={(e) => setDailyTargetEnforceSuppression(e.target.checked)} /> Suppression / unsubscribe kontrollerini zorunlu tut</label>
               </div>
@@ -2389,7 +2398,7 @@ export function SmtpManager({
                   className="inline-flex items-center gap-1 rounded-lg border border-indigo-500/50 bg-indigo-500/20 px-3 py-2 text-xs text-indigo-200 disabled:opacity-50"
                 >
                   {actionLoading === "apply_daily_target" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                  Uygula
+                  Hedefi Uygula
                 </button>
               </div>
             </div>

@@ -98,10 +98,10 @@ export async function GET(req: Request) {
         const configuredSmtpIds = Array.isArray(((campaign as any).smtpPoolConfig as any)?.smtpIds)
           ? ((((campaign as any).smtpPoolConfig as any).smtpIds as string[]))
           : [campaign.smtpAccountId];
-        const [smtpPool, perSmtpSentRows, perSmtpQueuedRows, queueObs] = await Promise.all([
+        const [smtpPool, perSmtpSentRows, perSmtpQueuedRows, queueObs, targetSummaryRow] = await Promise.all([
           prisma.smtpAccount.findMany({
             where: { id: { in: configuredSmtpIds }, isActive: true, isSoftDeleted: false },
-            select: { id: true, name: true, isThrottled: true }
+            select: { id: true, name: true, isThrottled: true, healthStatus: true }
           }),
           prisma.campaignRecipient.groupBy({
             by: ["smtpAccountId"],
@@ -113,7 +113,8 @@ export async function GET(req: Request) {
             where: { campaignId: campaign.id, sendStatus: "queued" },
             _count: { _all: true }
           }),
-          getQueueObservability()
+          getQueueObservability(),
+          prisma.appSetting.findUnique({ where: { key: "smtp_daily_target_summary" } }).catch(() => null)
         ]);
         const perSmtpSent = perSmtpSentRows
           .filter((row: any) => Boolean(row.smtpAccountId))
@@ -126,6 +127,22 @@ export async function GET(req: Request) {
           .filter((row: any) => Boolean(row.smtpAccountId) && Number(row._count?._all ?? 0) > 0)
           .map((row: any) => row.smtpAccountId as string);
         const currentRotation = activeSmtpIds[0] ?? configuredSmtpIds[0] ?? campaign.smtpAccountId;
+        const targetSummary = ((targetSummaryRow?.value as any) ?? {}) as {
+          targetTotalRps?: number;
+          globalRps?: number;
+          dailyTarget?: number;
+          usableSmtpCount?: number;
+        };
+        const targetTotalRps = Number(targetSummary.targetTotalRps ?? targetSummary.globalRps ?? 0);
+        const activeLaneCount = activeSmtpIds.length;
+        const throttledCount = smtpPool.filter((smtp: any) => smtp.isThrottled).length;
+        const healthyCount = smtpPool.filter((smtp: any) => smtp.healthStatus === "healthy" && !smtp.isThrottled).length;
+        let bottleneckReason = "none";
+        const queueWaiting = Number(queueObs.deliveryCounts?.waiting ?? queueObs.deliveryCounts?.wait ?? 0);
+        if (queueWaiting <= 0) bottleneckReason = "queue_empty";
+        else if (healthyCount < 2) bottleneckReason = "too_few_eligible_smtps";
+        else if (throttledCount > 0) bottleneckReason = "throttle";
+        else if (targetTotalRps > 0) bottleneckReason = "none";
 
         const warmupAgg = await prisma.smtpWarmupStat.aggregate({
           where: { smtpAccountId: campaign.smtpAccountId },
@@ -140,6 +157,9 @@ export async function GET(req: Request) {
           deliveredSuccessCount: warmupAgg._sum.successfulDeliveries ?? 0,
           warmupLadder: DEFAULT_ALIBABA_LADDER
         });
+        if (targetTotalRps > 0 && rate.effectiveRatePerSecond < targetTotalRps * 0.8 && bottleneckReason === "none") {
+          bottleneckReason = "warmup_cap";
+        }
         const total = campaign.totalTargeted || 1;
         controller.enqueue(
           ssePayload("progress", {
@@ -153,6 +173,8 @@ export async function GET(req: Request) {
             clicked: campaign.totalClicked,
             currentRate: rate.effectiveRatePerSecond,
             effectiveRate: rate.effectiveRatePerSecond,
+            targetTotalRps,
+            dailyTarget: Number(targetSummary.dailyTarget ?? 0),
             throttleReason: campaign.throttleReason,
             warmupTier: rate.warmupTierName,
             warmupNextTier: rate.nextTierName,
@@ -161,6 +183,11 @@ export async function GET(req: Request) {
               name: smtp.name
             })),
             currentRotation,
+            activeLaneCount,
+            throttledSmtpCount: throttledCount,
+            eligibleSmtpCount: healthyCount,
+            avgPerSmtpRps: healthyCount > 0 ? Number((rate.effectiveRatePerSecond / healthyCount).toFixed(3)) : 0,
+            bottleneckReason,
             perSmtpSent,
             queue: {
               waiting: Number(queueObs.deliveryCounts?.waiting ?? queueObs.deliveryCounts?.wait ?? 0),

@@ -6,12 +6,15 @@ import { writeAuditLog } from "@/server/auth/guard";
 
 const schema = z.object({
   dailyTarget: z.number().int().positive(),
-  mode: z.enum(["safe", "balanced", "fast", "aggressive"]).default("balanced"),
   scope: z.enum(["healthy_active", "all_active", "selected"]).default("healthy_active"),
   smtpAccountIds: z.array(z.string().uuid()).optional(),
-  resetThrottle: z.boolean().optional().default(false),
-  clearCooldown: z.boolean().optional().default(false),
-  clearLastError: z.boolean().optional().default(false),
+  warmupPolicy: z.enum(["automatic_recommended", "force_target", "conservative"]).default("automatic_recommended"),
+  warmupAutoAdjust: z.boolean().optional().default(true),
+  forceTargetForWarmed: z.boolean().optional().default(false),
+  clearExpiredThrottle: z.boolean().optional().default(true),
+  useAllEligibleParallel: z.boolean().optional().default(true),
+  updateWorkerPoolSettings: z.boolean().optional().default(true),
+  applyToRunningCampaigns: z.boolean().optional().default(true),
   excludeUnhealthy: z.boolean().optional().default(true),
   enforceSuppressionChecks: z.boolean().optional().default(true)
 });
@@ -23,7 +26,16 @@ type SmtpRow = {
   isActive: boolean;
   isSoftDeleted: boolean;
   isThrottled: boolean;
+  throttleReason: string | null;
+  cooldownUntil: Date | null;
+  lastError: string | null;
   healthStatus: string;
+  username: string;
+  fromEmail: string;
+  passwordEncrypted: string;
+  port: number;
+  warmupEnabled: boolean;
+  warmupMaxRps: number | null;
 };
 
 function isAlibabaProvider(smtp: Pick<SmtpRow, "host" | "providerLabel">): boolean {
@@ -36,11 +48,23 @@ function roundRate(input: number) {
   return Number(Math.max(0.01, input).toFixed(4));
 }
 
-function modeMultiplier(mode: "safe" | "balanced" | "fast" | "aggressive") {
-  if (mode === "safe") return 0.5;
-  if (mode === "balanced") return 0.75;
-  if (mode === "fast") return 1;
-  return 1.2;
+function isAuthFailed(smtp: Pick<SmtpRow, "healthStatus" | "throttleReason" | "lastError">): boolean {
+  const raw = `${smtp.healthStatus ?? ""} ${smtp.throttleReason ?? ""} ${smtp.lastError ?? ""}`.toLowerCase();
+  return raw.includes("auth_failed") || raw.includes("authentication") || raw.includes("invalid credentials");
+}
+
+function warmupLadderRps(successfulDeliveries: number, targetPerSmtpRps: number) {
+  if (successfulDeliveries <= 500) return Math.min(targetPerSmtpRps, 1);
+  if (successfulDeliveries <= 2000) return Math.min(targetPerSmtpRps, 2);
+  if (successfulDeliveries <= 5000) return Math.min(targetPerSmtpRps, 3);
+  if (successfulDeliveries <= 10000) return Math.min(targetPerSmtpRps, 5);
+  if (successfulDeliveries <= 25000) return Math.min(targetPerSmtpRps, 8);
+  if (successfulDeliveries <= 50000) return Math.min(targetPerSmtpRps, 10);
+  return Math.min(targetPerSmtpRps, 15);
+}
+
+function isCredentialsMissing(smtp: Pick<SmtpRow, "host" | "port" | "username" | "fromEmail" | "passwordEncrypted">) {
+  return !smtp.host || !smtp.port || !smtp.username || !smtp.fromEmail || !smtp.passwordEncrypted;
 }
 
 export async function POST(req: Request) {
@@ -67,20 +91,68 @@ export async function POST(req: Request) {
       isActive: true,
       isSoftDeleted: true,
       isThrottled: true,
-      healthStatus: true
+      throttleReason: true,
+      cooldownUntil: true,
+      lastError: true,
+      healthStatus: true,
+      username: true,
+      fromEmail: true,
+      passwordEncrypted: true,
+      port: true,
+      warmupEnabled: true,
+      warmupMaxRps: true
     }
   })) as SmtpRow[];
 
-  let usable = allActiveRows.filter((row) => !row.isSoftDeleted && row.isActive);
-  if (parsed.data.scope === "healthy_active") {
-    usable = usable.filter((row) => row.healthStatus === "healthy" && !row.isThrottled);
-  } else if (parsed.data.scope === "selected") {
-    usable = usable.filter((row) => selectedIds.has(row.id));
-  }
-  if (parsed.data.excludeUnhealthy) {
-    usable = usable.filter((row) => row.healthStatus !== "error");
-  }
+  const now = Date.now();
+  const scopeFiltered = allActiveRows.filter((row) => {
+    if (row.isSoftDeleted || !row.isActive) return false;
+    if (parsed.data.scope === "healthy_active") {
+      return row.healthStatus === "healthy";
+    }
+    if (parsed.data.scope === "selected") {
+      return selectedIds.has(row.id);
+    }
+    return true;
+  });
 
+  const exclusion = {
+    unhealthy: 0,
+    throttled: 0,
+    authFailed: 0,
+    missingCredentials: 0,
+    archived: 0
+  };
+  const excludedDetails: Array<{ id: string; reason: string }> = [];
+  let usable = scopeFiltered.filter((smtp) => {
+    if (smtp.isSoftDeleted) {
+      exclusion.archived += 1;
+      excludedDetails.push({ id: smtp.id, reason: "archived" });
+      return false;
+    }
+    if (isCredentialsMissing(smtp)) {
+      exclusion.missingCredentials += 1;
+      excludedDetails.push({ id: smtp.id, reason: "missing_credentials" });
+      return false;
+    }
+    if (isAuthFailed(smtp)) {
+      exclusion.authFailed += 1;
+      excludedDetails.push({ id: smtp.id, reason: "auth_failed" });
+      return false;
+    }
+    if (parsed.data.excludeUnhealthy && smtp.healthStatus !== "healthy") {
+      exclusion.unhealthy += 1;
+      excludedDetails.push({ id: smtp.id, reason: "unhealthy" });
+      return false;
+    }
+    const throttleExpired = smtp.cooldownUntil ? smtp.cooldownUntil.getTime() <= now : true;
+    if (smtp.isThrottled && !throttleExpired) {
+      exclusion.throttled += 1;
+      excludedDetails.push({ id: smtp.id, reason: "throttled" });
+      return false;
+    }
+    return true;
+  });
   const warnings: string[] = [];
   if (usable.length === 0) {
     return NextResponse.json({ ok: false, error: "Gonderim icin uygun aktif SMTP bulunamadi." }, { status: 400 });
@@ -97,62 +169,70 @@ export async function POST(req: Request) {
     warmupAgg.map((row: any) => [row.smtpAccountId as string, Number(row._sum?.successfulDeliveries ?? 0)])
   );
 
-  const usableSmtpCount = usable.length;
-  const globalRps = Number((parsed.data.dailyTarget / 86400).toFixed(6));
-  const basePerSmtpRps = Number((globalRps / usableSmtpCount).toFixed(6));
+  const usableSmtpCount = Math.max(1, usable.length);
+  const targetTotalRps = Number((parsed.data.dailyTarget / 86400).toFixed(6));
+  const targetPerSmtpRps = Number((targetTotalRps / usableSmtpCount).toFixed(6));
   const perSmtpDailyCap = Math.max(1, Math.ceil(parsed.data.dailyTarget / usableSmtpCount));
   const perSmtpHourlyCap = Math.max(1, Math.ceil(perSmtpDailyCap / 24));
   const perSmtpMinuteCap = Math.max(1, Math.ceil(perSmtpHourlyCap / 60));
-
-  const multiplier = modeMultiplier(parsed.data.mode);
-  const modePerSmtpRps = basePerSmtpRps * multiplier;
+  const alibabaSafeCap = Math.max(1, Number(process.env.ALIBABA_PROVIDER_SAFE_MAX_RPS ?? 15));
+  const defaultProviderSafeCap = Math.max(1, Number(process.env.SMTP_DEFAULT_PROVIDER_SAFE_MAX_RPS ?? 5));
 
   let providerCapped = false;
   let warmupProtected = false;
+  let clearedExpiredThrottle = 0;
   let updated = 0;
 
   for (const smtp of usable) {
-    let effectiveRps = modePerSmtpRps;
-    if (isAlibabaProvider(smtp) && effectiveRps > 5) {
-      effectiveRps = 5;
+    const providerSafeCap = isAlibabaProvider(smtp) ? alibabaSafeCap : defaultProviderSafeCap;
+    let desiredRps = Math.min(providerSafeCap, targetPerSmtpRps);
+    if (desiredRps < targetPerSmtpRps) {
       providerCapped = true;
     }
 
-    const successfulDeliveries = deliveriesMap.get(smtp.id) ?? 0;
-    if (successfulDeliveries < 500) {
-      effectiveRps = Math.min(effectiveRps, 1);
+    const successfulDeliveries = Number(deliveriesMap.get(smtp.id) ?? 0);
+    const warmedEnough = successfulDeliveries >= 5000;
+    let recommendedWarmupCap = warmupLadderRps(successfulDeliveries, desiredRps);
+    if (parsed.data.warmupPolicy === "force_target" || (parsed.data.forceTargetForWarmed && warmedEnough)) {
+      recommendedWarmupCap = Math.min(providerSafeCap, desiredRps);
+    } else if (parsed.data.warmupPolicy === "conservative") {
+      recommendedWarmupCap = Math.max(0.5, Math.min(recommendedWarmupCap, 2));
+    }
+    if (recommendedWarmupCap < desiredRps) {
       warmupProtected = true;
     }
 
-    const safeEffective = roundRate(effectiveRps);
-    let warmupStartRps = 0.2;
-    if (parsed.data.mode === "safe") warmupStartRps = Math.max(0.1, safeEffective * 0.25);
-    if (parsed.data.mode === "balanced") warmupStartRps = Math.max(0.2, safeEffective * 0.35);
-    if (parsed.data.mode === "fast") warmupStartRps = Math.max(0.5, safeEffective * 0.5);
-    if (parsed.data.mode === "aggressive") warmupStartRps = Math.max(1, safeEffective * 0.7);
-    const warmupIncrementStep = Math.max(0.1, warmupStartRps * 0.5);
+    const safeEffective = roundRate(desiredRps);
+    const warmupStartRps = roundRate(Math.max(0.1, Math.min(safeEffective, Math.max(0.5, safeEffective * 0.35))));
+    const warmupIncrementStep = roundRate(Math.max(0.1, Math.min(2, safeEffective * 0.5)));
 
     const updateData: any = {
       targetRatePerSecond: safeEffective,
       maxRatePerSecond: safeEffective,
-      alibabaRateCap: isAlibabaProvider(smtp) ? Math.min(5, safeEffective) : null,
-      warmupEnabled: true,
+      alibabaRateCap: isAlibabaProvider(smtp) ? Math.min(alibabaSafeCap, safeEffective) : null,
+      warmupEnabled: parsed.data.warmupAutoAdjust ? true : undefined,
       warmupStartRps: roundRate(warmupStartRps),
       warmupIncrementStep: roundRate(warmupIncrementStep),
-      warmupMaxRps: safeEffective,
+      warmupMaxRps: roundRate(
+        Math.min(
+          providerSafeCap,
+          Math.max(
+            Number(smtp.warmupMaxRps ?? 0),
+            Number(recommendedWarmupCap),
+            Number(parsed.data.warmupPolicy === "force_target" ? safeEffective : recommendedWarmupCap)
+          )
+        )
+      ),
       dailyCap: perSmtpDailyCap,
       hourlyCap: perSmtpHourlyCap,
       minuteCap: perSmtpMinuteCap
     };
-    if (parsed.data.resetThrottle) {
+    const throttleExpired = smtp.cooldownUntil ? smtp.cooldownUntil.getTime() <= now : true;
+    if (parsed.data.clearExpiredThrottle && smtp.isThrottled && throttleExpired && !isAuthFailed(smtp)) {
       updateData.isThrottled = false;
       updateData.throttleReason = null;
-    }
-    if (parsed.data.clearCooldown) {
       updateData.cooldownUntil = null;
-    }
-    if (parsed.data.clearLastError) {
-      updateData.lastError = null;
+      clearedExpiredThrottle += 1;
     }
 
     const result = await prisma.smtpAccount.updateMany({
@@ -167,38 +247,102 @@ export async function POST(req: Request) {
   }
 
   if (providerCapped) {
-    warnings.push("SMTP basi hiz Alibaba guvenlik limiti nedeniyle 5 RPS ile sinirlandi.");
+    warnings.push("SMTP başı hız provider güvenlik limiti ile sınırlandı.");
   }
   if (warmupProtected) {
-    warnings.push("Bazi SMTP'ler yeni/isinmamis oldugu icin otomatik guvenli hiz uygulanacak.");
+    warnings.push("Bazı SMTP'lerde warmup sınırı hedef hızı geçici olarak kısıtlıyor.");
   }
   if (usableSmtpCount < 3) {
-    warnings.push("Saglikli SMTP sayisi dusuk, hedefe ulasmak zor olabilir.");
-  }
-  if (parsed.data.scope === "all_active" && parsed.data.excludeUnhealthy) {
-    warnings.push("Sagliksiz SMTP'ler kapsam disi birakildi.");
-  }
-  if (parsed.data.mode === "aggressive" && parsed.data.dailyTarget >= 5_000_000) {
-    warnings.push("Hedef cok yuksek; Agresif mod riskli olabilir.");
+    warnings.push("Uygun SMTP sayısı düşük, hedef hıza erişim sınırlı olabilir.");
   }
   if (!parsed.data.enforceSuppressionChecks) {
-    warnings.push("Suppression / unsubscribe kontrolleri sistem tarafinda zorunlu olarak calismaya devam eder.");
+    warnings.push("Suppression/unsubscribe kontrolleri sistemde zorunlu olarak aktif kalır.");
+  }
+  if (clearedExpiredThrottle > 0) {
+    warnings.push(`${clearedExpiredThrottle} adet süresi geçmiş throttle temizlendi.`);
   }
 
-  const effectiveGlobalRps = Number((updated > 0 ? modePerSmtpRps * updated : 0).toFixed(6));
+  const effectiveGlobalRps = Number((targetPerSmtpRps * updated).toFixed(6));
+  const excludedSmtpCount = excludedDetails.length;
+
+  if (parsed.data.updateWorkerPoolSettings) {
+    const pool = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } });
+    const current = ((pool?.value as any) ?? {}) as Record<string, unknown>;
+    const nextParallel = parsed.data.useAllEligibleParallel ? usable.length : Number(current.parallelSmtpCount ?? usable.length);
+    await prisma.appSetting.upsert({
+      where: { key: "smtp_pool_settings" },
+      create: {
+        key: "smtp_pool_settings",
+        value: {
+          ...current,
+          sendingMode: "pool",
+          useAllActiveByDefault: true,
+          globalRatePerSecond: targetTotalRps,
+          parallelSmtpCount: Math.max(1, nextParallel),
+          parallelSmtpLanes: Math.max(1, nextParallel),
+          skipThrottled: true,
+          skipUnhealthy: true
+        } as any
+      },
+      update: {
+        value: {
+          ...current,
+          sendingMode: "pool",
+          useAllActiveByDefault: true,
+          globalRatePerSecond: targetTotalRps,
+          parallelSmtpCount: Math.max(1, nextParallel),
+          parallelSmtpLanes: Math.max(1, nextParallel),
+          skipThrottled: true,
+          skipUnhealthy: true
+        } as any
+      }
+    });
+  }
+
+  if (parsed.data.applyToRunningCampaigns) {
+    const campaigns = await prisma.campaign.findMany({
+      where: {
+        status: { in: ["running", "queued", "paused", "partially_completed"] },
+        isDeleted: false
+      },
+      select: { id: true, smtpPoolConfig: true }
+    });
+    for (const campaign of campaigns) {
+      const prev = campaign.smtpPoolConfig && typeof campaign.smtpPoolConfig === "object" ? (campaign.smtpPoolConfig as any) : {};
+      await prisma.campaign.update({
+        where: { id: campaign.id },
+        data: {
+          smtpPoolConfig: {
+            ...prev,
+            smtpMode: "pool",
+            poolPolicy: "all_eligible",
+            smtpIds: usable.map((smtp) => smtp.id),
+            eligibleSmtpCount: usable.length,
+            targetTotalRps,
+            targetPerSmtpRps,
+            parallelSmtpCount: Math.max(1, usable.length)
+          }
+        }
+      });
+    }
+  }
   const summary = {
     dailyTarget: parsed.data.dailyTarget,
-    mode: parsed.data.mode,
     scope: parsed.data.scope,
+    warmupPolicy: parsed.data.warmupPolicy,
     usableSmtpCount,
-    globalRps,
+    globalRps: targetTotalRps,
     effectiveGlobalRps,
     perSmtpRps: Number((updated > 0 ? effectiveGlobalRps / updated : 0).toFixed(6)),
+    targetTotalRps,
+    targetPerSmtpRps,
     perSmtpDailyCap,
     perSmtpHourlyCap,
     perSmtpMinuteCap,
     updated,
     skipped: Math.max(0, usableSmtpCount - updated),
+    excludedSmtpCount,
+    excludedReasons: exclusion,
     warnings,
     updatedAt: new Date().toISOString()
   };
@@ -216,8 +360,8 @@ export async function POST(req: Request) {
 
   await writeAuditLog(session.userId, "smtp.apply_daily_target", "smtp_account", {
     dailyTarget: summary.dailyTarget,
-    mode: summary.mode,
     scope: summary.scope,
+    warmupPolicy: summary.warmupPolicy,
     usableSmtpCount: summary.usableSmtpCount,
     updated: summary.updated,
     warnings: summary.warnings
@@ -226,14 +370,17 @@ export async function POST(req: Request) {
   return NextResponse.json({
     ok: true,
     dailyTarget: summary.dailyTarget,
-    mode: summary.mode,
     usableSmtpCount: summary.usableSmtpCount,
-    globalRps: summary.globalRps,
+    globalRps: summary.targetTotalRps,
     effectiveGlobalRps: summary.effectiveGlobalRps,
-    perSmtpRps: summary.perSmtpRps,
+    perSmtpRps: summary.targetPerSmtpRps,
+    targetTotalRps: summary.targetTotalRps,
+    targetPerSmtpRps: summary.targetPerSmtpRps,
     perSmtpDailyCap: summary.perSmtpDailyCap,
     perSmtpHourlyCap: summary.perSmtpHourlyCap,
     perSmtpMinuteCap: summary.perSmtpMinuteCap,
+    excludedSmtpCount: summary.excludedSmtpCount,
+    excludedReasons: summary.excludedReasons,
     updated: summary.updated,
     skipped: summary.skipped,
     warnings: summary.warnings

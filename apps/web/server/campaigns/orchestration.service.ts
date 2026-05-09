@@ -13,7 +13,7 @@ import { autoShortenHtmlLinks } from "@/server/short-links/nxusurl.service";
 
 const CAMPAIGN_LOCK_TTL_MS = 30_000;
 const DEFAULT_ROTATE_EVERY = 500;
-const DEFAULT_PARALLEL_SMTP = 1;
+const DEFAULT_PARALLEL_SMTP = Number.MAX_SAFE_INTEGER;
 const DEFAULT_RECIPIENT_CHUNK_SIZE = Number(process.env.CAMPAIGN_START_FETCH_CHUNK_SIZE ?? 1000);
 const DEFAULT_INSERT_CHUNK_SIZE = Number(process.env.CAMPAIGN_START_INSERT_CHUNK_SIZE ?? 1000);
 const CANCEL_CLEANUP_BATCH_SIZE = Math.max(
@@ -35,6 +35,10 @@ type SmtpPoolConfig = {
   parallelSmtpCount: number;
   rotateEvery: number;
   strategy: RotationStrategy;
+  poolPolicy?: "all_eligible" | "dedicated";
+  eligibleSmtpCount?: number;
+  targetTotalRps?: number;
+  targetPerSmtpRps?: number;
 };
 
 function normalizeChunkSize(input: number, fallback: number): number {
@@ -52,7 +56,7 @@ function normalizeSmtpConfig(input: {
   maxParallelSmtpCount?: number;
 }): SmtpPoolConfig {
   const smtpIds = Array.from(new Set([...(input.smtpIds ?? []), ...(input.smtpAccountId ? [input.smtpAccountId] : [])]));
-  const smtpMode: SmtpMode = input.smtpMode === "pool" ? "pool" : "single";
+  const smtpMode: SmtpMode = input.smtpMode === "single" ? "single" : "pool";
   const rotateEvery = Math.max(1, Math.floor(input.rotateEvery ?? DEFAULT_ROTATE_EVERY));
   const requestedParallel = Math.max(1, Math.floor(input.parallelSmtpCount ?? DEFAULT_PARALLEL_SMTP));
   const maxParallel = Math.max(1, Math.floor(input.maxParallelSmtpCount ?? Number.MAX_SAFE_INTEGER));
@@ -70,8 +74,35 @@ function normalizeSmtpConfig(input: {
     smtpIds,
     parallelSmtpCount,
     rotateEvery,
-    strategy
+    strategy,
+    poolPolicy: smtpMode === "single" ? "dedicated" : "all_eligible"
   };
+}
+
+function smtpEligibilityReason(smtp: {
+  isActive: boolean;
+  isSoftDeleted: boolean;
+  healthStatus: string | null;
+  isThrottled: boolean;
+  cooldownUntil: Date | null;
+  throttleReason: string | null;
+  lastError: string | null;
+  host: string;
+  port: number;
+  username: string;
+  fromEmail: string;
+  passwordEncrypted: string;
+}): string | null {
+  if (!smtp.isActive) return "disabled";
+  if (smtp.isSoftDeleted) return "archived";
+  if (!smtp.host || !smtp.port || !smtp.username || !smtp.fromEmail || !smtp.passwordEncrypted) return "missing_credentials";
+  const authText = `${smtp.healthStatus ?? ""} ${smtp.throttleReason ?? ""} ${smtp.lastError ?? ""}`.toLowerCase();
+  if (authText.includes("auth_failed") || authText.includes("authentication") || authText.includes("invalid credentials")) {
+    return "auth_failed";
+  }
+  if (smtp.healthStatus === "error") return "unhealthy";
+  if (smtp.isThrottled && smtp.cooldownUntil && smtp.cooldownUntil.getTime() > Date.now()) return "throttled";
+  return null;
 }
 
 function resolveGlobalParallelLimit(pool: {
@@ -243,11 +274,27 @@ export async function createCampaign(input: {
     input.segmentId ? prisma.segment.findUnique({ where: { id: input.segmentId } }) : null,
     prisma.smtpAccount.findMany({
       where: {
-        id: { in: normalizedConfig.smtpIds },
-        isActive: true,
-        isSoftDeleted: false
+        id: { in: normalizedConfig.smtpIds }
       },
-      orderBy: { createdAt: "asc" }
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        isActive: true,
+        isSoftDeleted: true,
+        healthStatus: true,
+        isThrottled: true,
+        cooldownUntil: true,
+        throttleReason: true,
+        lastError: true,
+        host: true,
+        port: true,
+        username: true,
+        fromEmail: true,
+        passwordEncrypted: true,
+        providerLabel: true,
+        targetRatePerSecond: true,
+        maxRatePerSecond: true
+      }
     })
   ]);
 
@@ -272,7 +319,8 @@ export async function createCampaign(input: {
   if (targetMode === "ad_hoc_segment" && !input.segmentQueryConfig) {
     throw new Error("segment_query_required");
   }
-  if (smtps.length === 0) {
+  const eligibleSmtps = smtps.filter((smtp: any) => smtpEligibilityReason(smtp) === null);
+  if (eligibleSmtps.length === 0) {
     throw new Error("smtp_pool_empty");
   }
   let effectiveTemplate = template;
@@ -298,8 +346,15 @@ export async function createCampaign(input: {
       shortLinkMappings = transformed.mappings;
     }
   }
-  const primarySmtp = smtps[0];
-  const activeSmtpIds = smtps.map((smtp: any) => smtp.id);
+  const primarySmtp = eligibleSmtps[0];
+  const activeSmtpIds = eligibleSmtps.map((smtp: any) => smtp.id);
+  const targetTotalRps = Number(
+    eligibleSmtps.reduce(
+      (sum: number, smtp: any) => sum + Number(smtp.maxRatePerSecond ?? smtp.targetRatePerSecond ?? 1),
+      0
+    ).toFixed(6)
+  );
+  const targetPerSmtpRps = Number((targetTotalRps / Math.max(1, activeSmtpIds.length)).toFixed(6));
 
   const created = await prisma.campaign.create({
     data: {
@@ -316,11 +371,15 @@ export async function createCampaign(input: {
             : null,
       smtpAccountId: primarySmtp.id,
       smtpPoolConfig: {
-        smtpMode: normalizedConfig.smtpMode,
+        smtpMode: "pool",
         smtpIds: activeSmtpIds,
         parallelSmtpCount: Math.min(normalizedConfig.parallelSmtpCount, activeSmtpIds.length),
         rotateEvery: normalizedConfig.rotateEvery,
-        strategy: normalizedConfig.strategy
+        strategy: normalizedConfig.strategy,
+        poolPolicy: "all_eligible",
+        eligibleSmtpCount: activeSmtpIds.length,
+        targetTotalRps,
+        targetPerSmtpRps
       },
       provider: primarySmtp.providerLabel ?? "custom-smtp",
       status: input.scheduledAt ? "queued" : "pending",
@@ -400,30 +459,54 @@ export async function startCampaign(campaignId: string) {
         orderBy: { createdAt: "asc" }
       })
     ).map((row: { id: string }) => row.id);
-    const configuredIds: string[] = poolConfig.smtpIds.length > 0 ? poolConfig.smtpIds : fallbackIdsFromAll;
+    const poolPolicy = String((((campaign as any).smtpPoolConfig as any)?.poolPolicy ?? "all_eligible"));
+    const useDedicatedOnly = poolConfig.smtpMode === "single" && poolPolicy === "dedicated";
+    const configuredIds: string[] = useDedicatedOnly && poolConfig.smtpIds.length > 0 ? poolConfig.smtpIds : fallbackIdsFromAll;
 
     const smtps = await prisma.smtpAccount.findMany({
       where: {
-        id: { in: configuredIds.length > 0 ? configuredIds : [campaign.smtpAccountId] },
-        isActive: true,
-        isSoftDeleted: false,
-        ...(skipThrottled ? { isThrottled: false } : {}),
-        ...(skipUnhealthy ? { NOT: { healthStatus: "error" } } : {})
+        id: { in: configuredIds.length > 0 ? configuredIds : [campaign.smtpAccountId] }
       },
-      select: { id: true, targetRatePerSecond: true, maxRatePerSecond: true },
+      select: {
+        id: true,
+        targetRatePerSecond: true,
+        maxRatePerSecond: true,
+        isActive: true,
+        isSoftDeleted: true,
+        healthStatus: true,
+        isThrottled: true,
+        cooldownUntil: true,
+        throttleReason: true,
+        lastError: true,
+        host: true,
+        port: true,
+        username: true,
+        fromEmail: true,
+        passwordEncrypted: true
+      },
       orderBy: { createdAt: "asc" }
     });
-    if (smtps.length === 0) {
+    const ineligibleReasons: Record<string, string> = {};
+    const eligibleSmtps = smtps.filter((smtp: any) => {
+      const reason = smtpEligibilityReason(smtp);
+      if (reason) ineligibleReasons[smtp.id] = reason;
+      return !reason;
+    });
+    if (eligibleSmtps.length === 0) {
       throw new Error("no_smtp_accounts");
     }
 
-    const sortedSmtpIds = configuredIds.filter((id) => smtps.some((smtp: any) => smtp.id === id));
+    const sortedSmtpIds = configuredIds.filter((id) => eligibleSmtps.some((smtp: any) => smtp.id === id));
     const computedParallel = Math.max(1, Math.min(sortedSmtpIds.length, globalParallelLimit));
     const activeSmtpIds = sortedSmtpIds.slice(0, computedParallel);
     const rateBySmtp = new Map<string, number>(
-      smtps.map((smtp: any) => [smtp.id as string, Number(smtp.maxRatePerSecond ?? smtp.targetRatePerSecond ?? 1)])
+      eligibleSmtps.map((smtp: any) => [smtp.id as string, Number(smtp.maxRatePerSecond ?? smtp.targetRatePerSecond ?? 1)])
     );
     const weightedPool = buildWeightedPool(activeSmtpIds, rateBySmtp);
+    const targetTotalRps = Number(
+      activeSmtpIds.reduce((sum, id) => sum + Number(rateBySmtp.get(id) ?? 1), 0).toFixed(6)
+    );
+    const targetPerSmtpRps = Number((targetTotalRps / Math.max(1, activeSmtpIds.length)).toFixed(6));
     const fetchChunkSize = normalizeChunkSize(DEFAULT_RECIPIENT_CHUNK_SIZE, 1000);
     const insertChunkSize = normalizeChunkSize(DEFAULT_INSERT_CHUNK_SIZE, 1000);
 
@@ -434,11 +517,16 @@ export async function startCampaign(campaignId: string) {
           status: "queued",
           startedAt: campaign.startedAt ?? new Date(),
           smtpPoolConfig: {
-            smtpMode: poolConfig.smtpMode,
+            smtpMode: "pool",
             smtpIds: sortedSmtpIds,
             parallelSmtpCount: computedParallel,
             rotateEvery: poolConfig.rotateEvery,
-            strategy: poolConfig.strategy
+            strategy: poolConfig.strategy,
+            poolPolicy: "all_eligible",
+            eligibleSmtpCount: sortedSmtpIds.length,
+            targetTotalRps,
+            targetPerSmtpRps,
+            excludedSmtpReasons: ineligibleReasons
           }
         }
       }),

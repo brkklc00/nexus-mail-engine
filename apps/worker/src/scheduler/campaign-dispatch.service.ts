@@ -11,6 +11,9 @@ const WORKER_SETTINGS_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SETTI
 const WORKER_SMTP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SMTP_CACHE_MS ?? 30_000));
 const WORKER_CAMPAIGN_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_CAMPAIGN_CACHE_MS ?? 10_000));
 const WORKER_WARMUP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_WARMUP_CACHE_MS ?? 30_000));
+const SMTP_LANE_MAX_INFLIGHT = Math.max(1, Number(process.env.SMTP_LANE_MAX_INFLIGHT ?? 2));
+const SMTP_RATE_CACHE_MS = Math.max(500, Number(process.env.SMTP_RATE_CACHE_MS ?? 3000));
+const SMTP_THROTTLE_EXPIRE_CHECK_MS = Math.max(5_000, Number(process.env.SMTP_THROTTLE_EXPIRE_CHECK_MS ?? 30_000));
 let schedulerReadInFlight = 0;
 const schedulerReadQueue: Array<() => void> = [];
 
@@ -23,6 +26,20 @@ let cachedPoolSettings: {
 let cachedActiveCampaigns: { data: any[]; expiresAt: number } | null = null;
 let cachedSmtpState: { data: any[]; expiresAt: number; key: string } | null = null;
 let cachedWarmupState: { data: any[]; expiresAt: number; key: string } | null = null;
+let lastThrottleExpireSweepAt = 0;
+
+function smtpEligibilityReason(smtp: any): string | null {
+  if (!smtp?.isActive) return "disabled";
+  if (smtp?.isSoftDeleted) return "archived";
+  if (!smtp?.host || !smtp?.port || !smtp?.username || !smtp?.fromEmail || !smtp?.passwordEncrypted) return "missing_credentials";
+  const authText = `${smtp?.healthStatus ?? ""} ${smtp?.throttleReason ?? ""} ${smtp?.lastError ?? ""}`.toLowerCase();
+  if (authText.includes("auth_failed") || authText.includes("authentication") || authText.includes("invalid credentials")) {
+    return "auth_failed";
+  }
+  if (smtp?.healthStatus === "error") return "unhealthy";
+  if (smtp?.isThrottled && smtp?.cooldownUntil && new Date(smtp.cooldownUntil).getTime() > Date.now()) return "throttled";
+  return null;
+}
 
 async function withSchedulerReadSlot<T>(task: () => Promise<T>): Promise<T> {
   if (schedulerReadInFlight >= WORKER_DB_READ_CONCURRENCY) {
@@ -77,6 +94,26 @@ function idempotencyKey(campaignId: string, recipientId: string, templateVersion
 }
 
 export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
+  const nowForSweep = Date.now();
+  if (nowForSweep - lastThrottleExpireSweepAt >= SMTP_THROTTLE_EXPIRE_CHECK_MS) {
+    lastThrottleExpireSweepAt = nowForSweep;
+    await withSchedulerReadSlot(() =>
+      prisma.smtpAccount
+        .updateMany({
+          where: {
+            isThrottled: true,
+            cooldownUntil: { lte: new Date() }
+          },
+          data: {
+            isThrottled: false,
+            throttleReason: null,
+            cooldownUntil: null
+          }
+        })
+        .catch(() => ({ count: 0 }))
+    );
+  }
+
   const campaignTake = Math.max(1, Math.min(100, Number(process.env.SCHEDULER_CAMPAIGN_TAKE ?? 20)));
   const recipientsTakePerCampaign = Math.max(5, Math.min(maxJobs, Number(process.env.SCHEDULER_RECIPIENTS_TAKE_PER_CAMPAIGN ?? 20)));
   const nowMs = Date.now();
@@ -133,7 +170,8 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
     priority: 1
   }));
 
-  const picks = scheduler.nextBatch(slots, maxJobs);
+  const requestedJobs = Math.max(maxJobs, slots.length * SMTP_LANE_MAX_INFLIGHT * 5);
+  const picks = scheduler.nextBatch(slots, requestedJobs);
   let dispatched = 0;
 
   const smtpIds = Array.from(
@@ -155,13 +193,33 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
       ? cachedSmtpState.data
       : (await withSchedulerReadSlot(() => prisma.smtpAccount.findMany({
           where: { id: { in: smtpIds }, isActive: true, isSoftDeleted: false },
-          select: { id: true, isThrottled: true, healthStatus: true, targetRatePerSecond: true, maxRatePerSecond: true, warmupEnabled: true, warmupStartRps: true, warmupIncrementStep: true, warmupMaxRps: true, cooldownUntil: true }
+          select: {
+            id: true,
+            isActive: true,
+            isSoftDeleted: true,
+            isThrottled: true,
+            throttleReason: true,
+            healthStatus: true,
+            lastError: true,
+            targetRatePerSecond: true,
+            maxRatePerSecond: true,
+            warmupEnabled: true,
+            warmupStartRps: true,
+            warmupIncrementStep: true,
+            warmupMaxRps: true,
+            cooldownUntil: true,
+            host: true,
+            port: true,
+            username: true,
+            fromEmail: true,
+            passwordEncrypted: true
+          }
         }))) as any[];
   if (smtpIds.length > 0 && (!cachedSmtpState || cachedSmtpState.expiresAt <= nowMs || cachedSmtpState.key !== smtpCacheKey)) {
     cachedSmtpState = {
       key: smtpCacheKey,
       data: smtpAccounts,
-      expiresAt: nowMs + WORKER_SMTP_CACHE_MS
+      expiresAt: nowMs + SMTP_RATE_CACHE_MS
     };
   }
   const warmupStats = smtpIds.length === 0
@@ -182,7 +240,7 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
   const poolSettings = await getCachedPoolSettings();
   const skipThrottled = poolSettings.skipThrottled;
   const skipUnhealthy = poolSettings.skipUnhealthy;
-  const perSmtpConcurrency = poolSettings.perSmtpConcurrency;
+  const perSmtpConcurrency = Math.max(1, Number(poolSettings.perSmtpConcurrency ?? SMTP_LANE_MAX_INFLIGHT));
   const warmupMap = new Map<string, { smtpAccountId: string; successfulDeliveries: number; failedDeliveries: number }>(
     warmupStats.map((stat: any) => [
       stat.smtpAccountId as string,
@@ -223,9 +281,10 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
           .filter((id: string) => {
             const state = smtpState.get(id);
             if (!state) return false;
-            if (skipThrottled && state.isThrottled) return false;
-            if (skipUnhealthy && state.healthStatus === "error") return false;
-            if (state.cooldownUntil && new Date(state.cooldownUntil).getTime() > now) return false;
+            const reason = smtpEligibilityReason(state);
+            if (reason === "auth_failed" || reason === "missing_credentials" || reason === "archived" || reason === "disabled") return false;
+            if (skipThrottled && reason === "throttled") return false;
+            if (skipUnhealthy && reason === "unhealthy") return false;
             return true;
           });
         const preferredSmtp = nextRecipient.smtpAccountId || campaign.smtpAccountId;
@@ -243,10 +302,14 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
         const weightedPool = activePool.flatMap((id) => {
           const state = smtpState.get(id);
           const base = Number(state?.maxRatePerSecond ?? state?.targetRatePerSecond ?? 1);
-          const warmupWeight = state?.warmupEnabled
-            ? Math.max(1, Math.round(Math.min(state.warmupMaxRps ?? base, state.warmupStartRps + state.warmupIncrementStep)))
-            : Math.max(1, Math.round(base));
-          return Array.from({ length: Math.min(20, warmupWeight) }).map(() => id);
+          const effectiveRps = Math.max(
+            0.1,
+            state?.warmupEnabled
+              ? Math.min(base, Number(state?.warmupMaxRps ?? base))
+              : base
+          );
+          const weight = Math.max(1, Math.min(30, Math.round(effectiveRps * 2)));
+          return Array.from({ length: weight }).map(() => id);
         });
         const weighted = weightedPool.length > 0 ? weightedPool[dispatched % weightedPool.length] : roundRobin;
         let selectedSmtp = preferredSmtp;
@@ -264,6 +327,10 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
             status: "skipped",
             message: "No active SMTP available in pool; dispatch delayed."
           });
+          return;
+        }
+        const selectedSmtpState = smtpState.get(selectedSmtp);
+        if (selectedSmtpState && smtpEligibilityReason(selectedSmtpState)) {
           return;
         }
         const currentUsage = smtpLaneUsage.get(selectedSmtp) ?? 0;

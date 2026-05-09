@@ -131,6 +131,11 @@ export async function GET() {
         3000
       );
 
+    const [dailySummaryRow, workerSnapshotRow] = await Promise.all([
+      prisma.appSetting.findUnique({ where: { key: "smtp_daily_target_summary" } }).catch(() => null),
+      prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }).catch(() => null)
+    ]);
+
     const smtpIds = (activeSmtps as ActiveSmtpRow[]).map((smtp) => smtp.id);
     const warmupRows = smtpIds.length
       ? ((await prisma.smtpWarmupStat
@@ -205,6 +210,25 @@ export async function GET() {
     const queueProcessing = Number(deliveryCounts.active ?? 0) + Number(retryCounts.active ?? 0);
     const currentRps = Number((sentLastMinute / 60).toFixed(3));
     const queueHuge = queuePending >= HUGE_QUEUE_THRESHOLD;
+    const dailySummary = ((dailySummaryRow?.value as any) ?? {}) as {
+      dailyTarget?: number;
+      targetTotalRps?: number;
+      globalRps?: number;
+      usableSmtpCount?: number;
+    };
+    const targetTotalRps = Number(dailySummary.targetTotalRps ?? dailySummary.globalRps ?? 0);
+    const usableSmtpCount = Number(dailySummary.usableSmtpCount ?? 0);
+    const throttledCount = (activeSmtps as ActiveSmtpRow[]).filter((item) => item.isThrottled).length;
+    const warmupCappedCount = warmupRows.filter((row) => Number(row.successfulDeliveries ?? 0) < 5000).length;
+    let bottleneckReason = "none";
+    if (queuePending <= 0) bottleneckReason = "queue_empty";
+    else if (usableSmtpCount > 0 && usableSmtpCount < 2) bottleneckReason = "too_few_eligible_smtps";
+    else if (throttledCount > 0) bottleneckReason = "throttle";
+    else if (warmupCappedCount > 0) bottleneckReason = "warmup_cap";
+    else if (queueHuge) bottleneckReason = "db_slow";
+    if (targetTotalRps > 0 && currentRps < targetTotalRps * 0.8 && bottleneckReason === "none") {
+      bottleneckReason = "worker_concurrency";
+    }
 
     console.info("[smtp.live-flow] completed", { ms: Date.now() - startedAt });
 
@@ -212,6 +236,7 @@ export async function GET() {
       ok: true,
       metrics: {
         currentRps,
+        targetTotalRps,
         sentLastMinute,
         failedLastMinute,
         queuePending,
@@ -223,6 +248,16 @@ export async function GET() {
         retry: retryCounts
       },
       queueHuge,
+      diagnostics: {
+        dailyTarget: Number(dailySummary.dailyTarget ?? 0),
+        eligibleSmtp: usableSmtpCount,
+        activeLane: Math.max(0, usableSmtpCount - throttledCount),
+        throttledSmtp: throttledCount,
+        warmupCappedSmtp: warmupCappedCount,
+        avgPerSmtpRps: usableSmtpCount > 0 ? Number((currentRps / usableSmtpCount).toFixed(3)) : 0,
+        workerConcurrency: Number(process.env.WORKER_CONCURRENCY ?? 0),
+        bottleneckReason
+      },
       smtpActivity,
       recentEvents
     });

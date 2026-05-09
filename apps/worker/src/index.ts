@@ -15,6 +15,7 @@ import {
 import { processDelivery } from "./processors/delivery.processor.js";
 import { processRetry } from "./processors/retry.processor.js";
 import { dispatchFairBatch } from "./scheduler/campaign-dispatch.service.js";
+import { recoverCampaignQueuesOnBoot } from "./scheduler/campaign-recovery.service.js";
 import { getAllSafetyStates } from "./safety/distributed-safety.service.js";
 import { safeCreateCampaignLog } from "./logging/safe-campaign-log.js";
 import { processAlibabaSuppressionSync, resumeStaleAlibabaSyncJobs } from "./processors/alibaba-sync.processor.js";
@@ -23,9 +24,9 @@ const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
   maxRetriesPerRequest: null
 });
 const workerConcurrency = Number(process.env.WORKER_CONCURRENCY ?? 10);
-const schedulerTickMs = Math.max(1000, Number(process.env.SCHEDULER_TICK_MS ?? 3000));
-const schedulerBatchSize = Math.max(10, Number(process.env.SCHEDULER_BATCH_SIZE ?? 50));
-const schedulerDbReadConcurrency = Math.max(1, Number(process.env.WORKER_DB_READ_CONCURRENCY ?? 2));
+const schedulerTickMs = Math.max(200, Number(process.env.SCHEDULER_TICK_MS ?? 500));
+const schedulerBatchSize = Math.max(50, Number(process.env.SCHEDULER_BATCH_SIZE ?? 1000));
+const schedulerDbReadConcurrency = Math.max(1, Number(process.env.WORKER_DB_READ_CONCURRENCY ?? 5));
 const schedulerCampaignTake = Math.max(1, Number(process.env.SCHEDULER_CAMPAIGN_TAKE ?? 20));
 const workerSettingsCacheMs = Math.max(1_000, Number(process.env.WORKER_SETTINGS_CACHE_MS ?? 30_000));
 const workerSmtpCacheMs = Math.max(1_000, Number(process.env.WORKER_SMTP_CACHE_MS ?? 30_000));
@@ -221,6 +222,7 @@ const workerMetricsInterval = setInterval(() => {
 }, 10_000);
 void sampleWorkerMetrics();
 void resumeStaleAlibabaSyncJobs();
+void recoverCampaignQueuesOnBoot();
 const alibabaRecoveryInterval = setInterval(() => {
   void resumeStaleAlibabaSyncJobs();
 }, 60_000);
@@ -312,6 +314,13 @@ async function shutdown() {
   clearInterval(workerMetricsInterval);
   clearInterval(schedulerInterval);
   clearInterval(alibabaRecoveryInterval);
+  await prisma.campaignRecipient.updateMany({
+    where: {
+      campaign: { status: { in: ["running", "queued", "partially_completed"] } },
+      sendStatus: "queued"
+    },
+    data: { sendStatus: "pending" }
+  }).catch(() => ({ count: 0 }));
   healthServer.close();
   await alibabaSyncWorker.close();
   await retryWorker.close();

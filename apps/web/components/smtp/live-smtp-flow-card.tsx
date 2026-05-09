@@ -8,6 +8,7 @@ type FlowPayload = {
   ok: boolean;
   metrics: {
     currentRps: number;
+    targetTotalRps?: number;
     sentLastMinute: number;
     failedLastMinute: number;
     queuePending: number;
@@ -32,6 +33,16 @@ type FlowPayload = {
     error: string | null;
   }>;
   queueHuge?: boolean;
+  diagnostics?: {
+    dailyTarget?: number;
+    eligibleSmtp?: number;
+    activeLane?: number;
+    throttledSmtp?: number;
+    warmupCappedSmtp?: number;
+    avgPerSmtpRps?: number;
+    workerConcurrency?: number;
+    bottleneckReason?: string;
+  };
   error?: string;
 };
 
@@ -186,12 +197,20 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
 
       <div className={`grid gap-2 ${compact ? "grid-cols-2 md:grid-cols-3" : "grid-cols-2 md:grid-cols-6"}`}>
         <FlowStat label="RPS" value={data?.metrics.currentRps ?? 0} />
+        <FlowStat label="Hedef RPS" value={data?.metrics.targetTotalRps ?? 0} />
         <FlowStat label="Gonderilen/dk" value={data?.metrics.sentLastMinute ?? 0} />
         <FlowStat label="Basarisiz/dk" value={data?.metrics.failedLastMinute ?? 0} />
         <FlowStat label="Kuyruk bekleyen" value={data?.metrics.queuePending ?? 0} />
         <FlowStat label="Kuyruk islenen" value={data?.metrics.queueProcessing ?? 0} />
         <FlowStat label="Aktif kampanya" value={data?.metrics.activeCampaigns ?? 0} />
       </div>
+      {data?.diagnostics ? (
+        <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-xs text-zinc-300">
+          Uygun SMTP: {data.diagnostics.eligibleSmtp ?? 0} · Aktif lane: {data.diagnostics.activeLane ?? 0} ·
+          Throttled: {data.diagnostics.throttledSmtp ?? 0} · Ortalama SMTP başı RPS: {Number(data.diagnostics.avgPerSmtpRps ?? 0).toFixed(2)} ·
+          Bottleneck: {data.diagnostics.bottleneckReason ?? "none"}
+        </div>
+      ) : null}
 
       <div className={`mt-3 grid gap-3 ${compact ? "xl:grid-cols-2" : "grid-cols-1"}`}>
         <div className="rounded-xl border border-border bg-zinc-900/40 p-2">

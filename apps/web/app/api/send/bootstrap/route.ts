@@ -12,8 +12,8 @@ const defaultPoolSettings = {
   rotateEvery: 500,
   rotateEveryN: 500,
   globalRatePerSecond: 1,
-  parallelSmtpCount: 1,
-  parallelSmtpLanes: 1,
+  parallelSmtpCount: 10,
+  parallelSmtpLanes: 10,
   perSmtpConcurrency: 1,
   minDelayBetweenSendsMs: 5,
   maxEmailsPerSmtpSession: 2000,
@@ -150,10 +150,12 @@ export async function GET() {
       useAllActiveByDefault?: boolean;
     };
     const rotateEvery = Math.max(1, Number(poolSettings.rotateEveryN ?? poolSettings.rotateEvery ?? 500));
-    const parallelSmtpCount = Math.max(
-      1,
-      Math.min(Number(poolSettings.parallelSmtpCount ?? poolSettings.parallelSmtpLanes ?? 1), Math.max(1, smtpAccounts.length))
-    );
+    const parallelPolicy = String(process.env.SMTP_POOL_DEFAULT_PARALLEL ?? "all_healthy").toLowerCase();
+    const requestedParallel =
+      parallelPolicy === "all_healthy"
+        ? smtpAccounts.filter((item: { isThrottled: boolean; healthStatus: string | null }) => !item.isThrottled && item.healthStatus === "healthy").length
+        : Number(poolSettings.parallelSmtpCount ?? poolSettings.parallelSmtpLanes ?? 1);
+    const parallelSmtpCount = Math.max(1, Math.min(Math.max(1, requestedParallel), Math.max(1, smtpAccounts.length)));
     const defaults = {
       targetType: "list" as const,
       smtpMode: (poolSettings.sendingMode ?? "pool") as "single" | "pool",
