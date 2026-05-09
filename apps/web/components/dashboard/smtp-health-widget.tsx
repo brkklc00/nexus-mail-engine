@@ -66,11 +66,11 @@ export function SmtpHealthWidget() {
   }, []);
 
   if (error) {
-    return <section className="h-full min-h-[620px] rounded-2xl border border-border bg-card p-4 text-sm text-rose-300">{error}</section>;
+    return <section className="h-full min-h-[520px] rounded-2xl border border-border bg-card p-4 text-sm text-rose-300">{error}</section>;
   }
 
   if (!data) {
-    return <section className="h-full min-h-[620px] rounded-2xl border border-border bg-card p-4 text-sm text-zinc-400">SMTP sağlığı yükleniyor...</section>;
+    return <section className="h-full min-h-[520px] rounded-2xl border border-border bg-card p-4 text-sm text-zinc-400">SMTP sağlığı yükleniyor...</section>;
   }
 
   return <SmtpHealthSummary smtpTotals={data.smtpTotals} smtpStates={data.smtpStates} />;

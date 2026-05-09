@@ -917,8 +917,8 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   const etaSeconds = rowsPerSecond > 0 ? Math.ceil(remainingRows / rowsPerSecond) : 0;
 
   return (
-    <div className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-[320px_1fr]">
-      <section className="h-full rounded-2xl border border-border bg-card p-4 xl:min-h-[760px]">
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px_1fr]">
+      <section className="rounded-2xl border border-border bg-card p-4">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium text-zinc-200">List Library</h3>
           <button
@@ -961,7 +961,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
         </div>
       </section>
 
-      <section className="h-full space-y-4 rounded-2xl border border-border bg-card p-4 xl:min-h-[760px]">
+      <section className="space-y-4 rounded-2xl border border-border bg-card p-4">
         {selected ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">

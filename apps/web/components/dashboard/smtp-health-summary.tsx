@@ -24,7 +24,7 @@ export function SmtpHealthSummary({
   smtpStates: SmtpSummary[];
 }) {
   return (
-    <div className="flex h-full min-h-[620px] flex-col rounded-2xl border border-border bg-card p-4">
+    <div className="flex h-full min-h-[520px] flex-col rounded-2xl border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <BarChart3 className="h-4 w-4 text-zinc-400" />
@@ -40,7 +40,7 @@ export function SmtpHealthSummary({
         <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-amber-300">Sinirlandi: {smtpTotals.throttled}</div>
         <div className="rounded-lg border border-border bg-zinc-900/60 px-2 py-1.5 text-rose-300">Hata: {smtpTotals.error}</div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+      <div className="max-h-[360px] overflow-y-auto pr-1">
         {smtpStates.length === 0 ? (
           <EmptyState
             icon="chart-bar"
