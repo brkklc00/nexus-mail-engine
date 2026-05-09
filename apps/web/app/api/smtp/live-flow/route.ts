@@ -337,6 +337,8 @@ export async function GET() {
       dbSkippedRecipients?: number;
       redisWaitingJobs?: number;
       redisActiveJobs?: number;
+      redisDelayedJobs?: number;
+      redisFailedJobs?: number;
       schedulerBatchSize?: number;
       requiredBuffer?: number;
       lastSchedulerEnqueued?: number;
@@ -349,6 +351,12 @@ export async function GET() {
     const redisActiveJobs =
       Number(schedulerDiag.redisActiveJobs ?? 0) ||
       (Number(deliveryCounts.active ?? 0) + Number(retryCounts.active ?? 0));
+    const redisDelayedJobs =
+      Number(schedulerDiag.redisDelayedJobs ?? 0) ||
+      (Number(deliveryCounts.delayed ?? 0) + Number(retryCounts.delayed ?? 0));
+    const redisFailedJobs =
+      Number(schedulerDiag.redisFailedJobs ?? 0) ||
+      (Number(deliveryCounts.failed ?? 0) + Number(retryCounts.failed ?? 0));
     const effectiveDbPendingRecipients = Number(schedulerDiag.dbPendingRecipients ?? dbPendingRecipients ?? 0);
     const effectiveDbQueuedRecipients = Number(schedulerDiag.dbQueuedRecipients ?? dbQueuedRecipients ?? 0);
     const effectiveDbProcessingRecipients = Number(schedulerDiag.dbProcessingRecipients ?? dbProcessingRecipients ?? effectiveDbQueuedRecipients);
@@ -357,17 +365,20 @@ export async function GET() {
     const effectiveDbSkippedRecipients = Number(schedulerDiag.dbSkippedRecipients ?? dbSkippedRecipients ?? 0);
     const requiredBuffer = Math.max(
       Number(schedulerDiag.schedulerBatchSize ?? 0),
-      Number(schedulerDiag.requiredBuffer ?? Math.ceil(Math.max(0, targetTotalRps) * 60))
+      Number(schedulerDiag.requiredBuffer ?? Math.ceil(Math.max(0, targetTotalRps) * 120))
     );
+    const queuedBuffer = effectiveDbQueuedRecipients + redisWaitingJobs;
+    const workerConcurrency = Math.max(1, Number(process.env.WORKER_CONCURRENCY || 50));
     let bottleneckReason = "none";
     if (effectiveDbPendingRecipients <= 0 && effectiveDbQueuedRecipients <= 0 && redisWaitingJobs <= 0 && redisActiveJobs <= 1) bottleneckReason = "queue_empty";
-    else if (effectiveDbPendingRecipients > 0 && redisWaitingJobs <= 1) bottleneckReason = "scheduler_underfeeding";
+    else if (effectiveDbPendingRecipients > 0 && queuedBuffer < requiredBuffer) bottleneckReason = "scheduler_underfeeding";
+    else if (redisWaitingJobs > 0 && redisActiveJobs < Math.max(1, Math.floor(workerConcurrency * 0.5))) bottleneckReason = "worker_not_consuming";
     else if (usableSmtpCount > 0 && usableSmtpCount < 2) bottleneckReason = "too_few_eligible_smtps";
     else if (throttledCount > 0) bottleneckReason = "throttle";
     else if (warmupCappedCount > 0) bottleneckReason = "warmup_cap";
     else if (queueHuge) bottleneckReason = "db_slow";
     if (targetTotalRps > 0 && currentRps < targetTotalRps * 0.8 && bottleneckReason === "none") {
-      bottleneckReason = "worker_concurrency";
+      bottleneckReason = redisActiveJobs >= Math.max(1, Math.floor(workerConcurrency * 0.8)) ? "rate_limiter_or_smtp" : "worker_not_consuming";
     }
 
     console.info("[smtp.live-flow] completed", { ms: Date.now() - startedAt });
@@ -402,7 +413,7 @@ export async function GET() {
         expectedRpsAfterApply: Number(providerCapTotalRps.toFixed(4)),
         targetPerSmtpRps: Number(targetPerSmtpRps.toFixed(4)),
         avgPerSmtpRps: usableSmtpCount > 0 ? Number((currentRps / usableSmtpCount).toFixed(3)) : 0,
-        workerConcurrency: Number(process.env.WORKER_CONCURRENCY ?? 0),
+        workerConcurrency,
         dbPendingRecipients: effectiveDbPendingRecipients,
         dbQueuedRecipients: effectiveDbQueuedRecipients,
         dbProcessingRecipients: effectiveDbProcessingRecipients,
@@ -411,6 +422,8 @@ export async function GET() {
         dbSkippedRecipients: effectiveDbSkippedRecipients,
         redisWaitingJobs,
         redisActiveJobs,
+        redisDelayedJobs,
+        redisFailedJobs,
         schedulerBatchSize: Number(schedulerDiag.schedulerBatchSize ?? 0),
         requiredBuffer,
         lastSchedulerEnqueued: Number(schedulerDiag.lastSchedulerEnqueued ?? 0),

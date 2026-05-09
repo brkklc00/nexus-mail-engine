@@ -23,7 +23,7 @@ import { processAlibabaSuppressionSync, resumeStaleAlibabaSyncJobs } from "./pro
 const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
   maxRetriesPerRequest: null
 });
-const workerConcurrency = Number(process.env.WORKER_CONCURRENCY ?? 10);
+const workerConcurrency = Math.max(1, Number(process.env.WORKER_CONCURRENCY || 50));
 const schedulerTickMs = Math.max(200, Number(process.env.SCHEDULER_TICK_MS ?? 500));
 const schedulerBatchSize = Math.max(50, Number(process.env.SCHEDULER_BATCH_SIZE ?? 1000));
 const schedulerDbReadConcurrency = Math.max(1, Number(process.env.WORKER_DB_READ_CONCURRENCY ?? 5));

@@ -54,6 +54,8 @@ type FlowPayload = {
     dbSkippedRecipients?: number;
     redisWaitingJobs?: number;
     redisActiveJobs?: number;
+    redisDelayedJobs?: number;
+    redisFailedJobs?: number;
     schedulerBatchSize?: number;
     requiredBuffer?: number;
     lastSchedulerEnqueued?: number;
@@ -227,7 +229,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
         <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-xs text-zinc-300">
           Uygun SMTP: {data.diagnostics.eligibleSmtp ?? 0} · Aktif lane: {data.diagnostics.activeLane ?? 0} ·
           Throttled: {data.diagnostics.throttledSmtp ?? 0} · SMTP başı hedef RPS: {Number(data.diagnostics.targetPerSmtpRps ?? 0).toFixed(2)} ·
-          Ortalama SMTP başı RPS: {Number(data.diagnostics.avgPerSmtpRps ?? 0).toFixed(2)} · Warmup kapasitesi: {Number(data.diagnostics.warmupPoolCapacityDaily ?? 0).toLocaleString()}/gün ·
+          Ortalama SMTP başı RPS: {Number(data.diagnostics.avgPerSmtpRps ?? 0).toFixed(2)} · Worker concurrency: {Number(data.diagnostics.workerConcurrency ?? 0)} · Warmup kapasitesi: {Number(data.diagnostics.warmupPoolCapacityDaily ?? 0).toLocaleString()}/gün ·
           Bottleneck: {data.diagnostics.bottleneckReason ?? "none"} {data.diagnostics.bottleneckReason === "warmup_cap" ? `(${Number(data.diagnostics.warmupBottleneckSmtpCount ?? 0)} SMTP)` : ""}
         </div>
       ) : null}
@@ -239,7 +241,7 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
       {data?.diagnostics ? (
         <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-xs text-zinc-300">
           DB pending: {Number(data.diagnostics.dbPendingRecipients ?? 0)} · DB queued: {Number(data.diagnostics.dbQueuedRecipients ?? data.diagnostics.dbProcessingRecipients ?? 0)} · DB processing: {Number(data.diagnostics.dbProcessingRecipients ?? 0)} · DB sent: {Number(data.diagnostics.dbSentRecipients ?? 0)} ·
-          DB failed: {Number(data.diagnostics.dbFailedRecipients ?? 0)} · DB skipped: {Number(data.diagnostics.dbSkippedRecipients ?? 0)} · Redis waiting: {Number(data.diagnostics.redisWaitingJobs ?? 0)} · Redis active: {Number(data.diagnostics.redisActiveJobs ?? 0)} ·
+          DB failed: {Number(data.diagnostics.dbFailedRecipients ?? 0)} · DB skipped: {Number(data.diagnostics.dbSkippedRecipients ?? 0)} · Redis waiting: {Number(data.diagnostics.redisWaitingJobs ?? 0)} · Redis active: {Number(data.diagnostics.redisActiveJobs ?? 0)} · Redis delayed: {Number(data.diagnostics.redisDelayedJobs ?? 0)} · Redis failed: {Number(data.diagnostics.redisFailedJobs ?? 0)} ·
           Scheduler batch: {Number(data.diagnostics.schedulerBatchSize ?? 0)} · Required buffer: {Number(data.diagnostics.requiredBuffer ?? 0)} · Son enqueue: {Number(data.diagnostics.lastSchedulerEnqueued ?? 0)} · Sebep: {data.diagnostics.lastSchedulerReason ?? "unknown"}
         </div>
       ) : null}
