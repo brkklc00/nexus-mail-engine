@@ -420,23 +420,46 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
           return;
         }
 
-        await deliveryQueue.add(
-          "deliver",
-          {
+        try {
+          await deliveryQueue.add(
+            "deliver",
+            {
+              campaignId: campaign.id,
+              recipientId: nextRecipient.recipientId,
+              templateId: campaign.templateId,
+              smtpAccountId: selectedSmtp,
+              idempotencyKey: idempotencyKey(campaign.id, nextRecipient.recipientId, campaign.template.version),
+              attempt: 1
+            },
+            {
+              jobId: safeJobId(
+                `delivery_${campaign.id}_${nextRecipient.recipientId}_${campaign.template.version}`
+              )
+            }
+          );
+          dispatched += 1;
+        } catch (enqueueError) {
+          await prisma.campaignRecipient
+            .updateMany({
+              where: {
+                campaignId: campaign.id,
+                recipientId: nextRecipient.recipientId,
+                sendStatus: "queued"
+              },
+              data: {
+                sendStatus: "pending"
+              }
+            })
+            .catch(() => ({ count: 0 }));
+          await safeCreateCampaignLog({
             campaignId: campaign.id,
             recipientId: nextRecipient.recipientId,
-            templateId: campaign.templateId,
-            smtpAccountId: selectedSmtp,
-            idempotencyKey: idempotencyKey(campaign.id, nextRecipient.recipientId, campaign.template.version),
-            attempt: 1
-          },
-          {
-            jobId: safeJobId(
-              `delivery_${campaign.id}_${nextRecipient.recipientId}_${campaign.template.version}`
-            )
-          }
-        );
-        dispatched += 1;
+            eventType: "dispatch_enqueue_failed",
+            status: "failed",
+            message: enqueueError instanceof Error ? enqueueError.message : "delivery_enqueue_failed"
+          });
+          return;
+        }
       });
     } catch (error) {
       if ((error as Error).message !== "lock_not_acquired") {
@@ -528,21 +551,43 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
         if (!claimed) {
           continue;
         }
-        await deliveryQueue.add(
-          "deliver_backfill",
-          {
+        try {
+          await deliveryQueue.add(
+            "deliver_backfill",
+            {
+              campaignId: row.campaignId,
+              recipientId: row.recipientId,
+              templateId: templateIdByCampaign.get(row.campaignId) ?? "",
+              smtpAccountId: smtpId,
+              idempotencyKey: idempotencyKey(row.campaignId, row.recipientId, version),
+              attempt: 1
+            },
+            {
+              jobId: safeJobId(`delivery_${row.campaignId}_${row.recipientId}_${version}`)
+            }
+          );
+          backfilled += 1;
+        } catch (enqueueError) {
+          await prisma.campaignRecipient
+            .updateMany({
+              where: {
+                campaignId: row.campaignId,
+                recipientId: row.recipientId,
+                sendStatus: "queued"
+              },
+              data: {
+                sendStatus: "pending"
+              }
+            })
+            .catch(() => ({ count: 0 }));
+          await safeCreateCampaignLog({
             campaignId: row.campaignId,
             recipientId: row.recipientId,
-            templateId: templateIdByCampaign.get(row.campaignId) ?? "",
-            smtpAccountId: smtpId,
-            idempotencyKey: idempotencyKey(row.campaignId, row.recipientId, version),
-            attempt: 1
-          },
-          {
-            jobId: safeJobId(`delivery_${row.campaignId}_${row.recipientId}_${version}`)
-          }
-        );
-        backfilled += 1;
+            eventType: "backfill_enqueue_failed",
+            status: "failed",
+            message: enqueueError instanceof Error ? enqueueError.message : "delivery_backfill_enqueue_failed"
+          });
+        }
       }
     });
     await Promise.all(workers);
