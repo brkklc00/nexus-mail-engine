@@ -154,7 +154,7 @@ export function QueueObservabilityWidget() {
   }
 
   return (
-    <div className="flex h-full min-h-[520px] flex-col rounded-lg border border-border bg-card p-4">
+    <div className="flex h-full min-h-[460px] flex-col rounded-lg border border-border bg-card p-4">
       <h3 className="text-sm text-zinc-300">Kuyruk Gozlemlenebilirligi</h3>
       {!data && !error ? (
         <div className="mt-3 flex items-center gap-2 text-xs text-zinc-400">
