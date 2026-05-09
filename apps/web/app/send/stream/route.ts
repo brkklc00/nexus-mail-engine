@@ -116,7 +116,7 @@ export async function GET(req: Request) {
         const configuredSmtpIds = Array.isArray(((campaign as any).smtpPoolConfig as any)?.smtpIds)
           ? ((((campaign as any).smtpPoolConfig as any).smtpIds as string[]))
           : [campaign.smtpAccountId];
-        const [smtpPool, perSmtpSentRows, perSmtpQueuedRows, queueObs, targetSummaryRow, schedulerDiagRow, dbStatusRowsRaw] = await Promise.all([
+        const [smtpPool, perSmtpSentRows, perSmtpQueuedRows, queueObs, targetSummaryRow, schedulerDiagRow, dbStatusRowsRaw, smtpUsed5mRowsRaw] = await Promise.all([
           prisma.smtpAccount.findMany({
             where: { id: { in: configuredSmtpIds }, isActive: true, isSoftDeleted: false },
             select: {
@@ -164,12 +164,24 @@ export async function GET(req: Request) {
               campaignId: campaign.id
             },
             _count: { _all: true }
-          }).catch(() => [])
+          }).catch(() => []),
+          prisma.$queryRaw<Array<{ smtp_id: string; total: bigint }>>`
+            SELECT (cl.metadata->>'smtpAccountId') AS smtp_id, COUNT(*)::bigint AS total
+            FROM "CampaignLog" cl
+            WHERE cl."eventType" = 'sent'
+              AND cl."campaignId" = ${campaign.id}
+              AND cl."createdAt" >= NOW() - INTERVAL '5 minute'
+              AND (cl.metadata->>'smtpAccountId') IS NOT NULL
+            GROUP BY (cl.metadata->>'smtpAccountId')
+            ORDER BY total DESC
+            LIMIT 200
+          `.catch(() => [])
         ]);
         const dbStatusRows = (Array.isArray(dbStatusRowsRaw) ? dbStatusRowsRaw : []) as Array<{
           sendStatus: "pending" | "queued" | "sent" | "failed" | "skipped";
           _count: { _all: number };
         }>;
+        const smtpUsed5mRows = (Array.isArray(smtpUsed5mRowsRaw) ? smtpUsed5mRowsRaw : []) as Array<{ smtp_id: string; total: bigint }>;
         const dbPendingRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "pending")?._count._all ?? 0);
         const dbQueuedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "queued")?._count._all ?? 0);
         const dbProcessingRecipients = dbQueuedRecipients;
@@ -225,6 +237,9 @@ export async function GET(req: Request) {
         const throttledCount = smtpPool.filter((smtp: any) => smtp.isThrottled).length;
         const eligiblePool = smtpPool.filter((smtp: any) => smtpEligibilityReason(smtp) === null);
         const healthyCount = eligiblePool.length;
+        const smtpsUsedLast5m = new Set(smtpUsed5mRows.map((row) => String(row.smtp_id ?? "")).filter(Boolean)).size;
+        const smtpsUsedCampaignTotal = perSmtpSent.length;
+        const smtpDistributionSkew = healthyCount > 0 ? Number((1 - smtpsUsedLast5m / healthyCount).toFixed(4)) : 0;
         const alibabaSafeCap = Math.max(1, Number(process.env.ALIBABA_PROVIDER_SAFE_MAX_RPS ?? 15));
         const defaultProviderSafeCap = Math.max(1, Number(process.env.SMTP_DEFAULT_PROVIDER_SAFE_MAX_RPS ?? 5));
         const targetPerSmtpRps = Number(targetSummary.targetPerSmtpRps ?? (healthyCount > 0 ? targetTotalRps / healthyCount : 0));
@@ -261,10 +276,11 @@ export async function GET(req: Request) {
           Number(schedulerDiag.requiredBuffer ?? Math.ceil(Math.max(0, targetTotalRps) * 120))
         );
         const currentBuffer = redisWaitingJobs + redisActiveJobs + redisDelayedJobs;
-        const workerConcurrency = Math.max(1, Number(process.env.WORKER_CONCURRENCY || 50));
+        const workerConcurrency = Math.max(1, Number(process.env.WORKER_CONCURRENCY || 120));
         if (effectiveDbPendingRecipients <= 0 && effectiveDbQueuedRecipients <= 0 && redisWaitingJobs <= 0 && redisActiveJobs <= 0 && redisDelayedJobs <= 0) bottleneckReason = "queue_empty";
         else if (effectiveDbPendingRecipients > 0 && currentBuffer < requiredBuffer) bottleneckReason = "scheduler_underfeeding";
         else if (redisWaitingJobs > 0 && redisActiveJobs < Math.max(1, Math.floor(workerConcurrency * 0.5))) bottleneckReason = "worker_not_consuming";
+        else if (healthyCount >= 10 && smtpsUsedLast5m < Math.floor(healthyCount * 0.8)) bottleneckReason = "smtp_distribution_skew";
         else if (healthyCount < 2) bottleneckReason = "too_few_eligible_smtps";
         else if (throttledCount > 0) bottleneckReason = "throttle";
         else if (warmupCappedCount > 0) bottleneckReason = "warmup_cap";
@@ -303,6 +319,9 @@ export async function GET(req: Request) {
             warmupCapTotalRps: Number(warmupCapTotalRps.toFixed(4)),
             throttleCapTotalRps: Number(throttleCapTotalRps.toFixed(4)),
             providerCapTotalRps: Number(providerCapTotalRps.toFixed(4)),
+            smtpsUsedLast5m,
+            smtpsUsedCampaignTotal,
+            smtpDistributionSkew,
             warmupBottleneckSmtpCount: warmupCappedCount,
             warmupAvgCapRps: warmupCappedCount > 0 ? Number((warmupCapTotalRps / Math.max(1, healthyCount)).toFixed(4)) : 0,
             expectedRpsAfterApply: Number(providerCapTotalRps.toFixed(4)),

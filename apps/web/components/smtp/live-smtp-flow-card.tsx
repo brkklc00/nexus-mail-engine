@@ -44,6 +44,19 @@ type FlowPayload = {
     providerCapTotalRps?: number;
     warmupPoolCapacityDaily?: number;
     warmupBottleneckSmtpCount?: number;
+    warmupCappedReasons?: Record<string, number>;
+    warmupCappedSmtpDetails?: Array<{
+      smtpEmail: string | null;
+      targetRps: number;
+      currentWarmupCap: number;
+      maxRps: number;
+      providerSafeCap: number;
+      successfulSentCount: number;
+      capSource: string;
+    }>;
+    smtpsUsedLast5m?: number;
+    smtpsUsedCampaignTotal?: number;
+    smtpDistributionSkew?: number;
     expectedRpsAfterApply?: number;
     targetPerSmtpRps?: number;
     dbPendingRecipients?: number;
@@ -229,8 +242,13 @@ export function LiveSmtpFlowCard({ compact = false }: Props) {
         <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-xs text-zinc-300">
           Uygun SMTP: {data.diagnostics.eligibleSmtp ?? 0} · Aktif lane: {data.diagnostics.activeLane ?? 0} ·
           Throttled: {data.diagnostics.throttledSmtp ?? 0} · SMTP başı hedef RPS: {Number(data.diagnostics.targetPerSmtpRps ?? 0).toFixed(2)} ·
-          Ortalama SMTP başı RPS: {Number(data.diagnostics.avgPerSmtpRps ?? 0).toFixed(2)} · Worker concurrency: {Number(data.diagnostics.workerConcurrency ?? 0)} · Warmup kapasitesi: {Number(data.diagnostics.warmupPoolCapacityDaily ?? 0).toLocaleString()}/gün ·
+          Ortalama SMTP başı RPS: {Number(data.diagnostics.avgPerSmtpRps ?? 0).toFixed(2)} · Worker concurrency: {Number(data.diagnostics.workerConcurrency ?? 0)} · Son 5dk kullanılan SMTP: {Number(data.diagnostics.smtpsUsedLast5m ?? 0)} · Warmup kapasitesi: {Number(data.diagnostics.warmupPoolCapacityDaily ?? 0).toLocaleString()}/gün ·
           Bottleneck: {data.diagnostics.bottleneckReason ?? "none"} {data.diagnostics.bottleneckReason === "warmup_cap" ? `(${Number(data.diagnostics.warmupBottleneckSmtpCount ?? 0)} SMTP)` : ""}
+        </div>
+      ) : null}
+      {data?.diagnostics?.warmupCappedSmtpDetails && data.diagnostics.warmupCappedSmtpDetails.length > 0 ? (
+        <div className="mt-2 rounded border border-border bg-zinc-900/50 px-2 py-2 text-[11px] text-zinc-300">
+          Warmup cap nedenleri: {Object.entries(data.diagnostics.warmupCappedReasons ?? {}).map(([key, value]) => `${key}:${value}`).join(" · ") || "-"}
         </div>
       ) : null}
       {data?.diagnostics?.bottleneckReason === "scheduler_underfeeding" ? (

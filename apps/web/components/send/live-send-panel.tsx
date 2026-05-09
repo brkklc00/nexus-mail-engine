@@ -74,6 +74,9 @@ type LiveEvent = {
   warmupCapTotalRps?: number;
   throttleCapTotalRps?: number;
   providerCapTotalRps?: number;
+  smtpsUsedLast5m?: number;
+  smtpsUsedCampaignTotal?: number;
+  smtpDistributionSkew?: number;
   warmupBottleneckSmtpCount?: number;
   warmupAvgCapRps?: number;
   expectedRpsAfterApply?: number;
@@ -617,6 +620,7 @@ export function LiveSendPanel() {
           Hedef hızın altında gönderim yapılıyor. Sebep: {live.bottleneckReason ?? "none"}
           {live.bottleneckReason === "warmup_cap" ? " · Warmup sınırı nedeniyle hedef hız düşüyor. Hedefi uygula butonuyla uygun SMTP’lerin warmup limitleri yükseltilebilir." : ""}
           {live.bottleneckReason === "scheduler_underfeeding" ? " · Kampanyada bekleyen alıcı var ama scheduler kuyruğu yeterince hızlı beslemiyor." : ""}
+          {live.bottleneckReason === "smtp_distribution_skew" ? " · SMTP dağılımı dengesiz: yeterli SMTP lane aktif kullanılamıyor." : ""}
         </p>
       ) : null}
 
@@ -660,7 +664,7 @@ export function LiveSendPanel() {
             Aktif lane: {live.activeLaneCount ?? 0} · Uygun SMTP: {live.eligibleSmtpCount ?? 0} · SMTP başı hedef RPS: {Number(live.targetPerSmtpRps ?? 0).toFixed(2)} ·
             SMTP başı efektif ortalama RPS: {Number(live.avgPerSmtpRps ?? 0).toFixed(2)} · Warmup cap toplamı: {Number(live.warmupCapTotalRps ?? 0).toFixed(2)} ·
             Throttle cap toplamı: {Number(live.throttleCapTotalRps ?? 0).toFixed(2)} · Provider cap toplamı: {Number(live.providerCapTotalRps ?? 0).toFixed(2)} ·
-            Bottleneck: {live.bottleneckReason ?? "none"}
+            Son 5dk kullanılan SMTP: {live.smtpsUsedLast5m ?? 0} · Kampanya toplam kullanılan SMTP: {live.smtpsUsedCampaignTotal ?? 0} · Dağıtım skew: {Number(live.smtpDistributionSkew ?? 0).toFixed(2)} · Bottleneck: {live.bottleneckReason ?? "none"}
           </div>
           <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
             DB pending: {live.dbPendingRecipients ?? 0} · DB queued: {live.dbQueuedRecipients ?? live.dbProcessingRecipients ?? 0} · DB processing: {live.dbProcessingRecipients ?? 0} · DB sent: {live.dbSentRecipients ?? 0} ·

@@ -10,6 +10,36 @@ const DEFAULT_ALIBABA_LADDER: WarmupTier[] = [
   { name: "25k-50k", minDelivered: 25001, ratePerSecond: 10 },
   { name: "50k+", minDelivered: 50001, ratePerSecond: 15 }
 ];
+const WORKER_SETTINGS_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SETTINGS_CACHE_MS ?? 30_000));
+const ALIBABA_PROVIDER_SAFE_MAX_RPS = Math.max(1, Number(process.env.ALIBABA_PROVIDER_SAFE_MAX_RPS ?? 15));
+const SMTP_DEFAULT_PROVIDER_SAFE_MAX_RPS = Math.max(1, Number(process.env.SMTP_DEFAULT_PROVIDER_SAFE_MAX_RPS ?? 5));
+let cachedDailyTargetSummary: { value: any; expiresAt: number } | null = null;
+
+function isAlibabaHost(host: string | null | undefined) {
+  return String(host ?? "").toLowerCase().includes("smtpdm");
+}
+
+function isAuthFailedSignal(input: { healthStatus?: string | null; throttleReason?: string | null; lastError?: string | null }) {
+  const raw = `${input.healthStatus ?? ""} ${input.throttleReason ?? ""} ${input.lastError ?? ""}`.toLowerCase();
+  return raw.includes("auth_failed") || raw.includes("authentication") || raw.includes("invalid credentials");
+}
+
+async function getDailyTargetSummaryCached() {
+  const now = Date.now();
+  if (cachedDailyTargetSummary && cachedDailyTargetSummary.expiresAt > now) {
+    return cachedDailyTargetSummary.value;
+  }
+  const row = await prisma.appSetting.findUnique({ where: { key: "smtp_daily_target_summary" } }).catch(() => null);
+  const value = ((row?.value as any) ?? {}) as {
+    warmupPolicy?: "automatic_recommended" | "force_target" | "conservative";
+    targetPerSmtpRps?: number;
+  };
+  cachedDailyTargetSummary = {
+    value,
+    expiresAt: now + WORKER_SETTINGS_CACHE_MS
+  };
+  return value;
+}
 
 export async function getEffectiveRateForSmtp(smtpAccountId: string) {
   const smtp = await prisma.smtpAccount.findUnique({ where: { id: smtpAccountId } });
@@ -38,6 +68,27 @@ export async function getEffectiveRateForSmtp(smtpAccountId: string) {
     deliveredSuccessCount,
     warmupLadder: DEFAULT_ALIBABA_LADDER
   });
+  const targetSummary = await getDailyTargetSummaryCached();
+  const forceTargetActive = targetSummary.warmupPolicy === "force_target";
+  const targetPerSmtpRps = Math.max(0, Number(targetSummary.targetPerSmtpRps ?? 0));
+  const providerSafeCap = isAlibabaHost(smtp.host) ? ALIBABA_PROVIDER_SAFE_MAX_RPS : SMTP_DEFAULT_PROVIDER_SAFE_MAX_RPS;
+  if (
+    forceTargetActive &&
+    targetPerSmtpRps > 0 &&
+    !smtp.isThrottled &&
+    smtp.healthStatus !== "error" &&
+    !isAuthFailedSignal(smtp)
+  ) {
+    const explicitMax = Number(smtp.maxRatePerSecond ?? 0);
+    const manualHardCap = explicitMax > 0 && explicitMax + 0.0001 < targetPerSmtpRps;
+    const allowedByMax = manualHardCap ? explicitMax : targetPerSmtpRps;
+    const forcedRate = Math.max(0.01, Number(Math.min(targetPerSmtpRps, allowedByMax, providerSafeCap).toFixed(4)));
+    return {
+      ...decision,
+      effectiveRatePerSecond: forcedRate,
+      reasons: [...decision.reasons, manualHardCap ? "manual_lock" : "force_target_override"]
+    };
+  }
 
   if (smtp.isThrottled) {
     return {

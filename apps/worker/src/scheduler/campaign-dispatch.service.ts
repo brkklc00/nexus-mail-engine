@@ -11,12 +11,12 @@ const WORKER_SETTINGS_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SETTI
 const WORKER_SMTP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SMTP_CACHE_MS ?? 30_000));
 const WORKER_CAMPAIGN_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_CAMPAIGN_CACHE_MS ?? 10_000));
 const WORKER_WARMUP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_WARMUP_CACHE_MS ?? 3_000));
-const SMTP_LANE_MAX_INFLIGHT = Math.max(1, Number(process.env.SMTP_LANE_MAX_INFLIGHT ?? 2));
+const SMTP_LANE_MAX_INFLIGHT = Math.max(1, Number(process.env.SMTP_LANE_MAX_INFLIGHT ?? 3));
 const SMTP_RATE_CACHE_MS = Math.max(500, Number(process.env.SMTP_RATE_CACHE_MS ?? 3000));
 const SMTP_THROTTLE_EXPIRE_CHECK_MS = Math.max(5_000, Number(process.env.SMTP_THROTTLE_EXPIRE_CHECK_MS ?? 30_000));
 const SCHEDULER_DIAGNOSTICS_WRITE_MS = Math.max(3_000, Number(process.env.SCHEDULER_DIAGNOSTICS_WRITE_MS ?? 5_000));
 const SCHEDULER_MIN_BUFFER_SECONDS = Math.max(10, Number(process.env.SCHEDULER_MIN_BUFFER_SECONDS ?? 120));
-const SCHEDULER_MAX_ENQUEUE_PER_TICK = Math.max(100, Number(process.env.SCHEDULER_MAX_ENQUEUE_PER_TICK ?? 10_000));
+const SCHEDULER_MAX_ENQUEUE_PER_TICK = Math.max(100, Number(process.env.SCHEDULER_MAX_ENQUEUE_PER_TICK ?? 15_000));
 const SCHEDULER_FEED_LOG_MS = Math.max(2_000, Number(process.env.SCHEDULER_FEED_LOG_MS ?? 10_000));
 let schedulerReadInFlight = 0;
 const schedulerReadQueue: Array<() => void> = [];
@@ -35,6 +35,7 @@ let lastRuntimeCacheBustReadAt = 0;
 let lastThrottleExpireSweepAt = 0;
 let lastDiagnosticsWriteAt = 0;
 let lastSchedulerFeedLogAt = 0;
+const campaignSmtpCursor = new Map<string, number>();
 
 export type SchedulerDispatchResult = {
   dispatched: number;
@@ -208,7 +209,7 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
   const scaledLaneBatch = Math.max(0, laneCount * SMTP_LANE_MAX_INFLIGHT * 50);
   const requiredBuffer = Math.max(maxJobs, scaledTargetBatch);
   const computedBatch = Math.max(requiredBuffer, scaledLaneBatch);
-  const schedulerBatchSize = Math.max(50, Math.min(10_000, computedBatch));
+  const schedulerBatchSize = Math.max(50, Math.min(20_000, computedBatch));
   const recipientsTakePerCampaign = Math.max(initialRecipientsTakePerCampaign, Math.min(schedulerBatchSize, Number(process.env.SCHEDULER_RECIPIENTS_TAKE_PER_CAMPAIGN ?? 200)));
 
   for (const campaign of activeCampaigns) {
@@ -350,7 +351,8 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
             return true;
           });
         const preferredSmtp = nextRecipient.smtpAccountId || campaign.smtpAccountId;
-        const roundRobin = activePool[dispatched % Math.max(1, activePool.length)];
+        const previousCursor = Number(campaignSmtpCursor.get(campaign.id) ?? 0);
+        const roundRobin = activePool.length > 0 ? activePool[previousCursor % activePool.length] : undefined;
         const leastUsed = [...activePool].sort((a, b) => {
           const aDelivered = Number(warmupMap.get(a)?.successfulDeliveries ?? 0);
           const bDelivered = Number(warmupMap.get(b)?.successfulDeliveries ?? 0);
@@ -374,6 +376,7 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatc
           return Array.from({ length: weight }).map(() => id);
         });
         const weighted = weightedPool.length > 0 ? weightedPool[dispatched % weightedPool.length] : roundRobin;
+        campaignSmtpCursor.set(campaign.id, previousCursor + 1);
         let selectedSmtp = preferredSmtp;
         if (!activePool.includes(selectedSmtp)) {
           if (strategy === "least_used") selectedSmtp = leastUsed;
