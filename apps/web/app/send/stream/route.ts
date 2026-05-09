@@ -260,10 +260,10 @@ export async function GET(req: Request) {
           Number(schedulerDiag.schedulerBatchSize ?? 0),
           Number(schedulerDiag.requiredBuffer ?? Math.ceil(Math.max(0, targetTotalRps) * 120))
         );
-        const queuedBuffer = effectiveDbQueuedRecipients + redisWaitingJobs;
+        const currentBuffer = redisWaitingJobs + redisActiveJobs + redisDelayedJobs;
         const workerConcurrency = Math.max(1, Number(process.env.WORKER_CONCURRENCY || 50));
-        if (effectiveDbPendingRecipients <= 0 && effectiveDbQueuedRecipients <= 0 && redisWaitingJobs <= 0 && redisActiveJobs <= 1) bottleneckReason = "queue_empty";
-        else if (effectiveDbPendingRecipients > 0 && queuedBuffer < requiredBuffer) bottleneckReason = "scheduler_underfeeding";
+        if (effectiveDbPendingRecipients <= 0 && effectiveDbQueuedRecipients <= 0 && redisWaitingJobs <= 0 && redisActiveJobs <= 0 && redisDelayedJobs <= 0) bottleneckReason = "queue_empty";
+        else if (effectiveDbPendingRecipients > 0 && currentBuffer < requiredBuffer) bottleneckReason = "scheduler_underfeeding";
         else if (redisWaitingJobs > 0 && redisActiveJobs < Math.max(1, Math.floor(workerConcurrency * 0.5))) bottleneckReason = "worker_not_consuming";
         else if (healthyCount < 2) bottleneckReason = "too_few_eligible_smtps";
         else if (throttledCount > 0) bottleneckReason = "throttle";

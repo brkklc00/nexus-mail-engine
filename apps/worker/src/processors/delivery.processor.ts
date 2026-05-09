@@ -317,12 +317,33 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
 
   const campaign = await findCampaignForDelivery(payload.campaignId);
   const recipient = await prisma.recipient.findUnique({ where: { id: payload.recipientId } });
+  const campaignRecipient = await prisma.campaignRecipient.findUnique({
+    where: {
+      campaignId_recipientId: {
+        campaignId: payload.campaignId,
+        recipientId: payload.recipientId
+      }
+    },
+    select: {
+      sendStatus: true
+    }
+  });
 
   if (!campaign) {
     return;
   }
+  if (!campaignRecipient || ["sent", "failed", "skipped"].includes(campaignRecipient.sendStatus)) {
+    return;
+  }
   if (!recipient || !campaign.template) {
     throw new Error("delivery_missing_entities");
+  }
+  if (campaignRecipient.sendStatus === "pending") {
+    await transitionCampaignRecipientStatus({
+      campaignId: payload.campaignId,
+      recipientId: payload.recipientId,
+      to: "queued"
+    }).catch(() => false);
   }
   const poolSmtpIds = Array.isArray(((campaign as any).smtpPoolConfig as any)?.smtpIds)
     ? ((((campaign as any).smtpPoolConfig as any).smtpIds as string[]))
