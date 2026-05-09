@@ -45,7 +45,8 @@ type AlibabaSyncStatus = {
     | "paused"
     | "completed"
     | "failed"
-    | "stopped_limit";
+    | "stopped_limit"
+    | "cancelling";
   startTime: string;
   endTime: string;
   totalCount: number;
@@ -67,6 +68,10 @@ type AlibabaSyncStatus = {
   hasNextStart: boolean;
   nextStartHash: string | null;
   nextStartLength: number;
+  progressPercent: number;
+  progressText: string;
+  throughputPerMinute: number;
+  etaText: string;
   lastError: string | null;
   startedAt: string | null;
   updatedAt: string | null;
@@ -75,6 +80,9 @@ type AlibabaSyncStatus = {
   responseKeys: string[];
   firstRecordKeys: string[];
   parserPathUsed: string | null;
+  workerJobId: string | null;
+  batchPages: number;
+  pageSize: number;
 };
 
 type Filters = {
@@ -304,20 +312,34 @@ export function SuppressionManager() {
   async function continueAlibabaSync() {
     setSyncLoading(true);
     try {
-      const response = await fetch("/api/suppression/alibaba-sync/continue", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ removeFromLists: syncRemoveFromLists })
-      });
+      const response = await fetch("/api/suppression/alibaba-sync/resume", { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; summary?: AlibabaSyncStatus };
       if (!response.ok || !payload.ok || !payload.summary) {
         throw new Error(payload.error ?? "Alibaba senkronizasyonu devam ettirilemedi");
       }
       setSyncStatus(payload.summary);
-      toast.success("Alibaba senkronizasyonu devam etti", payload.summary.message);
+      toast.success("Alibaba senkronizasyonu devam ettirildi", payload.summary.message);
       await loadStats();
     } catch (err) {
       toast.error("Alibaba senkronizasyonu devam ettirilemedi", err instanceof Error ? err.message : "İstek başarısız oldu");
+    } finally {
+      setSyncLoading(false);
+    }
+  }
+
+  async function pauseAlibabaSync() {
+    setSyncLoading(true);
+    try {
+      const response = await fetch("/api/suppression/alibaba-sync/pause", { method: "POST" });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; summary?: AlibabaSyncStatus };
+      if (!response.ok || !payload.ok || !payload.summary) {
+        throw new Error(payload.error ?? "Alibaba senkronizasyonu duraklatılamadı");
+      }
+      setSyncStatus(payload.summary);
+      toast.info("Alibaba senkronizasyonu duraklatılıyor");
+      await loadStats();
+    } catch (err) {
+      toast.error("Alibaba senkronizasyonu duraklatılamadı", err instanceof Error ? err.message : "İstek başarısız oldu");
     } finally {
       setSyncLoading(false);
     }
@@ -690,6 +712,26 @@ export function SuppressionManager() {
     void loadAlibabaSyncStatus();
   }, []);
 
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      if (typeof document !== "undefined" && document.hidden) {
+        timer = setTimeout(poll, 2000);
+        return;
+      }
+      await loadAlibabaSyncStatus();
+      const running = syncStatus?.status === "running" || syncStatus?.status === "cancelling";
+      timer = setTimeout(poll, running ? 2000 : 10000);
+    };
+    timer = setTimeout(poll, 2000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [syncStatus?.status]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -937,7 +979,15 @@ export function SuppressionManager() {
               className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 disabled:opacity-60"
             >
               {syncLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Son 30 Günü Başlat
+              Başlat
+            </button>
+            <button
+              type="button"
+              onClick={() => void pauseAlibabaSync()}
+              disabled={syncLoading || (syncStatus?.status !== "running" && syncStatus?.status !== "cancelling")}
+              className="inline-flex items-center gap-1 rounded-lg border border-amber-400/40 px-3 py-2 text-sm text-amber-200 disabled:opacity-60"
+            >
+              Duraklat
             </button>
             <button
               type="button"
@@ -945,7 +995,7 @@ export function SuppressionManager() {
               disabled={syncLoading || !syncStatus?.hasNextStart}
               className="inline-flex items-center gap-1 rounded-lg border border-indigo-400/40 px-3 py-2 text-sm text-indigo-200 disabled:opacity-60"
             >
-              Devam Et
+              Devam Ettir
             </button>
             <button
               type="button"
@@ -970,7 +1020,10 @@ export function SuppressionManager() {
         </p>
         <p className="mt-2 rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-xs text-indigo-200">
           Alibaba Toplam Kayıt, Alibaba tarafındaki toplam invalid adres sayısıdır. Sistem bu kayıtları güvenli şekilde
-          parça parça çeker. Devam Et butonuyla kaldığı yerden devam eder.
+          parça parça çeker. Devam Ettir butonuyla kaldığı yerden devam eder.
+        </p>
+        <p className="mt-2 rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200">
+          Bu işlem arka planda çalışır. Sayfayı yenileseniz bile ilerleme kaybolmaz. Sistem kaldığı yerden devam eder.
         </p>
         <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
           <input
@@ -1006,6 +1059,10 @@ export function SuppressionManager() {
           <p className="mt-1 text-xs text-zinc-400">
             Baskılama listesine eklenen Alibaba kaydı: {(syncStatus?.addedToSuppression ?? 0).toLocaleString()}
           </p>
+          <p className="mt-1 text-xs text-zinc-400">
+            Hız: {Number(syncStatus?.throughputPerMinute ?? 0).toLocaleString()} kayıt/dk · Tahmini kalan süre:{" "}
+            {syncStatus?.etaText ?? "-"}
+          </p>
         </div>
         <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-300 md:grid-cols-3">
           <StatCard title="Bu Çalıştırma Sayfa" value={syncStatus?.runPagesFetched ?? 0} />
@@ -1021,6 +1078,9 @@ export function SuppressionManager() {
             <p>hasNextStart: {syncStatus?.hasNextStart ? "true" : "false"}</p>
             <p>nextStartHash: {syncStatus?.nextStartHash ?? "-"}</p>
             <p>nextStartLength: {syncStatus?.nextStartLength ?? 0}</p>
+            <p>workerJobId: {syncStatus?.workerJobId ?? "-"}</p>
+            <p>batchPages: {syncStatus?.batchPages ?? 0}</p>
+            <p>pageSize: {syncStatus?.pageSize ?? 0}</p>
           </div>
         ) : null}
       </section>

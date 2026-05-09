@@ -428,6 +428,10 @@ model AlibabaSuppressionSyncState {
   endTime              String
   nextStart            String?
   nextStartHash        String?
+  stopRequested        Boolean  @default(false)
+  removeFromLists      Boolean  @default(true)
+  lockedAt             DateTime?
+  lockOwner            String?
   totalCount           Int      @default(0)
   pagesFetched         Int      @default(0)
   rawRecords           Int      @default(0)
@@ -439,6 +443,7 @@ model AlibabaSuppressionSyncState {
   ignoredTemporary     Int      @default(0)
   ignoredUnknown       Int      @default(0)
   lastError            String?
+  meta                 Json?
   startedAt            DateTime?
   updatedAt            DateTime @updatedAt
   completedAt          DateTime?

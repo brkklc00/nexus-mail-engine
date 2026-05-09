@@ -3,6 +3,8 @@ import { Redis } from "ioredis";
 import { createServer } from "node:http";
 import { prisma } from "@nexus/db";
 import {
+  alibabaSuppressionSyncQueue,
+  type AlibabaSuppressionSyncJob,
   QUEUE_NAMES,
   deadLetterQueue,
   deliveryQueue,
@@ -15,6 +17,7 @@ import { processRetry } from "./processors/retry.processor.js";
 import { dispatchFairBatch } from "./scheduler/campaign-dispatch.service.js";
 import { getAllSafetyStates } from "./safety/distributed-safety.service.js";
 import { safeCreateCampaignLog } from "./logging/safe-campaign-log.js";
+import { processAlibabaSuppressionSync, resumeStaleAlibabaSyncJobs } from "./processors/alibaba-sync.processor.js";
 
 const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
   maxRetriesPerRequest: null
@@ -37,6 +40,15 @@ const retryWorker = new Worker(QUEUE_NAMES.RETRY, processRetry, {
   connection: redis,
   concurrency: Math.max(1, Math.floor(workerConcurrency / 2))
 });
+
+const alibabaSyncWorker = new Worker<AlibabaSuppressionSyncJob>(
+  QUEUE_NAMES.ALIBABA_SUPPRESSION_SYNC,
+  processAlibabaSuppressionSync,
+  {
+    connection: redis,
+    concurrency: 1
+  }
+);
 
 const sharedRedis = getRedisConnection();
 type WorkerHealthSnapshot = {
@@ -208,6 +220,10 @@ const workerMetricsInterval = setInterval(() => {
   void sampleWorkerMetrics();
 }, 10_000);
 void sampleWorkerMetrics();
+void resumeStaleAlibabaSyncJobs();
+const alibabaRecoveryInterval = setInterval(() => {
+  void resumeStaleAlibabaSyncJobs();
+}, 60_000);
 
 let schedulerRunning = false;
 const schedulerInterval = setInterval(async () => {
@@ -295,11 +311,14 @@ deliveryWorker.on("failed", async (job, error) => {
 async function shutdown() {
   clearInterval(workerMetricsInterval);
   clearInterval(schedulerInterval);
+  clearInterval(alibabaRecoveryInterval);
   healthServer.close();
+  await alibabaSyncWorker.close();
   await retryWorker.close();
   await deliveryWorker.close();
   await redis.quit();
   await prisma.$disconnect();
+  await alibabaSuppressionSyncQueue.close();
 }
 
 process.on("SIGTERM", () => void shutdown());

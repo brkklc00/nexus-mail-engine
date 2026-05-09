@@ -6,7 +6,8 @@ export const QUEUE_NAMES = {
   CAMPAIGN: "campaign_queue",
   DELIVERY: "delivery_queue",
   RETRY: "retry_queue",
-  DEAD_LETTER: "dead_letter_queue"
+  DEAD_LETTER: "dead_letter_queue",
+  ALIBABA_SUPPRESSION_SYNC: "alibaba_suppression_sync"
 } as const;
 
 export function safeJobId(str: string): string {
@@ -25,6 +26,11 @@ export type DeliveryJob = {
   smtpAccountId: string;
   idempotencyKey: string;
   attempt: number;
+};
+
+export type AlibabaSuppressionSyncJob = {
+  syncStateId: string;
+  trigger: "start" | "resume" | "auto" | "recovery";
 };
 
 export const defaultJobOptions: JobsOptions = {
@@ -155,6 +161,7 @@ let campaignQueueInstance: Queue<CampaignDispatchJob> | null = null;
 let deliveryQueueInstance: Queue<DeliveryJob> | null = null;
 let retryQueueInstance: Queue<DeliveryJob> | null = null;
 let deadLetterQueueInstance: Queue<DeliveryJob> | null = null;
+let alibabaSuppressionSyncQueueInstance: Queue<AlibabaSuppressionSyncJob> | null = null;
 let campaignQueueEventsInstance: QueueEvents | null = null;
 let deliveryQueueEventsInstance: QueueEvents | null = null;
 
@@ -205,6 +212,20 @@ function getDeadLetterQueue(): MinimalQueue<DeliveryJob> {
   return deadLetterQueueInstance;
 }
 
+function getAlibabaSuppressionSyncQueue(): MinimalQueue<AlibabaSuppressionSyncJob> {
+  if (shouldUseNoopRedis()) return noopQueue;
+  if (!alibabaSuppressionSyncQueueInstance) {
+    alibabaSuppressionSyncQueueInstance = new Queue<AlibabaSuppressionSyncJob>(QUEUE_NAMES.ALIBABA_SUPPRESSION_SYNC, {
+      connection: getOrCreateRedisClient() as unknown as IORedis,
+      defaultJobOptions: {
+        ...defaultJobOptions,
+        attempts: 1
+      }
+    });
+  }
+  return alibabaSuppressionSyncQueueInstance;
+}
+
 export const campaignQueue = {
   add: (...args: Parameters<MinimalQueue<CampaignDispatchJob>["add"]>) => getCampaignQueue().add(...args),
   getJobCounts: () => getCampaignQueue().getJobCounts(),
@@ -245,6 +266,19 @@ export const deadLetterQueue = {
   resume: () => getDeadLetterQueue().resume(),
   clean: (...args: Parameters<MinimalQueue<DeliveryJob>["clean"]>) => getDeadLetterQueue().clean(...args),
   close: () => getDeadLetterQueue().close()
+};
+
+export const alibabaSuppressionSyncQueue = {
+  add: (...args: Parameters<MinimalQueue<AlibabaSuppressionSyncJob>["add"]>) =>
+    getAlibabaSuppressionSyncQueue().add(...args),
+  getJobCounts: () => getAlibabaSuppressionSyncQueue().getJobCounts(),
+  getJobs: (...args: Parameters<MinimalQueue<AlibabaSuppressionSyncJob>["getJobs"]>) =>
+    getAlibabaSuppressionSyncQueue().getJobs(...args),
+  pause: () => getAlibabaSuppressionSyncQueue().pause(),
+  resume: () => getAlibabaSuppressionSyncQueue().resume(),
+  clean: (...args: Parameters<MinimalQueue<AlibabaSuppressionSyncJob>["clean"]>) =>
+    getAlibabaSuppressionSyncQueue().clean(...args),
+  close: () => getAlibabaSuppressionSyncQueue().close()
 };
 
 export const queueEvents = {
