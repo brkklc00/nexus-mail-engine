@@ -87,7 +87,6 @@ export function LiveSendPanel() {
     adHocClicked: false,
     adHocFailed: false,
     adHocSuppressed: false,
-    parallelSmtpCount: 1,
     rotateEvery: 500,
     strategy: "round_robin" as "round_robin" | "rotate_every_n" | "weighted_warmup" | "least_used" | "health_based"
   });
@@ -123,12 +122,6 @@ export function LiveSendPanel() {
         const firstSegment = safeSegments[0]?.id ?? "";
         const skipThrottled = data.poolSettings?.skipThrottled ?? true;
         const skipUnhealthy = data.poolSettings?.skipUnhealthy ?? true;
-        const usableSmtpPool = safeSmtps
-          .filter((smtp) => smtp.isActive !== false)
-          .filter((smtp) => (skipThrottled ? !smtp.isThrottled : true))
-          .filter((smtp) => (skipUnhealthy ? smtp.healthStatus !== "error" : true))
-          .map((smtp) => smtp.id);
-
         setBootstrap(data);
         setBootstrapError(null);
         setForm((prev) => ({
@@ -138,17 +131,6 @@ export function LiveSendPanel() {
           listId: firstList,
           segmentId: firstSegment,
           rotateEvery: Number(data.defaults?.rotateEvery ?? data.poolSettings?.rotateEvery ?? 500),
-          parallelSmtpCount: Math.max(
-            1,
-            Number(
-              usableSmtpPool.length > 0
-                ? usableSmtpPool.length
-                : (data.defaults?.parallelSmtpCount ??
-                  data.poolSettings?.parallelSmtpCount ??
-                  data.poolSettings?.parallelSmtpLanes ??
-                  1)
-            )
-          ),
           strategy: data.defaults?.strategy ?? "round_robin"
         }));
       } catch (error) {
@@ -198,9 +180,7 @@ export function LiveSendPanel() {
   const selectedList = bootstrap?.lists.find((list) => list.id === form.listId) ?? null;
   const selectedSegment = bootstrap?.segments.find((segment) => segment.id === form.segmentId) ?? null;
   const selectedTemplate = templateOptions.find((item) => item.id === form.templateId) ?? null;
-  const resolvedParallelCount = Math.max(1, Math.min(form.parallelSmtpCount, usableSmtpOptions.length || 1));
-  const selectedPool = usableSmtpOptions.slice(0, resolvedParallelCount);
-  const estimatedRate = selectedPool.reduce(
+  const estimatedRate = usableSmtpOptions.reduce(
     (sum, smtp) => sum + (smtp.maxRatePerSecond ?? smtp.targetRatePerSecond ?? 0),
     0
   );
@@ -212,7 +192,6 @@ export function LiveSendPanel() {
         : !form.adHocDomain && !form.adHocOpened && !form.adHocClicked && !form.adHocFailed && !form.adHocSuppressed;
   const estimatedTarget =
     form.targetMode === "list" ? selectedList?.estimatedRecipients ?? 0 : selectedSegment?.lastMatchedCount ?? 0;
-  const selectedSmtpCount = usableSmtpOptions.length;
   const targetZero =
     form.targetMode === "list"
       ? Boolean(form.listId) && estimatedTarget <= 0
@@ -239,10 +218,9 @@ export function LiveSendPanel() {
       toast.warning("Kullanilabilir SMTP havuzu yok", "Mevcut global havuz guvenlik filtrelerine uygun aktif SMTP hesabi bulunamadi.");
       return;
     }
-    const selectedSmtpNames = selectedPool.map((smtp) => smtp.name).join(", ");
     const confirmed = await confirm({
         title: "Bu kampanya baslatilsin mi?",
-      message: `Target: ${estimatedTarget} recipient | SMTP: ${selectedSmtpNames || "-"} | Rotation: ${form.strategy} / every ${form.rotateEvery} | Estimated throughput: ${estimatedRate.toFixed(2)}/s`,
+      message: `Kampanya Adi: ${form.name}\nSablon: ${selectedTemplate?.title ?? "-"}\nHedef: ${form.targetMode === "list" ? selectedList?.name ?? "-" : form.targetMode === "saved_segment" ? selectedSegment?.name ?? "-" : "Ad-hoc segment"}\nTahmini alici sayisi: ${estimatedTarget.toLocaleString()}\nGonderim Stratejisi: ${form.strategy}\nSMTP Degisim Araligi: ${form.rotateEvery}\nTahmini hiz: ${estimatedRate.toFixed(2)}/s\n\nGonderim, aktif SMTP havuzu uzerinden otomatik olarak dagitilacaktir.`,
         confirmLabel: "Olustur ve Baslat",
         cancelLabel: "Iptal",
       tone: "warning"
@@ -275,7 +253,6 @@ export function LiveSendPanel() {
                 }
               : undefined,
           smtpMode: "pool",
-          parallelSmtpCount: resolvedParallelCount,
           rotateEvery: form.rotateEvery,
           strategy: form.strategy
         })
@@ -346,63 +323,78 @@ export function LiveSendPanel() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <input
-          className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
-          value={form.name}
-          onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
-          placeholder="Kampanya adi"
-        />
-        <select
-          className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
-          value={form.templateId}
-          onChange={(e) => setForm((s) => ({ ...s, templateId: e.target.value }))}
-          disabled={templateOptions.length === 0}
-        >
-          {templateOptions.length === 0 ? <option value="">No active templates</option> : null}
-          {templateOptions.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.title}{t.status === "draft" ? " (taslak)" : ""}
-            </option>
-          ))}
-        </select>
-        <select
-          className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
-          value={form.targetMode}
-          onChange={(e) => setForm((s) => ({ ...s, targetMode: e.target.value as "list" | "saved_segment" | "ad_hoc_segment" }))}
-        >
-          <option value="list">Hedef: Alici listesi</option>
-          <option value="saved_segment">Hedef: Kayitli segment</option>
-          <option value="ad_hoc_segment">Hedef: Ad-hoc segment sorgusu</option>
-        </select>
-        {form.targetMode === "list" ? (
+        <label className="space-y-1">
+          <span className="text-xs text-zinc-400">Kampanya Adi</span>
+          <input
+            className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+            value={form.name}
+            onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
+            placeholder="Kampanya adi"
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs text-zinc-400">Sablon</span>
           <select
-            className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
-            value={form.listId}
-            onChange={(e) => setForm((s) => ({ ...s, listId: e.target.value }))}
-            disabled={listOptions.length === 0}
+            className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+            value={form.templateId}
+            onChange={(e) => setForm((s) => ({ ...s, templateId: e.target.value }))}
+            disabled={templateOptions.length === 0}
           >
-            {listOptions.length === 0 ? <option value="">No usable recipient lists</option> : null}
-            {listOptions.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name}
+            {templateOptions.length === 0 ? <option value="">Aktif sablon yok</option> : null}
+            {templateOptions.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.title}{t.status === "draft" ? " (taslak)" : ""}
               </option>
             ))}
           </select>
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs text-zinc-400">Hedef Turu</span>
+          <select
+            className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+            value={form.targetMode}
+            onChange={(e) => setForm((s) => ({ ...s, targetMode: e.target.value as "list" | "saved_segment" | "ad_hoc_segment" }))}
+          >
+            <option value="list">Alici listesi</option>
+            <option value="saved_segment">Kayitli segment</option>
+            <option value="ad_hoc_segment">Ad-hoc segment sorgusu</option>
+          </select>
+        </label>
+        {form.targetMode === "list" ? (
+          <label className="space-y-1">
+            <span className="text-xs text-zinc-400">Alici Listesi / Segment</span>
+            <select
+              className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+              value={form.listId}
+              onChange={(e) => setForm((s) => ({ ...s, listId: e.target.value }))}
+              disabled={listOptions.length === 0}
+            >
+              {listOptions.length === 0 ? <option value="">Kullanilabilir liste yok</option> : null}
+              {listOptions.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+          </label>
         ) : null}
         {form.targetMode === "saved_segment" ? (
-          <select
-            className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
-            value={form.segmentId}
-            onChange={(e) => setForm((s) => ({ ...s, segmentId: e.target.value }))}
-            disabled={segmentOptions.length === 0}
-          >
-            {segmentOptions.length === 0 ? <option value="">No matched saved segments</option> : null}
-            {segmentOptions.map((segment) => (
-              <option key={segment.id} value={segment.id}>
-                {segment.name}
-              </option>
-            ))}
-          </select>
+          <label className="space-y-1">
+            <span className="text-xs text-zinc-400">Alici Listesi / Segment</span>
+            <select
+              className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+              value={form.segmentId}
+              onChange={(e) => setForm((s) => ({ ...s, segmentId: e.target.value }))}
+              disabled={segmentOptions.length === 0}
+            >
+              {segmentOptions.length === 0 ? <option value="">Eslesen kayitli segment yok</option> : null}
+              {segmentOptions.map((segment) => (
+                <option key={segment.id} value={segment.id}>
+                  {segment.name}
+                </option>
+              ))}
+            </select>
+          </label>
         ) : null}
         {form.targetMode === "ad_hoc_segment" ? (
           <>
@@ -430,43 +422,42 @@ export function LiveSendPanel() {
             </label>
           </>
         ) : null}
-        <select
-          className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
-          value={form.strategy}
-          onChange={(e) =>
-            setForm((s) => ({
-              ...s,
-              strategy: e.target.value as "round_robin" | "rotate_every_n" | "weighted_warmup" | "least_used" | "health_based"
-            }))
-          }
-        >
-          <option value="rotate_every_n">Strateji: Her N e-postada donusum</option>
-          <option value="round_robin">Strateji: Sirali dagitim</option>
-          <option value="weighted_warmup">Strateji: Isinma/hiza gore agirlikli</option>
-          <option value="least_used">Strateji: En az kullanilandan basla</option>
-          <option value="health_based">Strateji: Saglik oncelikli</option>
-        </select>
-        <input
-          className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
-          type="number"
-          min={1}
-          max={50}
-          value={form.parallelSmtpCount}
-          onChange={(e) => setForm((s) => ({ ...s, parallelSmtpCount: Number(e.target.value || 1) }))}
-          placeholder="Paralel SMTP sayisi"
-        />
+        <label className="space-y-1">
+          <span className="text-xs text-zinc-400">Gonderim Stratejisi</span>
+          <select
+            className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+            value={form.strategy}
+            onChange={(e) =>
+              setForm((s) => ({
+                ...s,
+                strategy: e.target.value as "round_robin" | "rotate_every_n" | "weighted_warmup" | "least_used" | "health_based"
+              }))
+            }
+          >
+            <option value="rotate_every_n">Her N e-postada donusum</option>
+            <option value="round_robin">Sirali dagitim</option>
+            <option value="weighted_warmup">Isinma/hiza gore agirlikli</option>
+            <option value="least_used">En az kullanilandan basla</option>
+            <option value="health_based">Saglik oncelikli</option>
+          </select>
+          <p className="text-[11px] text-zinc-500">Sirali dagitim, gonderimleri SMTP havuzuna dengeli sekilde yayar.</p>
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs text-zinc-400">SMTP Degisim Araligi</span>
+          <input
+            className="w-full rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
+            type="number"
+            min={1}
+            max={50000}
+            value={form.rotateEvery}
+            onChange={(e) => setForm((s) => ({ ...s, rotateEvery: Number(e.target.value || 500) }))}
+            placeholder="Her N e-postada donusum"
+          />
+          <p className="text-[11px] text-zinc-500">Bu kadar alicidan sonra sistem siradaki SMTP'ye gecer. Varsayilan 500 onerilir.</p>
+        </label>
         <p className="rounded-md border border-border bg-zinc-900/60 px-3 py-2 text-xs text-zinc-400 md:col-span-2">
-          Campaigns use all active SMTPs by default. Lower this only if you want safer/slower delivery.
+          Kampanya, uygun durumdaki tum aktif SMTP hesaplari uzerinden otomatik dagitilir.
         </p>
-        <input
-          className="rounded-md border border-border bg-zinc-900 px-3 py-2 text-sm"
-          type="number"
-          min={1}
-          max={50000}
-          value={form.rotateEvery}
-          onChange={(e) => setForm((s) => ({ ...s, rotateEvery: Number(e.target.value || 500) }))}
-          placeholder="Her N e-postada donusum"
-        />
       </div>
 
       {bootstrapError ? (
@@ -485,31 +476,31 @@ export function LiveSendPanel() {
 
       <div className="grid grid-cols-1 gap-3 rounded-md border border-border bg-zinc-900/40 p-3 text-xs text-zinc-300 md:grid-cols-3">
         <p>
-          Target:{" "}
+          Hedef:{" "}
           {form.targetMode === "list"
             ? selectedList?.name ?? "-"
             : form.targetMode === "saved_segment"
               ? selectedSegment?.name ?? "-"
               : "Ad-hoc segment"}
         </p>
-        <p>Estimated target count: {estimatedTarget}</p>
-        <p>Estimated throughput: {estimatedRate.toFixed(2)}/s</p>
+        <p>Tahmini alici sayisi: {estimatedTarget.toLocaleString()}</p>
+        <p>Tahmini hiz: {estimatedRate.toFixed(2)}/s</p>
       </div>
       <div className="grid grid-cols-1 gap-2 rounded-md border border-border bg-zinc-900/30 p-3 text-xs text-zinc-300 md:grid-cols-3">
-        <p>Usable SMTP count: {selectedSmtpCount}</p>
-        <p>Strategy: {form.strategy} · rotateEvery: {form.rotateEvery}</p>
-        <p>Parallel SMTP count: {resolvedParallelCount}</p>
+        <p>Gonderim: Aktif SMTP havuzu</p>
+        <p>Strateji: {form.strategy}</p>
+        <p>SMTP havuzu otomatik kullanilacak</p>
       </div>
       {targetZero ? (
         <p className="flex items-center gap-1 text-xs text-amber-300">
           <AlertTriangle className="h-3.5 w-3.5" />
-          Campaign cannot start because selected target has 0 recipients.
+          Kampanya baslatilamaz: Secilen hedefte alici bulunmuyor.
         </p>
       ) : null}
       {selectedTemplate?.status === "draft" ? (
         <p className="flex items-center gap-1 text-xs text-amber-300">
           <AlertTriangle className="h-3.5 w-3.5" />
-          A draft template is selected. Use an active template for production sends.
+          Taslak sablon secildi. Uretim gonderimi icin aktif sablon onerilir.
         </p>
       ) : null}
 
@@ -520,7 +511,7 @@ export function LiveSendPanel() {
           disabled={actionLoading !== null || noTemplate || targetEmpty || targetZero || noUsableSmtp}
         >
           {actionLoading === "create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
-          Create + Start
+          Olustur ve Baslat
         </button>
         <button
           className="inline-flex items-center gap-1 rounded border border-border px-3 py-2 text-sm disabled:opacity-60"

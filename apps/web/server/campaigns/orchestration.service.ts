@@ -49,11 +49,14 @@ function normalizeSmtpConfig(input: {
   parallelSmtpCount?: number;
   rotateEvery?: number;
   strategy?: RotationStrategy;
+  maxParallelSmtpCount?: number;
 }): SmtpPoolConfig {
   const smtpIds = Array.from(new Set([...(input.smtpIds ?? []), ...(input.smtpAccountId ? [input.smtpAccountId] : [])]));
   const smtpMode: SmtpMode = input.smtpMode === "pool" ? "pool" : "single";
   const rotateEvery = Math.max(1, Math.floor(input.rotateEvery ?? DEFAULT_ROTATE_EVERY));
-  const parallelSmtpCount = Math.max(1, Math.floor(input.parallelSmtpCount ?? DEFAULT_PARALLEL_SMTP));
+  const requestedParallel = Math.max(1, Math.floor(input.parallelSmtpCount ?? DEFAULT_PARALLEL_SMTP));
+  const maxParallel = Math.max(1, Math.floor(input.maxParallelSmtpCount ?? Number.MAX_SAFE_INTEGER));
+  const parallelSmtpCount = Math.max(1, Math.min(requestedParallel, maxParallel));
   const strategy: RotationStrategy =
     input.strategy === "weighted_warmup" ||
     input.strategy === "warmup_weighted" ||
@@ -69,6 +72,15 @@ function normalizeSmtpConfig(input: {
     rotateEvery,
     strategy
   };
+}
+
+function resolveGlobalParallelLimit(pool: {
+  parallelSmtpCount?: number;
+  parallelSmtpLanes?: number;
+}) {
+  const raw = Number(pool.parallelSmtpCount ?? pool.parallelSmtpLanes ?? 0);
+  if (!Number.isFinite(raw) || raw <= 0) return Number.MAX_SAFE_INTEGER;
+  return Math.max(1, Math.floor(raw));
 }
 
 function buildWeightedPool(
@@ -200,6 +212,7 @@ export async function createCampaign(input: {
   };
   const skipThrottled = globalPool.skipThrottled ?? true;
   const skipUnhealthy = globalPool.skipUnhealthy ?? true;
+  const globalParallelLimit = resolveGlobalParallelLimit(globalPool);
   const smtpIdsFromAll = (
     await prisma.smtpAccount.findMany({
       where: {
@@ -216,9 +229,12 @@ export async function createCampaign(input: {
     smtpMode: input.smtpMode ?? globalPool.sendingMode ?? "pool",
     smtpIds: input.smtpIds?.length ? input.smtpIds : smtpIdsFromAll,
     smtpAccountId: input.smtpAccountId,
-    parallelSmtpCount: input.parallelSmtpCount ?? globalPool.parallelSmtpCount ?? globalPool.parallelSmtpLanes ?? 1,
+    parallelSmtpCount:
+      input.parallelSmtpCount ??
+      Math.min(Math.max(1, smtpIdsFromAll.length || 1), globalParallelLimit),
     rotateEvery: input.rotateEvery ?? globalPool.rotateEveryN ?? globalPool.rotateEvery ?? 500,
-    strategy: input.strategy
+    strategy: input.strategy,
+    maxParallelSmtpCount: globalParallelLimit
   });
   const targetMode: TargetMode = input.targetMode ?? (input.segmentId ? "saved_segment" : input.segmentQueryConfig ? "ad_hoc_segment" : "list");
   const [template, list, segment, smtps] = await Promise.all([
@@ -354,17 +370,46 @@ export async function startCampaign(campaignId: string) {
       throw new Error("campaign_target_required");
     }
 
+    const poolSetting = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } });
+    const globalPool = ((poolSetting?.value as any) ?? {}) as {
+      skipThrottled?: boolean;
+      skipUnhealthy?: boolean;
+      parallelSmtpCount?: number;
+      parallelSmtpLanes?: number;
+    };
+    const skipThrottled = globalPool.skipThrottled ?? true;
+    const skipUnhealthy = globalPool.skipUnhealthy ?? true;
+    const globalParallelLimit = resolveGlobalParallelLimit(globalPool);
+
     const poolConfig = normalizeSmtpConfig({
       ...((campaign as any).smtpPoolConfig && typeof (campaign as any).smtpPoolConfig === "object"
         ? ((campaign as any).smtpPoolConfig as any)
         : {}),
-      smtpAccountId: campaign.smtpAccountId
+      smtpAccountId: campaign.smtpAccountId,
+      maxParallelSmtpCount: globalParallelLimit
     });
-    const configuredIds =
-      poolConfig.smtpIds.length > 0 ? poolConfig.smtpIds : [campaign.smtpAccountId];
+    const fallbackIdsFromAll = (
+      await prisma.smtpAccount.findMany({
+        where: {
+          isActive: true,
+          isSoftDeleted: false,
+          ...(skipThrottled ? { isThrottled: false } : {}),
+          ...(skipUnhealthy ? { NOT: { healthStatus: "error" } } : {})
+        },
+        select: { id: true },
+        orderBy: { createdAt: "asc" }
+      })
+    ).map((row: { id: string }) => row.id);
+    const configuredIds: string[] = poolConfig.smtpIds.length > 0 ? poolConfig.smtpIds : fallbackIdsFromAll;
 
     const smtps = await prisma.smtpAccount.findMany({
-      where: { id: { in: configuredIds }, isActive: true, isSoftDeleted: false },
+      where: {
+        id: { in: configuredIds.length > 0 ? configuredIds : [campaign.smtpAccountId] },
+        isActive: true,
+        isSoftDeleted: false,
+        ...(skipThrottled ? { isThrottled: false } : {}),
+        ...(skipUnhealthy ? { NOT: { healthStatus: "error" } } : {})
+      },
       select: { id: true, targetRatePerSecond: true, maxRatePerSecond: true },
       orderBy: { createdAt: "asc" }
     });
@@ -373,7 +418,8 @@ export async function startCampaign(campaignId: string) {
     }
 
     const sortedSmtpIds = configuredIds.filter((id) => smtps.some((smtp: any) => smtp.id === id));
-    const activeSmtpIds = sortedSmtpIds.slice(0, Math.max(1, Math.min(poolConfig.parallelSmtpCount, sortedSmtpIds.length)));
+    const computedParallel = Math.max(1, Math.min(sortedSmtpIds.length, globalParallelLimit));
+    const activeSmtpIds = sortedSmtpIds.slice(0, computedParallel);
     const rateBySmtp = new Map<string, number>(
       smtps.map((smtp: any) => [smtp.id as string, Number(smtp.maxRatePerSecond ?? smtp.targetRatePerSecond ?? 1)])
     );
@@ -390,7 +436,7 @@ export async function startCampaign(campaignId: string) {
           smtpPoolConfig: {
             smtpMode: poolConfig.smtpMode,
             smtpIds: sortedSmtpIds,
-            parallelSmtpCount: activeSmtpIds.length,
+            parallelSmtpCount: computedParallel,
             rotateEvery: poolConfig.rotateEvery,
             strategy: poolConfig.strategy
           }

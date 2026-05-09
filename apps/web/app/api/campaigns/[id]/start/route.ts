@@ -11,7 +11,7 @@ function mapStartError(error: unknown): { status: number; error: string; code: s
   if (message === "campaign_target_required") return { status: 400, code: message, error: "Campaign target is required." };
   if (message === "segment_query_missing") return { status: 400, code: message, error: "Segment query was not found." };
   if (message === "smtp_pool_empty" || message === "no_smtp_accounts") {
-    return { status: 400, code: "no_smtp_accounts", error: "No active SMTP accounts available for this campaign." };
+    return { status: 400, code: "no_smtp_accounts", error: "Gönderim için uygun aktif SMTP bulunamadı." };
   }
   if (message === "campaign_import_failed" || message === "db_insert_failed") {
     return { status: 500, code: "db_insert_failed", error: "Campaign recipients could not be inserted." };

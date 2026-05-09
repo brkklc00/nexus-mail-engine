@@ -71,7 +71,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Archived segment cannot be used as campaign target." }, { status: 400 });
     }
     if (message === "smtp_pool_empty") {
-      return NextResponse.json({ error: "No active SMTP pool was found or pool is exhausted." }, { status: 400 });
+      return NextResponse.json({ error: "Gönderim için uygun aktif SMTP bulunamadı." }, { status: 400 });
     }
     if (message === "campaign_target_required") {
       return NextResponse.json({ error: "Campaign target is required. Select a list or segment." }, { status: 400 });
