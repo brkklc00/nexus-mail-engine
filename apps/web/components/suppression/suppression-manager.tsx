@@ -49,6 +49,7 @@ type AlibabaSyncResult = {
   credentialsPresent: boolean;
   apiRequestMade: boolean;
   totalReportsReturned: number;
+  totalCount?: number | null;
   totalRawRecords?: number;
   parsedEmails?: number;
   pagesFetched?: number;
@@ -65,6 +66,16 @@ type AlibabaSyncResult = {
   ignoredUnknown?: number;
   ignoredByCategory: number;
   errors: string[];
+};
+
+type CampaignFailureSuppressionResult = {
+  ok?: boolean;
+  error?: string;
+  scanned: number;
+  added: number;
+  alreadySuppressed: number;
+  ignoredTemporary: number;
+  removedFromLists: number;
 };
 
 type SyncPreset = "yesterday" | "last7d" | "last30d" | "custom";
@@ -213,6 +224,8 @@ export function SuppressionManager() {
   const [syncSummary, setSyncSummary] = useState<AlibabaSyncResult | null>(null);
   const [syncSummaryOpen, setSyncSummaryOpen] = useState(false);
   const [syncRemoveFromLists, setSyncRemoveFromLists] = useState(true);
+  const [failureSyncLoading, setFailureSyncLoading] = useState(false);
+  const [failureSyncSummary, setFailureSyncSummary] = useState<CampaignFailureSuppressionResult | null>(null);
 
   const pageSizeOptions = [25, 50, 100];
   const todayKey = useMemo(() => todayLocalKey(), []);
@@ -439,17 +452,17 @@ export function SuppressionManager() {
       .filter(([, checked]) => checked)
       .map(([key]) => key);
     if (categories.length === 0) {
-      toast.warning("Select at least one category");
+      toast.warning("En az bir kategori secin");
       return;
     }
     if (todaySelectedForSync) {
-      toast.warning("Alibaba DirectMail only supports completed days. Showing yesterday instead.");
+      toast.warning("Alibaba DirectMail sadece tamamlanmis gunleri destekler. Bugun secimi dun olarak duzeltilecektir.");
     }
     const accepted = await confirm({
-      title: "Start Alibaba DirectMail sync?",
-      message: "Temporary failures are ignored; permanent categories are added to suppression.",
+      title: "Alibaba Invalid Adres Senkronizasyonu baslatilsin mi?",
+      message: "Bu islem QueryInvalidAddress API'sinden invalid adresleri ceker. Tum bounce/fail loglari bu endpoint'te yer almayabilir.",
       confirmLabel: "Senkronize Et",
-      cancelLabel: "Cancel",
+      cancelLabel: "Iptal",
       tone: "warning"
     });
     if (!accepted) return;
@@ -482,14 +495,18 @@ export function SuppressionManager() {
             ? "Alibaba senkronizasyonu henuz gercek API'ye bagli degil."
             : !payload.credentialsPresent
               ? "Alibaba kimlik bilgileri yapilandirilmamis."
-              : (payload.totalRawRecords ?? payload.totalReportsReturned) === 0
-                ? "Alibaba baglantisi basarili. Secilen tarih araliginda invalid address kaydi bulunamadi."
+              : (payload.totalCount ?? payload.totalRawRecords ?? payload.totalReportsReturned) === 0
+                ? "Alibaba baglantisi basarili. QueryInvalidAddress endpoint'i secilen aralikta invalid address kaydi dondurmedi. Bu endpoint tum gonderim hatalarini degil, Alibaba'nin invalid address listesine dusen deduplicate kayitlari dondurur."
                 : (payload.totalRawRecords ?? payload.totalReportsReturned) > 0 && (payload.parsedEmails ?? 0) === 0
                   ? "Alibaba veri dondurdu ancak e-posta alani taninamadi. Response alanlarini kontrol edin."
                   : (payload.parsedEmails ?? 0) > 0 && payload.added === 0
                     ? "Alibaba kayitlari bulundu ancak hepsi zaten baskilama listesinde veya gecici kategori olarak atlandi."
                     : "Alibaba kayitlari basariyla baskilama listesine eklendi.";
-      toast.success("Alibaba sync completed", statusText);
+      const secondaryText =
+        (payload.totalCount ?? payload.totalRawRecords ?? payload.totalReportsReturned) === 0
+          ? "Fail/bounce raporlarini almak icin ayri delivery report/bounce endpoint'i gerekiyorsa entegrasyon ayrica eklenmelidir."
+          : undefined;
+      toast.success("Alibaba invalid adres senkronizasyonu tamamlandi", secondaryText ? `${statusText} ${secondaryText}` : statusText);
       await loadStats();
       if (hasQueried || hasFilterInput) {
         await runQuery({ ...filters, page: 1 });
@@ -498,6 +515,48 @@ export function SuppressionManager() {
       toast.error("Alibaba senkronizasyonu basarisiz", err instanceof Error ? err.message : "Istek basarisiz oldu");
     } finally {
       setSyncLoading(false);
+    }
+  }
+
+  async function runCampaignFailureSuppression() {
+    const accepted = await confirm({
+      title: "Kampanya hatalarindan baskilama olusturulsun mu?",
+      message:
+        "Sadece kalici/hard-fail hatalar baskilama listesine eklenir. Gecici timeout/throttle hatalari eklenmez.",
+      confirmLabel: "Calistir",
+      cancelLabel: "Iptal",
+      tone: "warning"
+    });
+    if (!accepted) return;
+
+    setFailureSyncLoading(true);
+    try {
+      const response = await fetch("/api/suppressions/from-campaign-failures", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: syncFrom,
+          to: syncTo,
+          removeFromLists: true
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as CampaignFailureSuppressionResult;
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Kampanya hata taramasi basarisiz oldu");
+      }
+      setFailureSyncSummary(payload);
+      toast.success(
+        "Kampanya hata kaynakli baskilama tamamlandi",
+        `scanned ${payload.scanned}, added ${payload.added}, alreadySuppressed ${payload.alreadySuppressed}, ignoredTemporary ${payload.ignoredTemporary}, removedFromLists ${payload.removedFromLists}`
+      );
+      await loadStats();
+      if (hasQueried || hasFilterInput) {
+        await runQuery({ ...filters, page: 1 });
+      }
+    } catch (err) {
+      toast.error("Kampanya hata kaynakli baskilama basarisiz", err instanceof Error ? err.message : "Istek basarisiz oldu");
+    } finally {
+      setFailureSyncLoading(false);
     }
   }
 
@@ -747,17 +806,34 @@ export function SuppressionManager() {
 
       <section className="rounded-xl border border-border bg-card p-3">
         <div className="flex items-center justify-between">
-          <p className="text-xs uppercase tracking-wide text-zinc-400">Alibaba DirectMail Sync</p>
-          <button
-            type="button"
-            onClick={() => void runAlibabaSync()}
-            disabled={syncLoading}
-            className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 disabled:opacity-60"
-          >
-            {syncLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            Sync failed reports
-          </button>
+          <p className="text-xs uppercase tracking-wide text-zinc-400">Alibaba Invalid Adres Senkronizasyonu</p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void runAlibabaSync()}
+              disabled={syncLoading}
+              className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 disabled:opacity-60"
+            >
+              {syncLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Alibaba Invalid Adres Senkronizasyonu
+            </button>
+            <button
+              type="button"
+              onClick={() => void runCampaignFailureSuppression()}
+              disabled={failureSyncLoading}
+              className="inline-flex items-center gap-1 rounded-lg border border-indigo-400/40 px-3 py-2 text-sm text-indigo-200 disabled:opacity-60"
+            >
+              {failureSyncLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldMinus className="h-4 w-4" />}
+              Kampanya hatalarindan baskilama olustur
+            </button>
+          </div>
         </div>
+        <p className="mt-2 text-xs text-zinc-400">
+          Bu islem Alibaba DirectMail QueryInvalidAddress API'sinden invalid adresleri ceker. Tum basarisiz gonderimleri/bounce loglarini cekmez.
+        </p>
+        <p className="mt-2 rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-xs text-indigo-200">
+          Alibaba QueryInvalidAddress sadece invalid address listesine dusen kayitlari dondurur. Gonderim sirasinda olusan tum basarisizliklar burada gorunmeyebilir.
+        </p>
         <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
           <input
             type="date"
@@ -780,7 +856,7 @@ export function SuppressionManager() {
         </div>
         {todaySelectedForSync ? (
           <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
-            Alibaba DirectMail only supports completed days. Showing yesterday instead.
+            Alibaba DirectMail sadece tamamlanmis gunleri destekler. Gecersiz secimler dun olarak duzeltilir.
           </p>
         ) : null}
         <div className="mt-2 flex flex-wrap gap-2">
@@ -820,18 +896,25 @@ export function SuppressionManager() {
             </label>
           ))}
         </div>
-        <p className="mt-2 text-xs text-zinc-500">Temporary failures are reported as ignored during sync and are not added to suppression.</p>
+        <p className="mt-2 text-xs text-zinc-500">Gecici hatalar senkronizasyonda ignored olarak raporlanir ve baskilamaya eklenmez.</p>
         <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
           <input
             type="checkbox"
             checked={syncRemoveFromLists}
             onChange={(e) => setSyncRemoveFromLists(e.target.checked)}
           />
-          Also remove suppressed emails from all recipient lists
+          Eklenen baskilanan e-postalari tum alici listelerinden de kaldir
         </label>
         {syncSummary ? (
           <p className="mt-2 text-xs text-zinc-300">
-            Last run: mode {syncSummary.mode}, reports {syncSummary.totalReportsReturned}, added {syncSummary.added}, removed {syncSummary.removedFromLists}
+            Son calisma: mod {syncSummary.mode}, totalCount {syncSummary.totalCount ?? "-"}, raw {syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned}, added {syncSummary.added}, removed {syncSummary.removedFromLists}
+          </p>
+        ) : null}
+        {failureSyncSummary ? (
+          <p className="mt-2 text-xs text-indigo-200">
+            Kampanya fallback ozeti: scanned {failureSyncSummary.scanned}, added {failureSyncSummary.added}, alreadySuppressed{" "}
+            {failureSyncSummary.alreadySuppressed}, ignoredTemporary {failureSyncSummary.ignoredTemporary}, removedFromLists{" "}
+            {failureSyncSummary.removedFromLists}
           </p>
         ) : null}
       </section>
@@ -979,6 +1062,7 @@ export function SuppressionManager() {
               <p>Mod: {syncSummary.mode === "real_api" ? "Gercek API" : syncSummary.mode === "mock" ? "Mock" : "Devre Disi"}</p>
               <p>Credentials: {syncSummary.credentialsPresent ? "Var" : "Yok"}</p>
               <p>API istegi: {syncSummary.apiRequestMade ? "Yapildi" : "Yapilmadi"}</p>
+              <p>TotalCount: {syncSummary.totalCount ?? "-"}</p>
               <p>Pages fetched: {syncSummary.pagesFetched ?? 0}</p>
               <p>Raw records: {syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned}</p>
               <p>Parsed emails: {syncSummary.parsedEmails ?? 0}</p>
@@ -1018,9 +1102,17 @@ export function SuppressionManager() {
               {syncSummary.mode === "real_api" &&
               syncSummary.credentialsPresent &&
               syncSummary.apiRequestMade &&
-              (syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned) === 0 ? (
+              (syncSummary.totalCount ?? syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned) === 0 ? (
                 <p className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
-                  Alibaba baglantisi basarili. Secilen tarih araliginda invalid address kaydi bulunamadi.
+                  Alibaba baglantisi basarili. QueryInvalidAddress endpoint'i secilen aralikta invalid address kaydi dondurmedi. Bu endpoint tum gonderim hatalarini degil, Alibaba'nin invalid address listesine dusen deduplicate kayitlari dondurur.
+                </p>
+              ) : null}
+              {syncSummary.mode === "real_api" &&
+              syncSummary.credentialsPresent &&
+              syncSummary.apiRequestMade &&
+              (syncSummary.totalCount ?? syncSummary.totalRawRecords ?? syncSummary.totalReportsReturned) === 0 ? (
+                <p className="rounded border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-200">
+                  Fail/bounce raporlarini almak icin ayri delivery report/bounce endpoint'i gerekiyorsa entegrasyon ayrica eklenmelidir.
                 </p>
               ) : null}
               {syncSummary.mode === "real_api" &&

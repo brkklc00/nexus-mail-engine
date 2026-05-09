@@ -32,6 +32,15 @@ type AlibabaApiRange = {
   endTime: string;
 };
 
+function toNumericValue(input: unknown): number | null {
+  if (typeof input === "number" && Number.isFinite(input)) return input;
+  if (typeof input === "string" && input.trim()) {
+    const parsed = Number(input.trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
 function classify(providerCode: string | null, message: string | null): Category {
   const text = `${providerCode ?? ""} ${message ?? ""}`.toLowerCase();
   if (
@@ -322,6 +331,7 @@ export async function POST(req: Request) {
   let totalReportsReturned = 0; // kept for backward compatibility
   let totalRawRecords = 0;
   let parsedEmails = 0;
+  let totalCount: number | null = null;
   let pagesFetched = 0;
   let nextStartLastValue: number | null = null;
   let responseKeys: string[] = [];
@@ -347,6 +357,7 @@ export async function POST(req: Request) {
       totalReportsReturned,
       totalRawRecords,
       parsedEmails,
+      totalCount,
       pagesFetched,
       nextStartLastValue,
       responseKeys,
@@ -405,6 +416,14 @@ export async function POST(req: Request) {
         const parserData = extractRawAlibabaRecords(payload);
         if (responseKeys.length === 0) responseKeys = parserData.responseKeys;
         if (firstRecordKeys.length === 0) firstRecordKeys = parserData.firstRecordKeys;
+        if (totalCount === null) {
+          totalCount =
+            toNumericValue(payload?.Body?.TotalCount) ??
+            toNumericValue(payload?.TotalCount) ??
+            toNumericValue(payload?.Data?.TotalCount) ??
+            toNumericValue(payload?.data?.TotalCount) ??
+            toNumericValue(payload?.Body?.Data?.TotalCount);
+        }
 
         totalRawRecords += parserData.records.length;
         totalReportsReturned = totalRawRecords;
@@ -518,6 +537,7 @@ export async function POST(req: Request) {
     totalReportsReturned = logs.length;
     totalRawRecords = logs.length;
     parsedEmails = logs.length;
+    totalCount = logs.length;
     warnings.push("Mock mode aktif: Alibaba credentials/region eksik oldugu icin yerel log verisi kullanildi.");
     reportRows = logs
       .filter((log: any) => Boolean(log.recipient?.emailNormalized))
@@ -595,10 +615,10 @@ export async function POST(req: Request) {
     added += created.count;
   }
 
-  if (parsed.data.removeFromLists && candidates.length > 0) {
+  if (parsed.data.removeFromLists && addable.length > 0) {
     let totalRecipientsMatched = 0;
     const emailChunks = chunk(
-      candidates.map((item) => item.emailNormalized),
+      addable.map((item) => item.emailNormalized),
       2000
     );
     for (const emailChunk of emailChunks) {
@@ -619,9 +639,9 @@ export async function POST(req: Request) {
         removedFromLists += deleted.count;
       }
     }
-    listRemovalSkipped = Math.max(0, candidates.length - totalRecipientsMatched);
+    listRemovalSkipped = Math.max(0, addable.length - totalRecipientsMatched);
   } else {
-    listRemovalSkipped = candidates.length;
+    listRemovalSkipped = addable.length;
   }
 
   console.info("[suppression.sync_alibaba] list cleanup", {
@@ -656,6 +676,7 @@ export async function POST(req: Request) {
     totalReportsReturned,
     totalRawRecords,
     parsedEmails,
+    totalCount,
     pagesFetched,
     nextStartLastValue,
     responseKeys,
@@ -684,6 +705,7 @@ export async function POST(req: Request) {
     totalReportsReturned,
     totalRawRecords,
     parsedEmails,
+    totalCount,
     pagesFetched,
     nextStartLastValue,
     responseKeys,
