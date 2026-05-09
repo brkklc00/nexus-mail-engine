@@ -77,6 +77,12 @@ type LiveEvent = {
   warmupBottleneckSmtpCount?: number;
   warmupAvgCapRps?: number;
   expectedRpsAfterApply?: number;
+  dbQueuedRecipients?: number;
+  redisWaitingJobs?: number;
+  redisActiveJobs?: number;
+  schedulerBatchSize?: number;
+  lastSchedulerEnqueued?: number;
+  lastSchedulerReason?: string;
   bottleneckReason?: string;
 };
 
@@ -646,6 +652,10 @@ export function LiveSendPanel() {
             SMTP başı efektif ortalama RPS: {Number(live.avgPerSmtpRps ?? 0).toFixed(2)} · Warmup cap toplamı: {Number(live.warmupCapTotalRps ?? 0).toFixed(2)} ·
             Throttle cap toplamı: {Number(live.throttleCapTotalRps ?? 0).toFixed(2)} · Provider cap toplamı: {Number(live.providerCapTotalRps ?? 0).toFixed(2)} ·
             Bottleneck: {live.bottleneckReason ?? "none"}
+          </div>
+          <div className="rounded border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
+            DB queued recipients: {live.dbQueuedRecipients ?? 0} · Redis waiting jobs: {live.redisWaitingJobs ?? 0} · Redis active jobs: {live.redisActiveJobs ?? 0} ·
+            Scheduler batch size: {live.schedulerBatchSize ?? 0} · Last scheduler enqueued: {live.lastSchedulerEnqueued ?? 0} · Reason: {live.lastSchedulerReason ?? "unknown"}
           </div>
           {live.bottleneckReason === "warmup_cap" ? (
             <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">

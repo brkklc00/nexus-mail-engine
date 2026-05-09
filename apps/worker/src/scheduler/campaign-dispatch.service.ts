@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "@nexus/db";
-import { deliveryQueue, safeJobId, withDistributedLock } from "@nexus/queue";
+import { deliveryQueue, retryQueue, safeJobId, withDistributedLock } from "@nexus/queue";
 import { FairCampaignScheduler } from "./fair-scheduler.js";
 import { transitionCampaignRecipientStatus } from "../state/campaign-recipient-state.service.js";
 import { safeCreateCampaignLog } from "../logging/safe-campaign-log.js";
@@ -14,6 +14,7 @@ const WORKER_WARMUP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_WARMUP_
 const SMTP_LANE_MAX_INFLIGHT = Math.max(1, Number(process.env.SMTP_LANE_MAX_INFLIGHT ?? 2));
 const SMTP_RATE_CACHE_MS = Math.max(500, Number(process.env.SMTP_RATE_CACHE_MS ?? 3000));
 const SMTP_THROTTLE_EXPIRE_CHECK_MS = Math.max(5_000, Number(process.env.SMTP_THROTTLE_EXPIRE_CHECK_MS ?? 30_000));
+const SCHEDULER_DIAGNOSTICS_WRITE_MS = Math.max(3_000, Number(process.env.SCHEDULER_DIAGNOSTICS_WRITE_MS ?? 5_000));
 let schedulerReadInFlight = 0;
 const schedulerReadQueue: Array<() => void> = [];
 
@@ -29,6 +30,19 @@ let cachedWarmupState: { data: any[]; expiresAt: number; key: string } | null = 
 let lastRuntimeCacheBustTs = 0;
 let lastRuntimeCacheBustReadAt = 0;
 let lastThrottleExpireSweepAt = 0;
+let lastDiagnosticsWriteAt = 0;
+
+export type SchedulerDispatchResult = {
+  dispatched: number;
+  backfilled: number;
+  dbQueuedRecipients: number;
+  redisWaitingJobs: number;
+  redisActiveJobs: number;
+  schedulerBatchSize: number;
+  lastSchedulerEnqueued: number;
+  lastSchedulerReason: string;
+  targetRps: number;
+};
 
 function smtpEligibilityReason(smtp: any): string | null {
   if (!smtp?.isActive) return "disabled";
@@ -95,7 +109,7 @@ function idempotencyKey(campaignId: string, recipientId: string, templateVersion
     .digest("hex");
 }
 
-export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
+export async function dispatchFairBatch(maxJobs = 100): Promise<SchedulerDispatchResult> {
   const nowForCacheBust = Date.now();
   if (nowForCacheBust - lastRuntimeCacheBustReadAt >= 3_000) {
     lastRuntimeCacheBustReadAt = nowForCacheBust;
@@ -132,7 +146,6 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
   }
 
   const campaignTake = Math.max(1, Math.min(100, Number(process.env.SCHEDULER_CAMPAIGN_TAKE ?? 20)));
-  const recipientsTakePerCampaign = Math.max(5, Math.min(maxJobs, Number(process.env.SCHEDULER_RECIPIENTS_TAKE_PER_CAMPAIGN ?? 20)));
   const nowMs = Date.now();
   const campaignRows = cachedActiveCampaigns && cachedActiveCampaigns.expiresAt > nowMs
     ? cachedActiveCampaigns.data
@@ -178,6 +191,31 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
     };
   }
   const activeCampaigns = campaignCacheClone(campaignRows);
+  const targetTotalRpsAllCampaigns = Number(
+    activeCampaigns.reduce((sum: number, campaign: any) => {
+      const cfg = ((campaign.smtpPoolConfig as any) ?? {}) as { targetTotalRps?: number };
+      return sum + Number(cfg.targetTotalRps ?? 0);
+    }, 0).toFixed(4)
+  );
+  const laneCount = Math.max(1, activeCampaigns.length);
+  const scaledTargetBatch = Math.max(0, Math.ceil(targetTotalRpsAllCampaigns * 40));
+  const scaledLaneBatch = Math.max(0, laneCount * SMTP_LANE_MAX_INFLIGHT * 50);
+  const computedBatch = Math.max(maxJobs, scaledTargetBatch, scaledLaneBatch);
+  const schedulerBatchSize = Math.max(50, Math.min(10_000, computedBatch));
+  const recipientsTakePerCampaign = Math.max(20, Math.min(schedulerBatchSize, Number(process.env.SCHEDULER_RECIPIENTS_TAKE_PER_CAMPAIGN ?? 200)));
+
+  for (const campaign of activeCampaigns) {
+    if (Array.isArray(campaign.recipients) && campaign.recipients.length < recipientsTakePerCampaign) {
+      const rows = (await withSchedulerReadSlot(() =>
+        prisma.campaignRecipient.findMany({
+          where: { campaignId: campaign.id, sendStatus: "pending" },
+          take: recipientsTakePerCampaign,
+          select: { recipientId: true, smtpAccountId: true }
+        })
+      )) as any[];
+      campaign.recipients = rows;
+    }
+  }
 
   const slots = activeCampaigns.map((campaign: any) => ({
     campaignId: campaign.id,
@@ -187,9 +225,10 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
     priority: 1
   }));
 
-  const requestedJobs = Math.max(maxJobs, slots.length * SMTP_LANE_MAX_INFLIGHT * 5);
+  const requestedJobs = Math.max(schedulerBatchSize, slots.length * SMTP_LANE_MAX_INFLIGHT * 5);
   const picks = scheduler.nextBatch(slots, requestedJobs);
   let dispatched = 0;
+  let backfilled = 0;
 
   const smtpIds = Array.from(
     new Set(
@@ -402,5 +441,127 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
     }
   }
 
-  return dispatched;
+  const campaignIds = activeCampaigns.map((item: any) => item.id);
+  const [deliveryCounts, retryCounts, dbQueuedRecipientsRaw] = await Promise.all([
+    deliveryQueue.getJobCounts().catch(() => ({ waiting: 0, wait: 0, active: 0 } as any)),
+    retryQueue.getJobCounts().catch(() => ({ waiting: 0, wait: 0, active: 0 } as any)),
+    campaignIds.length > 0
+      ? withSchedulerReadSlot(() =>
+          prisma.campaignRecipient.count({
+            where: {
+              campaignId: { in: campaignIds },
+              sendStatus: "queued"
+            }
+          })
+        )
+      : Promise.resolve(0)
+  ]);
+  const dbQueuedRecipients = Number(dbQueuedRecipientsRaw ?? 0);
+  const redisWaitingJobs = Number(deliveryCounts.waiting ?? (deliveryCounts as any).wait ?? 0) + Number(retryCounts.waiting ?? (retryCounts as any).wait ?? 0);
+  const redisActiveJobs = Number(deliveryCounts.active ?? 0) + Number(retryCounts.active ?? 0);
+  const minWaitingTarget = Math.max(200, Math.ceil(targetTotalRpsAllCampaigns * 10));
+  let lastSchedulerReason = "normal";
+  if (targetTotalRpsAllCampaigns > 0 && schedulerBatchSize === scaledTargetBatch) {
+    lastSchedulerReason = "target_rps_scaled_batch";
+  } else if (schedulerBatchSize === scaledLaneBatch) {
+    lastSchedulerReason = "lane_scaled_batch";
+  } else if (schedulerBatchSize === maxJobs) {
+    lastSchedulerReason = "base_batch";
+  }
+
+  if (campaignIds.length > 0 && redisWaitingJobs < minWaitingTarget && dbQueuedRecipients > 0) {
+    const backfillLimit = Math.max(500, Math.min(5_000, minWaitingTarget - redisWaitingJobs));
+    const queuedRows = (await withSchedulerReadSlot(() =>
+      prisma.campaignRecipient.findMany({
+        where: {
+          campaignId: { in: campaignIds },
+          sendStatus: "queued"
+        },
+        take: backfillLimit,
+        select: {
+          campaignId: true,
+          recipientId: true,
+          smtpAccountId: true
+        }
+      })
+    )) as Array<{ campaignId: string; recipientId: string; smtpAccountId: string | null }>;
+    const templateVersionByCampaign = new Map<string, number>(
+      activeCampaigns.map((campaign: any) => [campaign.id as string, Number(campaign.template?.version ?? 1)])
+    );
+    const templateIdByCampaign = new Map<string, string>(
+      activeCampaigns.map((campaign: any) => [campaign.id as string, String(campaign.templateId ?? "")])
+    );
+    const defaultSmtpByCampaign = new Map<string, string>(
+      activeCampaigns.map((campaign: any) => [campaign.id as string, String(campaign.smtpAccountId ?? "")])
+    );
+    for (const row of queuedRows) {
+      const version = Number(templateVersionByCampaign.get(row.campaignId) ?? 1);
+      const smtpId = row.smtpAccountId ?? defaultSmtpByCampaign.get(row.campaignId) ?? "";
+      await deliveryQueue.add(
+        "deliver_backfill",
+        {
+          campaignId: row.campaignId,
+          recipientId: row.recipientId,
+          templateId: templateIdByCampaign.get(row.campaignId) ?? "",
+          smtpAccountId: smtpId,
+          idempotencyKey: idempotencyKey(row.campaignId, row.recipientId, version),
+          attempt: 1
+        },
+        {
+          jobId: safeJobId(`delivery_${row.campaignId}_${row.recipientId}_${version}`)
+        }
+      );
+      backfilled += 1;
+    }
+    if (backfilled > 0) {
+      lastSchedulerReason = "scheduler_underfeeding_backfill";
+    }
+  }
+
+  const nowDiag = Date.now();
+  if (nowDiag - lastDiagnosticsWriteAt >= SCHEDULER_DIAGNOSTICS_WRITE_MS) {
+    lastDiagnosticsWriteAt = nowDiag;
+    await withSchedulerReadSlot(() =>
+      prisma.appSetting.upsert({
+        where: { key: "scheduler_runtime_diagnostics" },
+        create: {
+          key: "scheduler_runtime_diagnostics",
+          value: {
+            dbQueuedRecipients,
+            redisWaitingJobs,
+            redisActiveJobs,
+            schedulerBatchSize,
+            lastSchedulerEnqueued: dispatched + backfilled,
+            lastSchedulerReason,
+            targetRps: targetTotalRpsAllCampaigns,
+            updatedAt: new Date().toISOString()
+          } as any
+        },
+        update: {
+          value: {
+            dbQueuedRecipients,
+            redisWaitingJobs,
+            redisActiveJobs,
+            schedulerBatchSize,
+            lastSchedulerEnqueued: dispatched + backfilled,
+            lastSchedulerReason,
+            targetRps: targetTotalRpsAllCampaigns,
+            updatedAt: new Date().toISOString()
+          } as any
+        }
+      }).catch(() => null)
+    );
+  }
+
+  return {
+    dispatched,
+    backfilled,
+    dbQueuedRecipients,
+    redisWaitingJobs,
+    redisActiveJobs,
+    schedulerBatchSize,
+    lastSchedulerEnqueued: dispatched + backfilled,
+    lastSchedulerReason,
+    targetRps: targetTotalRpsAllCampaigns
+  };
 }

@@ -193,9 +193,19 @@ export async function GET() {
         3000
       );
 
-    const [dailySummaryRow, workerSnapshotRow] = await Promise.all([
+    const [dailySummaryRow, workerSnapshotRow, schedulerDiagRow, dbQueuedRecipients] = await Promise.all([
       prisma.appSetting.findUnique({ where: { key: "smtp_daily_target_summary" } }).catch(() => null),
-      prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }).catch(() => null)
+      prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }).catch(() => null),
+      prisma.appSetting.findUnique({ where: { key: "scheduler_runtime_diagnostics" } }).catch(() => null),
+      prisma.campaignRecipient.count({
+        where: {
+          sendStatus: "queued",
+          campaign: {
+            status: { in: ["running", "queued", "partially_completed"] },
+            isDeleted: false
+          }
+        }
+      }).catch(() => 0)
     ]);
 
     const smtpIds = (activeSmtps as ActiveSmtpRow[]).map((smtp) => smtp.id);
@@ -307,8 +317,25 @@ export async function GET() {
       if (warmupRate + 0.0001 < desired) warmupCappedCount += 1;
       throttleCapTotalRps += smtp.isThrottled ? Math.max(0.01, warmupRate * 0.5) : warmupRate;
     }
+    const schedulerDiag = ((schedulerDiagRow?.value as any) ?? {}) as {
+      dbQueuedRecipients?: number;
+      redisWaitingJobs?: number;
+      redisActiveJobs?: number;
+      schedulerBatchSize?: number;
+      lastSchedulerEnqueued?: number;
+      lastSchedulerReason?: string;
+      targetRps?: number;
+    };
+    const redisWaitingJobs =
+      Number(schedulerDiag.redisWaitingJobs ?? 0) ||
+      (Number(deliveryCounts.waiting ?? deliveryCounts.wait ?? 0) + Number(retryCounts.waiting ?? retryCounts.wait ?? 0));
+    const redisActiveJobs =
+      Number(schedulerDiag.redisActiveJobs ?? 0) ||
+      (Number(deliveryCounts.active ?? 0) + Number(retryCounts.active ?? 0));
+    const dbQueued = Number(schedulerDiag.dbQueuedRecipients ?? dbQueuedRecipients ?? 0);
     let bottleneckReason = "none";
-    if (queuePending <= 0) bottleneckReason = "queue_empty";
+    if (dbQueued <= 0 && redisWaitingJobs <= 0) bottleneckReason = "queue_empty";
+    else if (dbQueued > 0 && redisWaitingJobs <= 0) bottleneckReason = "scheduler_underfeeding";
     else if (usableSmtpCount > 0 && usableSmtpCount < 2) bottleneckReason = "too_few_eligible_smtps";
     else if (throttledCount > 0) bottleneckReason = "throttle";
     else if (warmupCappedCount > 0) bottleneckReason = "warmup_cap";
@@ -350,6 +377,12 @@ export async function GET() {
         targetPerSmtpRps: Number(targetPerSmtpRps.toFixed(4)),
         avgPerSmtpRps: usableSmtpCount > 0 ? Number((currentRps / usableSmtpCount).toFixed(3)) : 0,
         workerConcurrency: Number(process.env.WORKER_CONCURRENCY ?? 0),
+        dbQueuedRecipients: dbQueued,
+        redisWaitingJobs,
+        redisActiveJobs,
+        schedulerBatchSize: Number(schedulerDiag.schedulerBatchSize ?? 0),
+        lastSchedulerEnqueued: Number(schedulerDiag.lastSchedulerEnqueued ?? 0),
+        lastSchedulerReason: String(schedulerDiag.lastSchedulerReason ?? "unknown"),
         bottleneckReason
       },
       smtpActivity,
