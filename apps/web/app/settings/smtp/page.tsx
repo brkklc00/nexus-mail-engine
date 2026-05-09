@@ -13,7 +13,7 @@ function startOfToday() {
 
 export default async function SmtpSettingsPage() {
   const today = startOfToday();
-  const [accounts, warmupRows, sentAgg, failAgg, poolSettings] = await Promise.all([
+  const [accounts, warmupRows, sentAgg, failAgg, poolSettings, dailyTargetSummary] = await Promise.all([
     prisma.smtpAccount.findMany({
       where: { isSoftDeleted: false },
       orderBy: { createdAt: "desc" }
@@ -34,7 +34,8 @@ export default async function SmtpSettingsPage() {
       JOIN "Campaign" c ON c.id = cl."campaignId"
       WHERE cl."status" = 'failed' AND cl."createdAt" >= ${today}
     `,
-    prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } })
+    prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }),
+    prisma.appSetting.findUnique({ where: { key: "smtp_daily_target_summary" } })
   ]);
   const warmupMap = new Map<string, { smtpAccountId: string; successfulDeliveries: number; failedDeliveries: number; tierName: string | null; effectiveRate: number | null }>(
     warmupRows.map((row: any) => [
@@ -87,6 +88,7 @@ export default async function SmtpSettingsPage() {
           estimatedDailyCapacity
         }}
         initialPoolSettings={(poolSettings?.value as any) ?? null}
+        initialDailyTargetSummary={(dailyTargetSummary?.value as any) ?? null}
       />
     </div>
   );

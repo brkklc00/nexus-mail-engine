@@ -11,6 +11,7 @@ import {
   type LucideIcon,
   LogOut,
   Mail,
+  MailMinus,
   Megaphone,
   Send,
   ServerCog,
@@ -28,6 +29,7 @@ const navItems: Array<{ href: Route; label: string; icon: LucideIcon }> = [
   { href: "/campaigns", label: "Kampanyalar", icon: Megaphone },
   { href: "/short-links", label: "Kisa Linkler", icon: Link2 },
   { href: "/settings/smtp", label: "SMTP Hesaplari", icon: ServerCog },
+  { href: "/settings/unsubscribe" as Route, label: "Abonelikten Cik", icon: MailMinus },
   { href: "/suppression", label: "Baskilama / Kara Liste", icon: ShieldBan }
 ];
 
@@ -35,7 +37,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
-  if (pathname === "/login") {
+  if (pathname === "/login" || pathname === "/unsubscribe" || pathname.startsWith("/unsubscribe/")) {
     return <main className="h-[100dvh] min-h-[100dvh] overflow-hidden">{children}</main>;
   }
 

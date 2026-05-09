@@ -133,16 +133,23 @@ export async function GET() {
 
     const smtpIds = (activeSmtps as ActiveSmtpRow[]).map((smtp) => smtp.id);
     const warmupRows = smtpIds.length
-      ? ((await prisma.smtpWarmupStat.findMany({
-          where: { date: { gte: dayStart }, smtpAccountId: { in: smtpIds } },
-          select: {
-            smtpAccountId: true,
-            successfulDeliveries: true,
-            failedDeliveries: true,
-            updatedAt: true
-          },
-          take: SMTP_ACTIVITY_LIMIT
-        })) as WarmupRow[])
+      ? ((await prisma.smtpWarmupStat
+          .findMany({
+            where: { date: { gte: dayStart }, smtpAccountId: { in: smtpIds } },
+            select: {
+              smtpAccountId: true,
+              successfulDeliveries: true,
+              failedDeliveries: true,
+              updatedAt: true
+            },
+            take: SMTP_ACTIVITY_LIMIT
+          })
+          .catch((error: unknown) => {
+            console.warn("[smtp.live-flow] warmup query skipped", {
+              message: error instanceof Error ? error.message : String(error)
+            });
+            return [];
+          })) as WarmupRow[])
       : [];
 
     const warmupMap = new Map<
@@ -174,10 +181,11 @@ export async function GET() {
       };
     });
 
+    const smtpById = new Map((activeSmtps as ActiveSmtpRow[]).map((smtp) => [smtp.id, smtp.fromEmail]));
     const recentEvents = (recentLogs as RecentLogRow[]).map((log) => {
       const metadata = (log.metadata ?? {}) as { smtpAccountId?: string };
       const smtpFromEmail =
-        (activeSmtps as ActiveSmtpRow[]).find((smtp) => smtp.id === metadata.smtpAccountId)?.fromEmail ??
+        smtpById.get(String(metadata.smtpAccountId ?? "")) ??
         log.campaign?.smtpAccount?.fromEmail ??
         "-";
       const isSuccess = log.eventType === "sent" && log.status !== "failed";

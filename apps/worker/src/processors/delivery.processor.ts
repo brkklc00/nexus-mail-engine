@@ -9,11 +9,26 @@ import { getEffectiveSendRate } from "../rate/effective-rate-runtime.service.js"
 import { canDispatch } from "../rate/pacing-engine.js";
 import { applySafetyToRate, recordDeliveryOutcome } from "../safety/distributed-safety.service.js";
 import { transitionCampaignRecipientStatus } from "../state/campaign-recipient-state.service.js";
+import { safeCreateCampaignLog } from "../logging/safe-campaign-log.js";
 
 const renderer = new MailTemplateRenderer();
+const WORKER_SETTINGS_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SETTINGS_CACHE_MS ?? 30_000));
+const WORKER_SMTP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SMTP_CACHE_MS ?? 30_000));
+const WORKER_QUOTA_CACHE_MS = Math.max(500, Number(process.env.WORKER_QUOTA_CACHE_MS ?? 3_000));
+let cachedPoolSetting: { value: unknown; expiresAt: number } | null = null;
+const smtpPoolCache = new Map<string, { rows: any[]; expiresAt: number }>();
+const smtpQuotaCache = new Map<string, { value: { dailySent: number; hourlySent: number; minuteSent: number }; expiresAt: number }>();
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function isPrismaPoolTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return (
+    message.includes("Timed out fetching a new connection from the connection pool") ||
+    message.includes("connection pool timeout")
+  );
 }
 
 function beginOfDay(date = new Date()) {
@@ -23,6 +38,11 @@ function beginOfDay(date = new Date()) {
 }
 
 async function readSmtpQuotaUsage(smtpAccountId: string) {
+  const now = Date.now();
+  const cached = smtpQuotaCache.get(smtpAccountId);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
   const [dailyWarmup, hourlyRows, minuteRows] = await Promise.all([
     prisma.smtpWarmupStat.findUnique({
       where: {
@@ -48,11 +68,13 @@ async function readSmtpQuotaUsage(smtpAccountId: string) {
         AND cl."createdAt" >= NOW() - INTERVAL '1 minute'
     `
   ]);
-  return {
+  const value = {
     dailySent: Number(dailyWarmup?.successfulDeliveries ?? 0),
     hourlySent: Number(hourlyRows[0]?.total ?? 0),
     minuteSent: Number(minuteRows[0]?.total ?? 0)
   };
+  smtpQuotaCache.set(smtpAccountId, { value, expiresAt: now + WORKER_QUOTA_CACHE_MS });
+  return value;
 }
 
 function signTrackingToken(payload: {
@@ -180,7 +202,7 @@ async function buildTrackedHtml(html: string, campaignId: string, recipientId: s
   });
 
   const pixel = `<img src="${baseUrl}/track/open/${openToken}" width="1" height="1" style="display:none;" alt="" />`;
-  const unsubscribe = `${baseUrl}/unsubscribe/${unsubscribeToken}`;
+  const unsubscribe = `${baseUrl}/unsubscribe?token=${encodeURIComponent(unsubscribeToken)}`;
   const withMeta = rewritten
     .replace(/\{\{tracking_pixel\}\}/g, pixel)
     .replace(/\{\{unsubscribe_url\}\}/g, unsubscribe);
@@ -246,9 +268,17 @@ async function finalizeCampaignIfDone(campaignId: string) {
 export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
   const payload = job.data;
 
-  const existing = await prisma.campaignLog.findUnique({
-    where: { idempotencyKey: payload.idempotencyKey }
-  });
+  const existing = await prisma.campaignLog
+    .findUnique({
+      where: { idempotencyKey: payload.idempotencyKey }
+    })
+    .catch((error: unknown) => {
+      if (isPrismaPoolTimeout(error)) {
+        console.warn("[delivery.idempotency] campaignLog read skipped due to pool timeout");
+        return null;
+      }
+      throw error;
+    });
   if (existing) {
     return;
   }
@@ -265,14 +295,21 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
   const poolSmtpIds = Array.isArray(((campaign as any).smtpPoolConfig as any)?.smtpIds)
     ? ((((campaign as any).smtpPoolConfig as any).smtpIds as string[]))
     : [campaign.smtpAccountId];
-  const activePool = await prisma.smtpAccount.findMany({
-    where: {
-      id: { in: poolSmtpIds },
-      isActive: true,
-      isSoftDeleted: false
-    },
-    orderBy: { createdAt: "asc" }
-  });
+  const poolCacheKey = poolSmtpIds.slice().sort().join(",");
+  const nowMs = Date.now();
+  const activePool = smtpPoolCache.get(poolCacheKey)?.expiresAt && (smtpPoolCache.get(poolCacheKey)?.expiresAt ?? 0) > nowMs
+    ? (smtpPoolCache.get(poolCacheKey)?.rows ?? [])
+    : await prisma.smtpAccount.findMany({
+      where: {
+        id: { in: poolSmtpIds },
+        isActive: true,
+        isSoftDeleted: false
+      },
+      orderBy: { createdAt: "asc" }
+    });
+  if (!smtpPoolCache.get(poolCacheKey) || (smtpPoolCache.get(poolCacheKey)?.expiresAt ?? 0) <= nowMs) {
+    smtpPoolCache.set(poolCacheKey, { rows: activePool as any[], expiresAt: nowMs + WORKER_SMTP_CACHE_MS });
+  }
   const selectedSmtp =
     activePool.find((smtp: any) => smtp.id === payload.smtpAccountId) ??
     activePool[0];
@@ -331,30 +368,26 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
       to: "skipped"
     });
     if (skipped) {
-      await prisma.$transaction([
-        prisma.campaign.update({
-          where: { id: campaign.id },
-          data: { totalSkipped: { increment: 1 } }
-        }),
-        prisma.campaignLog.create({
-          data: {
-            campaignId: campaign.id,
-            recipientId: recipient.id,
-            eventType: "smtp_quota_reached",
-            status: "skipped",
-            message: `SMTP quota reached for ${selectedSmtp.id}`,
-            metadata: {
-              smtpAccountId: selectedSmtp.id,
-              dailyCap,
-              hourlyCap,
-              minuteCap,
-              dailySent: quotaUsage.dailySent,
-              hourlySent: quotaUsage.hourlySent,
-              minuteSent: quotaUsage.minuteSent
-            }
-          }
-        })
-      ]);
+      await prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { totalSkipped: { increment: 1 } }
+      });
+      await safeCreateCampaignLog({
+        campaignId: campaign.id,
+        recipientId: recipient.id,
+        eventType: "smtp_quota_reached",
+        status: "skipped",
+        message: `SMTP quota reached for ${selectedSmtp.id}`,
+        metadata: {
+          smtpAccountId: selectedSmtp.id,
+          dailyCap,
+          hourlyCap,
+          minuteCap,
+          dailySent: quotaUsage.dailySent,
+          hourlySent: quotaUsage.hourlySent,
+          minuteSent: quotaUsage.minuteSent
+        }
+      });
     }
     await finalizeCampaignIfDone(campaign.id);
     return;
@@ -365,25 +398,32 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     campaignId: campaign.id,
     activePoolSmtpCount: Math.max(1, activePool.length)
   });
+  console.info("[rate.apply]", {
+    smtpEmail: selectedSmtp.fromEmail,
+    targetRatePerSecond: selectedSmtp.targetRatePerSecond,
+    maxRatePerSecond: selectedSmtp.maxRatePerSecond,
+    dailyCap: selectedSmtp.dailyCap,
+    hourlyCap: selectedSmtp.hourlyCap,
+    minuteCap: selectedSmtp.minuteCap,
+    resolvedRatePerSecond: decision.effectiveRatePerSecond
+  });
   const safetyRate = await applySafetyToRate(selectedSmtp.id, decision.effectiveRatePerSecond);
   const enforcedRate = Math.max(0.01, safetyRate.rate);
   const dynamicDelayMs = Math.max(10, Math.min(1000, Math.round(1000 / enforcedRate)));
   const maxWaitMs = Math.max(1_000, Number(process.env.RATE_LIMIT_WAIT_TIMEOUT_MS ?? 60_000));
-  await prisma.campaignLog.create({
-    data: {
-      campaignId: campaign.id,
-      eventType: "campaign_rate_debug",
-      status: "success",
-      idempotencyKey: `campaign_rate_debug:${campaign.id}:${selectedSmtp.id}`,
-      message: "Resolved effective send rate for SMTP lane.",
-      metadata: {
-        globalRate: decision.globalRatePerSecond,
-        parallelSMTP: decision.parallelSmtpCount,
-        perSMTPRate: decision.perSmtpRate,
-        effectiveRate: enforcedRate
-      }
+  await safeCreateCampaignLog({
+    campaignId: campaign.id,
+    eventType: "campaign_rate_debug",
+    status: "success",
+    idempotencyKey: `campaign_rate_debug:${campaign.id}:${selectedSmtp.id}`,
+    message: "Resolved effective send rate for SMTP lane.",
+    metadata: {
+      globalRate: decision.globalRatePerSecond,
+      parallelSMTP: decision.parallelSmtpCount,
+      perSMTPRate: decision.perSmtpRate,
+      effectiveRate: enforcedRate
     }
-  }).catch(() => undefined);
+  });
   for (let waitedMs = 0; waitedMs <= maxWaitMs; waitedMs += dynamicDelayMs) {
     if (canDispatch(`smtp:${selectedSmtp.id}`, enforcedRate)) {
       break;
@@ -438,25 +478,6 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
     }
 
     await prisma.$transaction([
-      prisma.campaignLog.create({
-        data: {
-          campaignId: campaign.id,
-          recipientId: recipient.id,
-          eventType: "sent",
-          status: "success",
-          idempotencyKey: payload.idempotencyKey,
-          message: `Delivered via ${selectedSmtp.host}`,
-          metadata: {
-            smtpAccountId: selectedSmtp.id,
-            effectiveRate: enforcedRate,
-            globalRate: decision.globalRatePerSecond,
-            parallelSMTP: decision.parallelSmtpCount,
-            perSMTPRate: decision.perSmtpRate,
-            reasons: safetyRate.reason ? [...decision.reasons, safetyRate.reason] : decision.reasons,
-            warmupTier: decision.warmupTierName
-          }
-        }
-      }),
       prisma.campaign.update({
         where: { id: campaign.id },
         data: {
@@ -486,6 +507,23 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
         }
       })
     ]);
+    await safeCreateCampaignLog({
+      campaignId: campaign.id,
+      recipientId: recipient.id,
+      eventType: "sent",
+      status: "success",
+      idempotencyKey: payload.idempotencyKey,
+      message: `Delivered via ${selectedSmtp.host}`,
+      metadata: {
+        smtpAccountId: selectedSmtp.id,
+        effectiveRate: enforcedRate,
+        globalRate: decision.globalRatePerSecond,
+        parallelSMTP: decision.parallelSmtpCount,
+        perSMTPRate: decision.perSmtpRate,
+        reasons: safetyRate.reason ? [...decision.reasons, safetyRate.reason] : decision.reasons,
+        warmupTier: decision.warmupTierName
+      }
+    });
     await recordDeliveryOutcome(selectedSmtp.id, false);
     await prisma.smtpAccount.update({
       where: { id: selectedSmtp.id },
@@ -528,7 +566,16 @@ export async function processDelivery(job: Job<DeliveryJob>): Promise<void> {
       ]);
     }
     await recordDeliveryOutcome(selectedSmtp.id, true);
-    const poolSetting = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } });
+    const now = Date.now();
+    const poolSetting = cachedPoolSetting && cachedPoolSetting.expiresAt > now
+      ? cachedPoolSetting
+      : await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } })
+          .then((row: { value?: unknown } | null) => {
+            const next = { value: row?.value ?? {}, expiresAt: now + WORKER_SETTINGS_CACHE_MS };
+            cachedPoolSetting = next;
+            return next;
+          })
+          .catch(() => ({ value: {}, expiresAt: now + WORKER_SETTINGS_CACHE_MS }));
     const cooldownSec = Number((poolSetting?.value as any)?.cooldownAfterErrorSec ?? 0);
     const cooldownUntil = cooldownSec > 0 ? new Date(Date.now() + cooldownSec * 1000) : null;
     await prisma.smtpAccount.update({

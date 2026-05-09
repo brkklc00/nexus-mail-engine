@@ -84,6 +84,23 @@ type PlannerPreview = {
   perSmtpMinuteCap: number;
 };
 
+type DailyTargetSummary = {
+  dailyTarget: number;
+  mode: "safe" | "balanced" | "fast" | "aggressive";
+  scope: "healthy_active" | "all_active" | "selected";
+  usableSmtpCount: number;
+  globalRps: number;
+  effectiveGlobalRps: number;
+  perSmtpRps: number;
+  perSmtpDailyCap: number;
+  perSmtpHourlyCap: number;
+  perSmtpMinuteCap: number;
+  updated: number;
+  skipped: number;
+  warnings: string[];
+  updatedAt?: string;
+};
+
 type BulkScope = "all_active" | "selected" | "healthy" | "error";
 type BulkPreset = "safe" | "balanced" | "fast" | "aggressive" | "custom" | "daily_target";
 
@@ -156,9 +173,17 @@ const defaultPoolSettings: PoolSettings = {
 };
 
 const dailyPresets = [5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000, 2000000, 5000000, 10000000, 25000000, 50000000];
+const dailyTargetQuickPresets = [100000, 250000, 500000, 1000000, 2000000, 5000000, 10000000];
 const modalTabs = ["connection", "identity", "rate", "warmup", "advanced"] as const;
 type ModalTab = (typeof modalTabs)[number];
 type ProviderPreset = "alibaba" | "custom";
+
+function modeLabel(mode: "safe" | "balanced" | "fast" | "aggressive") {
+  if (mode === "safe") return "Guvenli";
+  if (mode === "balanced") return "Dengeli";
+  if (mode === "fast") return "Hizli";
+  return "Agresif";
+}
 
 const BULK_PRESET_VALUES: Record<Exclude<BulkPreset, "custom" | "daily_target">, Pick<
   BulkWarmupValues,
@@ -203,11 +228,13 @@ const SMTP_VIEW_STORAGE_KEY = "nexus-smtp-accounts-view-mode";
 export function SmtpManager({
   initialAccounts,
   initialMetrics,
-  initialPoolSettings
+  initialPoolSettings,
+  initialDailyTargetSummary
 }: {
   initialAccounts: Account[];
   initialMetrics: Metrics;
   initialPoolSettings: Partial<PoolSettings> | null;
+  initialDailyTargetSummary?: Partial<DailyTargetSummary> | null;
 }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -335,6 +362,37 @@ export function SmtpManager({
   const [bulkApplyPreview, setBulkApplyPreview] = useState<BulkDistributionPreview | null>(null);
   const [bulkResetIncludeAuthErrors, setBulkResetIncludeAuthErrors] = useState(false);
   const [bulkResetSetHealthy, setBulkResetSetHealthy] = useState(false);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [dailyTargetModalOpen, setDailyTargetModalOpen] = useState(false);
+  const [dailyTargetInput, setDailyTargetInput] = useState(
+    Math.max(100000, Number(initialDailyTargetSummary?.dailyTarget ?? 500000))
+  );
+  const [dailyTargetMode, setDailyTargetMode] = useState<"safe" | "balanced" | "fast" | "aggressive">(
+    (initialDailyTargetSummary?.mode as any) ?? "balanced"
+  );
+  const [dailyTargetScope, setDailyTargetScope] = useState<"healthy_active" | "all_active" | "selected">(
+    (initialDailyTargetSummary?.scope as any) ?? "healthy_active"
+  );
+  const [dailyTargetResetThrottle, setDailyTargetResetThrottle] = useState(false);
+  const [dailyTargetClearCooldown, setDailyTargetClearCooldown] = useState(false);
+  const [dailyTargetClearLastError, setDailyTargetClearLastError] = useState(false);
+  const [dailyTargetExcludeUnhealthy, setDailyTargetExcludeUnhealthy] = useState(true);
+  const [dailyTargetEnforceSuppression, setDailyTargetEnforceSuppression] = useState(true);
+  const [dailyTargetSummary, setDailyTargetSummary] = useState<DailyTargetSummary>({
+    dailyTarget: Math.max(100000, Number(initialDailyTargetSummary?.dailyTarget ?? 500000)),
+    mode: ((initialDailyTargetSummary?.mode as any) ?? "balanced") as "safe" | "balanced" | "fast" | "aggressive",
+    scope: ((initialDailyTargetSummary?.scope as any) ?? "healthy_active") as "healthy_active" | "all_active" | "selected",
+    usableSmtpCount: Math.max(1, Number(initialDailyTargetSummary?.usableSmtpCount ?? initialMetrics.healthySmtpAccounts ?? 1)),
+    globalRps: Number(initialDailyTargetSummary?.globalRps ?? 0),
+    effectiveGlobalRps: Number(initialDailyTargetSummary?.effectiveGlobalRps ?? initialDailyTargetSummary?.globalRps ?? 0),
+    perSmtpRps: Number(initialDailyTargetSummary?.perSmtpRps ?? 0),
+    perSmtpDailyCap: Number(initialDailyTargetSummary?.perSmtpDailyCap ?? 0),
+    perSmtpHourlyCap: Number(initialDailyTargetSummary?.perSmtpHourlyCap ?? 0),
+    perSmtpMinuteCap: Number(initialDailyTargetSummary?.perSmtpMinuteCap ?? 0),
+    updated: Number(initialDailyTargetSummary?.updated ?? 0),
+    skipped: Number(initialDailyTargetSummary?.skipped ?? 0),
+    warnings: Array.isArray(initialDailyTargetSummary?.warnings) ? (initialDailyTargetSummary?.warnings as string[]) : []
+  });
 
   useEffect(() => {
     try {
@@ -535,6 +593,129 @@ export function SmtpManager({
       estimatedDailyCapacity: Math.floor(effectiveTotalRps * 86400)
     };
   }, [accounts, baselineMetrics.totalFailedToday, baselineMetrics.totalSentToday]);
+
+  const dailyTargetPreview = useMemo(() => {
+    const activeAccounts = accounts.filter((item) => item.isActive);
+    const selectedActive = activeAccounts.filter((item) => selectedIds.has(item.id));
+    let scoped = activeAccounts;
+    if (dailyTargetScope === "healthy_active") {
+      scoped = activeAccounts.filter((item) => item.healthStatus === "healthy" && !item.isThrottled);
+    } else if (dailyTargetScope === "selected") {
+      scoped = selectedActive;
+    }
+    if (dailyTargetExcludeUnhealthy) {
+      scoped = scoped.filter((item) => item.healthStatus !== "error");
+    }
+    const usableSmtpCount = scoped.length;
+    const dailyTarget = Math.max(1, Number(dailyTargetInput || 1));
+    const globalRps = Number((dailyTarget / 86400).toFixed(6));
+    const basePerSmtpRps = usableSmtpCount > 0 ? Number((globalRps / usableSmtpCount).toFixed(6)) : 0;
+    const multiplier = dailyTargetMode === "safe" ? 0.5 : dailyTargetMode === "balanced" ? 0.75 : dailyTargetMode === "fast" ? 1 : 1.2;
+    const modePerSmtpRps = basePerSmtpRps * multiplier;
+    const perSmtpDailyCap = usableSmtpCount > 0 ? Math.max(1, Math.ceil(dailyTarget / usableSmtpCount)) : 0;
+    const perSmtpHourlyCap = perSmtpDailyCap > 0 ? Math.max(1, Math.ceil(perSmtpDailyCap / 24)) : 0;
+    const perSmtpMinuteCap = perSmtpHourlyCap > 0 ? Math.max(1, Math.ceil(perSmtpHourlyCap / 60)) : 0;
+    const appliedRps = scoped.map((smtp) => {
+      let rps = modePerSmtpRps;
+      if (isAlibabaCandidate(smtp.host, smtp.providerLabel ?? "") && rps > 5) {
+        rps = 5;
+      }
+      if ((smtp.sentToday ?? 0) < 500) {
+        rps = Math.min(rps, 1);
+      }
+      return Math.max(0.01, Number(rps.toFixed(4)));
+    });
+    const effectiveGlobalRps = Number(appliedRps.reduce((sum, item) => sum + item, 0).toFixed(6));
+    const warnings: string[] = [];
+    if (usableSmtpCount === 0) {
+      warnings.push("Kullanilabilir SMTP bulunamadi.");
+    }
+    if (usableSmtpCount > 0 && usableSmtpCount < 3) {
+      warnings.push("Saglikli SMTP sayisi dusuk, hedefe ulasmak zor olabilir.");
+    }
+    if (modePerSmtpRps > 5 && scoped.some((smtp) => isAlibabaCandidate(smtp.host, smtp.providerLabel ?? ""))) {
+      warnings.push("SMTP basi RPS provider guvenlik limitiyle sinirlandi.");
+    }
+    if (dailyTargetScope === "all_active" && dailyTargetExcludeUnhealthy) {
+      warnings.push("Throttle olan SMTP'ler hariç tutuldu.");
+    }
+    if (dailyTargetMode === "aggressive" && dailyTarget >= 5_000_000) {
+      warnings.push("Hedef cok yuksek; Agresif mod riskli olabilir.");
+    }
+    if (scoped.some((smtp) => (smtp.sentToday ?? 0) < 500)) {
+      warnings.push("Bazi SMTP'ler yeni/isinmamis oldugu icin otomatik guvenli hiz uygulanacak.");
+    }
+    return {
+      usableSmtpCount,
+      dailyTarget,
+      globalRps,
+      perSmtpRps: usableSmtpCount > 0 ? Number((effectiveGlobalRps / usableSmtpCount).toFixed(6)) : 0,
+      perSmtpDailyCap,
+      perSmtpHourlyCap,
+      perSmtpMinuteCap,
+      effectiveGlobalRps,
+      estimatedDailyCapacity: Math.floor(effectiveGlobalRps * 86400),
+      warnings
+    };
+  }, [accounts, dailyTargetExcludeUnhealthy, dailyTargetInput, dailyTargetMode, dailyTargetScope, selectedIds]);
+
+  async function applyDailyTarget() {
+    if (dailyTargetPreview.usableSmtpCount <= 0) {
+      toast.warning("Kullanilabilir SMTP bulunamadi", "Secim kapsamini veya SMTP durumlarini kontrol edin.");
+      return;
+    }
+    if (dailyTargetScope === "selected" && selectedIds.size === 0) {
+      toast.warning("Secili SMTP yok", "Listeden en az bir SMTP secin.");
+      return;
+    }
+    setActionLoading("apply_daily_target");
+    try {
+      const response = await fetch("/api/smtp/apply-daily-target", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dailyTarget: Math.max(1, Number(dailyTargetInput || 1)),
+          mode: dailyTargetMode,
+          scope: dailyTargetScope,
+          smtpAccountIds: dailyTargetScope === "selected" ? [...selectedIds] : undefined,
+          resetThrottle: dailyTargetResetThrottle,
+          clearCooldown: dailyTargetClearCooldown,
+          clearLastError: dailyTargetClearLastError,
+          excludeUnhealthy: dailyTargetExcludeUnhealthy,
+          enforceSuppressionChecks: dailyTargetEnforceSuppression
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string } & DailyTargetSummary;
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error ?? "Gunluk hedef uygulanamadi");
+      }
+      setDailyTargetSummary({
+        dailyTarget: Number(payload.dailyTarget ?? dailyTargetInput),
+        mode: (payload.mode ?? dailyTargetMode) as "safe" | "balanced" | "fast" | "aggressive",
+        scope: (payload.scope ?? dailyTargetScope) as "healthy_active" | "all_active" | "selected",
+        usableSmtpCount: Number(payload.usableSmtpCount ?? 0),
+        globalRps: Number(payload.globalRps ?? 0),
+        effectiveGlobalRps: Number(payload.effectiveGlobalRps ?? 0),
+        perSmtpRps: Number(payload.perSmtpRps ?? 0),
+        perSmtpDailyCap: Number(payload.perSmtpDailyCap ?? 0),
+        perSmtpHourlyCap: Number(payload.perSmtpHourlyCap ?? 0),
+        perSmtpMinuteCap: Number(payload.perSmtpMinuteCap ?? 0),
+        updated: Number(payload.updated ?? 0),
+        skipped: Number(payload.skipped ?? 0),
+        warnings: Array.isArray(payload.warnings) ? payload.warnings : []
+      });
+      setDailyTargetModalOpen(false);
+      toast.success(
+        "Gunluk hedef uygulandi",
+        `Guncellenen SMTP: ${Number(payload.updated ?? 0)}, SMTP basi RPS: ${Number(payload.perSmtpRps ?? 0).toFixed(2)}`
+      );
+      await refreshSmtpSnapshot();
+    } catch (error) {
+      toast.error("Gunluk hedef uygulanamadi", error instanceof Error ? error.message : "Beklenmeyen hata");
+    } finally {
+      setActionLoading(null);
+    }
+  }
 
   const activeSmtpCount = Math.max(1, accounts.filter((item) => item.isActive).length);
   const plannedSmtpCount = Math.max(1, Number(form.plannedSmtpCount || activeSmtpCount));
@@ -1346,16 +1527,57 @@ export function SmtpManager({
   return (
     <div className="space-y-4">
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard title="Total SMTP" value={metrics.totalSmtpAccounts} icon={BarChart3} />
-        <MetricCard title="Active SMTP" value={metrics.activeSmtpAccounts} icon={CheckCircle2} tone="success" />
-        <MetricCard title="Healthy SMTP" value={metrics.healthySmtpAccounts} icon={PlayCircle} tone="success" />
-        <MetricCard title="Throttled SMTP" value={metrics.throttledSmtpAccounts} icon={ShieldAlert} tone="warning" />
-        <MetricCard title="Sent Today" value={metrics.totalSentToday} icon={CheckCircle2} />
-        <MetricCard title="Failed Today" value={metrics.totalFailedToday} icon={MailX} tone="danger" />
-        <MetricCard title="Effective Total RPS" value={metrics.effectiveTotalRps} icon={RefreshCw} />
-        <MetricCard title="Estimated Daily Capacity" value={metrics.estimatedDailyCapacity} icon={BarChart3} />
+        <MetricCard title="Toplam SMTP" value={metrics.totalSmtpAccounts} icon={BarChart3} />
+        <MetricCard title="Aktif SMTP" value={metrics.activeSmtpAccounts} icon={CheckCircle2} tone="success" />
+        <MetricCard title="Saglikli SMTP" value={metrics.healthySmtpAccounts} icon={PlayCircle} tone="success" />
+        <MetricCard title="Throttle SMTP" value={metrics.throttledSmtpAccounts} icon={ShieldAlert} tone="warning" />
+        <MetricCard title="Bugun gonderilen" value={metrics.totalSentToday} icon={CheckCircle2} />
+        <MetricCard title="Bugun basarisiz" value={metrics.totalFailedToday} icon={MailX} tone="danger" />
+        <MetricCard title="Efektif toplam RPS" value={metrics.effectiveTotalRps} icon={RefreshCw} />
+        <MetricCard title="Tahmini gunluk kapasite" value={metrics.estimatedDailyCapacity} icon={BarChart3} />
       </section>
 
+      <section className="rounded-2xl border border-indigo-500/30 bg-indigo-500/5 p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-base font-semibold text-white">Gunluk Gonderim Hedefi Ayarla</p>
+            <p className="mt-1 text-xs text-zinc-300">
+              Gunluk hedefi girin, sistem tum aktif SMTP hesaplarini otomatik olarak guvenli hiz, warmup ve limit degerleriyle ayarlasin.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDailyTargetModalOpen(true)}
+            className="inline-flex items-center justify-center rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/20"
+          >
+            Gunluk Gonderim Hedefi Ayarla
+          </button>
+        </div>
+        <div className="mt-3 grid gap-2 rounded-xl border border-border bg-zinc-900/50 p-3 text-xs text-zinc-200 md:grid-cols-2 xl:grid-cols-4">
+          <p>Gunluk hedef: {Number(dailyTargetSummary.dailyTarget || 0).toLocaleString()}</p>
+          <p>Uygun SMTP: {Number(dailyTargetSummary.usableSmtpCount || 0)}</p>
+          <p>SMTP basi hiz: {Number(dailyTargetSummary.perSmtpRps || 0).toFixed(2)}/s</p>
+          <p>Beklenen toplam hiz: {Number(dailyTargetSummary.effectiveGlobalRps || dailyTargetSummary.globalRps || 0).toFixed(2)}/s</p>
+        </div>
+        <div className="mt-3 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setDailyTargetModalOpen(true)}
+            className="rounded-lg border border-indigo-500/40 px-3 py-2 text-xs text-indigo-200"
+          >
+            Gunluk Hedefi Degistir
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowAdvancedSettings((prev) => !prev)}
+            className="text-xs text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline"
+          >
+            Gelismis SMTP Ayarlari
+          </button>
+        </div>
+      </section>
+
+      {showAdvancedSettings ? (
       <section className="rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between gap-2">
           <p className="text-sm font-semibold text-white">SMTP Pool Settings</p>
@@ -1484,7 +1706,9 @@ export function SmtpManager({
         </div>
         <p className="mt-2 text-xs text-zinc-400">Rotate every N recipients per SMTP. Lower = better distribution, higher = less switching. {warmupHelper}</p>
       </section>
+      ) : null}
 
+      {showAdvancedSettings ? (
       <section className="rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between gap-2">
           <p className="text-sm font-semibold text-white">Global Rate Planner</p>
@@ -1523,6 +1747,7 @@ export function SmtpManager({
           </button>
         </div>
       </section>
+      ) : null}
 
       <section className="rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1577,33 +1802,37 @@ export function SmtpManager({
             </select>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setBulkWarmupModalOpen(true)}
-              className="rounded-lg border border-emerald-400/40 px-3 py-2 text-xs text-emerald-200"
-            >
-              Toplu Rate / Warmup Ayarla
-            </button>
-            <button
-              type="button"
-              onClick={() => setBulkResetModalOpen(true)}
-              className="rounded-lg border border-amber-400/40 px-3 py-2 text-xs text-amber-200"
-            >
-              Rate Limit / Throttle Temizle
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setBulkAlibabaResult(null);
-                setShowBulkAlibabaModal(true);
-              }}
-              className="rounded-lg border border-indigo-400/40 px-3 py-2 text-xs text-indigo-200"
-            >
-              Bulk Add Alibaba SMTPs
-            </button>
-            <button type="button" onClick={() => { resetForm(); setShowModal(true); }} className="rounded-lg bg-accent px-3 py-2 text-xs text-white">
-              Add SMTP
-            </button>
+            {showAdvancedSettings ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setBulkWarmupModalOpen(true)}
+                  className="rounded-lg border border-emerald-400/40 px-3 py-2 text-xs text-emerald-200"
+                >
+                  Toplu Rate / Warmup Ayarla
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBulkResetModalOpen(true)}
+                  className="rounded-lg border border-amber-400/40 px-3 py-2 text-xs text-amber-200"
+                >
+                  Rate Limit / Throttle Temizle
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkAlibabaResult(null);
+                    setShowBulkAlibabaModal(true);
+                  }}
+                  className="rounded-lg border border-indigo-400/40 px-3 py-2 text-xs text-indigo-200"
+                >
+                  Alibaba SMTP Toplu Ekle
+                </button>
+                <button type="button" onClick={() => { resetForm(); setShowModal(true); }} className="rounded-lg bg-accent px-3 py-2 text-xs text-white">
+                  SMTP Ekle
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
 
@@ -1854,6 +2083,119 @@ export function SmtpManager({
           </div>
         ) : null}
       </section>
+
+      {dailyTargetModalOpen ? (
+        <OverlayPortal active={dailyTargetModalOpen} lockScroll>
+          <div className="fixed inset-0 z-[57] bg-black/70 p-4 backdrop-blur-sm" onClick={() => setDailyTargetModalOpen(false)}>
+            <div className="mx-auto mt-10 w-full max-w-4xl rounded-2xl border border-indigo-500/40 bg-zinc-950 p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <p className="text-base font-semibold text-white">Gunluk Gonderim Hedefi</p>
+              <p className="mt-1 text-xs text-zinc-300">
+                Gunluk toplam gonderim hedefinizi girin. Sistem aktif SMTP havuzuna gore SMTP basi hiz, limit ve warmup ayarlarini otomatik hesaplar.
+              </p>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                <Field label="Gunluk hedef" helper="Ornek: 100000, 500000, 1000000, 5000000">
+                  <NumberInput value={dailyTargetInput} onChange={(value) => setDailyTargetInput(Math.max(1, value))} />
+                </Field>
+                <Field label="Mod secimi" helper="Gonderim hizi ve warmup guvenlik carpani">
+                  <SelectInput
+                    value={dailyTargetMode}
+                    onChange={(value) => setDailyTargetMode(value as "safe" | "balanced" | "fast" | "aggressive")}
+                    options={[
+                      { value: "safe", label: "Guvenli" },
+                      { value: "balanced", label: "Dengeli" },
+                      { value: "fast", label: "Hizli" },
+                      { value: "aggressive", label: "Agresif" }
+                    ]}
+                  />
+                </Field>
+              </div>
+
+              <div className="mt-2 flex flex-wrap gap-2">
+                {dailyTargetQuickPresets.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setDailyTargetInput(preset)}
+                    className="rounded border border-border px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-900"
+                  >
+                    {preset >= 1000000 ? `${preset / 1000000}M / gun` : `${Math.floor(preset / 1000)}K / gun`}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                <Field label="Kullanilacak SMTP kapsami" helper="Hedefin hangi SMTP havuzuna dagitilacagini secin">
+                  <SelectInput
+                    value={dailyTargetScope}
+                    onChange={(value) => setDailyTargetScope(value as "healthy_active" | "all_active" | "selected")}
+                    options={[
+                      { value: "healthy_active", label: "Tum aktif ve saglikli SMTP'ler" },
+                      { value: "all_active", label: "Tum aktif SMTP'ler" },
+                      { value: "selected", label: "Sadece secili SMTP'ler" }
+                    ]}
+                  />
+                </Field>
+                <div className="rounded-xl border border-border bg-zinc-900/40 p-3 text-xs text-zinc-300">
+                  <p className="font-medium text-zinc-100">Mod Aciklamasi</p>
+                  <p className="mt-1">
+                    {dailyTargetMode === "safe"
+                      ? "Yeni SMTP havuzu veya dusuk riskli gonderim icin."
+                      : dailyTargetMode === "balanced"
+                        ? "Gunluk duzenli gonderim icin onerilir."
+                        : dailyTargetMode === "fast"
+                          ? "Saglikli SMTP havuzu icin daha yuksek hiz."
+                          : "Yuksek hacim icin. Sadece saglam SMTP havuzunda kullanin."}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-2 rounded-xl border border-border bg-zinc-900/40 p-3 text-xs text-zinc-300 md:grid-cols-2">
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetResetThrottle} onChange={(e) => setDailyTargetResetThrottle(e.target.checked)} /> Throttle durumlarini temizle</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetClearCooldown} onChange={(e) => setDailyTargetClearCooldown(e.target.checked)} /> Cooldown temizle</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetClearLastError} onChange={(e) => setDailyTargetClearLastError(e.target.checked)} /> Son hata bilgisini temizle</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={dailyTargetExcludeUnhealthy} onChange={(e) => setDailyTargetExcludeUnhealthy(e.target.checked)} /> Sagliksiz SMTP'leri dahil etme</label>
+                <label className="flex items-center gap-2 md:col-span-2"><input type="checkbox" checked={dailyTargetEnforceSuppression} onChange={(e) => setDailyTargetEnforceSuppression(e.target.checked)} /> Suppression / unsubscribe kontrollerini zorunlu tut</label>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3 text-xs text-indigo-100 md:grid-cols-4">
+                <p>Gunluk hedef: {dailyTargetPreview.dailyTarget.toLocaleString()}</p>
+                <p>Kullanilacak SMTP: {dailyTargetPreview.usableSmtpCount}</p>
+                <p>Toplam hedef RPS: {dailyTargetPreview.globalRps.toFixed(2)}/s</p>
+                <p>SMTP basi RPS: {dailyTargetPreview.perSmtpRps.toFixed(2)}/s</p>
+                <p>SMTP basi gunluk limit: {dailyTargetPreview.perSmtpDailyCap.toLocaleString()}</p>
+                <p>SMTP basi saatlik limit: {dailyTargetPreview.perSmtpHourlyCap.toLocaleString()}</p>
+                <p>SMTP basi dakikalik limit: {dailyTargetPreview.perSmtpMinuteCap.toLocaleString()}</p>
+                <p>Tahmini gunluk kapasite: {dailyTargetPreview.estimatedDailyCapacity.toLocaleString()}</p>
+                <p className="col-span-2 md:col-span-4">Mod: {modeLabel(dailyTargetMode)}</p>
+              </div>
+
+              {dailyTargetPreview.warnings.length > 0 ? (
+                <div className="mt-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100">
+                  {dailyTargetPreview.warnings.map((warning) => (
+                    <p key={warning}>- {warning}</p>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button type="button" onClick={() => setDailyTargetModalOpen(false)} className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-300">
+                  Iptal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void applyDailyTarget()}
+                  disabled={actionLoading === "apply_daily_target"}
+                  className="inline-flex items-center gap-1 rounded-lg border border-indigo-500/50 bg-indigo-500/20 px-3 py-2 text-xs text-indigo-200 disabled:opacity-50"
+                >
+                  {actionLoading === "apply_daily_target" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  Uygula
+                </button>
+              </div>
+            </div>
+          </div>
+        </OverlayPortal>
+      ) : null}
 
       {showModal ? (
         <OverlayPortal active={showModal} lockScroll>

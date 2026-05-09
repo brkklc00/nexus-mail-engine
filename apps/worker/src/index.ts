@@ -14,19 +14,28 @@ import { processDelivery } from "./processors/delivery.processor.js";
 import { processRetry } from "./processors/retry.processor.js";
 import { dispatchFairBatch } from "./scheduler/campaign-dispatch.service.js";
 import { getAllSafetyStates } from "./safety/distributed-safety.service.js";
+import { safeCreateCampaignLog } from "./logging/safe-campaign-log.js";
 
 const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
   maxRetriesPerRequest: null
 });
+const workerConcurrency = Number(process.env.WORKER_CONCURRENCY ?? 10);
+const schedulerTickMs = Math.max(1000, Number(process.env.SCHEDULER_TICK_MS ?? 3000));
+const schedulerBatchSize = Math.max(10, Number(process.env.SCHEDULER_BATCH_SIZE ?? 50));
+const schedulerDbReadConcurrency = Math.max(1, Number(process.env.WORKER_DB_READ_CONCURRENCY ?? 2));
+const schedulerCampaignTake = Math.max(1, Number(process.env.SCHEDULER_CAMPAIGN_TAKE ?? 20));
+const workerSettingsCacheMs = Math.max(1_000, Number(process.env.WORKER_SETTINGS_CACHE_MS ?? 30_000));
+const workerSmtpCacheMs = Math.max(1_000, Number(process.env.WORKER_SMTP_CACHE_MS ?? 30_000));
+const workerCampaignCacheMs = Math.max(1_000, Number(process.env.WORKER_CAMPAIGN_CACHE_MS ?? 10_000));
 
 const deliveryWorker = new Worker(QUEUE_NAMES.DELIVERY, processDelivery, {
   connection: redis,
-  concurrency: Number(process.env.WORKER_CONCURRENCY ?? 8)
+  concurrency: workerConcurrency
 });
 
 const retryWorker = new Worker(QUEUE_NAMES.RETRY, processRetry, {
   connection: redis,
-  concurrency: Math.max(1, Math.floor(Number(process.env.WORKER_CONCURRENCY ?? 8) / 2))
+  concurrency: Math.max(1, Math.floor(workerConcurrency / 2))
 });
 
 const sharedRedis = getRedisConnection();
@@ -47,35 +56,85 @@ let latestHealthSnapshot: WorkerHealthSnapshot = {
   service: "nexus-worker",
   ts: Date.now(),
   checks: { db: false, redis: false },
-  worker: { concurrency: Number(process.env.WORKER_CONCURRENCY ?? 8) },
+  worker: { concurrency: workerConcurrency },
   queue: { lagMs: 0, counts: {} as Record<string, number> },
   smtpThrottle: { activeCount: 0, states: [] },
   sharedSafety: []
 };
 
+let cachedPoolRetrySettings: {
+  retryCount: number;
+  retryDelayMs: number;
+  expiresAt: number;
+} | null = null;
+let cachedMetricsDbSnapshot: {
+  throttled: Array<{ id: string; name: string; throttleReason: string | null }>;
+  throughputRows: Array<{ smtpaccountid: string; sent_last_minute: bigint }>;
+  expiresAt: number;
+} | null = null;
+let metricsPullRunning = false;
+let lastSchedulerDbDiagnosticsAt = 0;
+
+async function getCachedPoolRetrySettings() {
+  const now = Date.now();
+  if (cachedPoolRetrySettings && cachedPoolRetrySettings.expiresAt > now) {
+    return cachedPoolRetrySettings;
+  }
+  const poolSetting = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }).catch(() => null);
+  const settings = ((poolSetting?.value as any) ?? {}) as {
+    retryCount?: number;
+    retryDelayMs?: number;
+  };
+  cachedPoolRetrySettings = {
+    retryCount: Number(settings.retryCount ?? 5),
+    retryDelayMs: Number(settings.retryDelayMs ?? 2000),
+    expiresAt: now + workerSettingsCacheMs
+  };
+  return cachedPoolRetrySettings;
+}
+
 async function sampleWorkerMetrics() {
+  if (metricsPullRunning) {
+    return;
+  }
+  metricsPullRunning = true;
   try {
     await withDistributedLock("lock:worker-metrics-publisher", 2_500, async () => {
-      const [queueCounts, retryCounts, deadCounts, waitingJobs, throttled, safetyStates, throughputRows] =
-        await Promise.all([
+      const now = Date.now();
+      const [queueCounts, retryCounts, deadCounts, waitingJobs, safetyStates] = await Promise.all([
         deliveryQueue.getJobCounts(),
         retryQueue.getJobCounts(),
         deadLetterQueue.getJobCounts(),
         deliveryQueue.getJobs(["waiting"], 0, 0, true),
-        prisma.smtpAccount.findMany({
-          where: { isThrottled: true },
-          select: { id: true, name: true, throttleReason: true }
-        }),
-        getAllSafetyStates(),
-        prisma.$queryRaw<Array<{ smtpaccountid: string; sent_last_minute: bigint }>>`
-          SELECT c."smtpAccountId" as smtpaccountid, COUNT(*)::bigint as sent_last_minute
-          FROM "CampaignLog" cl
-          JOIN "Campaign" c ON c.id = cl."campaignId"
-          WHERE cl."eventType" = 'sent' AND cl."createdAt" >= NOW() - INTERVAL '1 minute'
-          GROUP BY c."smtpAccountId"
-          ORDER BY sent_last_minute DESC
-        `
-        ]);
+        getAllSafetyStates()
+      ]);
+      const dbSnapshot = cachedMetricsDbSnapshot && cachedMetricsDbSnapshot.expiresAt > now
+        ? cachedMetricsDbSnapshot
+        : await (async () => {
+            const [throttled, throughputRows] = await Promise.all([
+              prisma.smtpAccount.findMany({
+                where: { isThrottled: true },
+                select: { id: true, name: true, throttleReason: true },
+                take: 100
+              }).catch(() => []),
+              prisma.$queryRaw<Array<{ smtpaccountid: string; sent_last_minute: bigint }>>`
+                SELECT c."smtpAccountId" as smtpaccountid, COUNT(*)::bigint as sent_last_minute
+                FROM "CampaignLog" cl
+                JOIN "Campaign" c ON c.id = cl."campaignId"
+                WHERE cl."eventType" = 'sent' AND cl."createdAt" >= NOW() - INTERVAL '1 minute'
+                GROUP BY c."smtpAccountId"
+                ORDER BY sent_last_minute DESC
+                LIMIT 20
+              `.catch(() => [])
+            ]);
+            const next = {
+              throttled,
+              throughputRows,
+              expiresAt: now + 30_000
+            };
+            cachedMetricsDbSnapshot = next;
+            return next;
+          })();
 
       const queueLagMs = waitingJobs.length > 0 ? Date.now() - waitingJobs[0].timestamp : 0;
       await sharedRedis.hset("metrics:queue", {
@@ -86,13 +145,13 @@ async function sampleWorkerMetrics() {
         updatedAt: String(Date.now())
       });
       await sharedRedis.hset("metrics:worker", {
-        concurrency: String(Number(process.env.WORKER_CONCURRENCY ?? 8)),
+        concurrency: String(workerConcurrency),
         updatedAt: String(Date.now())
       });
       await sharedRedis.set(
         "metrics:throughput",
         JSON.stringify(
-          throughputRows.map((row: any) => ({
+          dbSnapshot.throughputRows.map((row: any) => ({
             smtpAccountId: row.smtpaccountid,
             sentLastMinute: Number(row.sent_last_minute)
           }))
@@ -100,7 +159,7 @@ async function sampleWorkerMetrics() {
         "EX",
         15
       );
-      await sharedRedis.set("metrics:throttled", JSON.stringify(throttled), "EX", 15);
+      await sharedRedis.set("metrics:throttled", JSON.stringify(dbSnapshot.throttled), "EX", 15);
       await sharedRedis.set("metrics:shared-safety", JSON.stringify(safetyStates), "EX", 15);
 
       latestHealthSnapshot = {
@@ -108,7 +167,7 @@ async function sampleWorkerMetrics() {
         service: "nexus-worker",
         ts: Date.now(),
         checks: { db: true, redis: true },
-        worker: { concurrency: Number(process.env.WORKER_CONCURRENCY ?? 8) },
+        worker: { concurrency: workerConcurrency },
         queue: {
           lagMs: queueLagMs,
           counts: {
@@ -117,7 +176,7 @@ async function sampleWorkerMetrics() {
             deadWaiting: deadCounts.waiting ?? 0
           }
         },
-        smtpThrottle: { activeCount: throttled.length, states: throttled },
+        smtpThrottle: { activeCount: dbSnapshot.throttled.length, states: dbSnapshot.throttled },
         sharedSafety: safetyStates
       };
     });
@@ -128,6 +187,8 @@ async function sampleWorkerMetrics() {
       ts: Date.now(),
       error: (error as Error).message
     };
+  } finally {
+    metricsPullRunning = false;
   }
 }
 
@@ -145,26 +206,48 @@ healthServer.listen(Number(process.env.WORKER_HEALTH_PORT ?? 4050));
 
 const workerMetricsInterval = setInterval(() => {
   void sampleWorkerMetrics();
-}, 3000);
+}, 10_000);
 void sampleWorkerMetrics();
 
+let schedulerRunning = false;
 const schedulerInterval = setInterval(async () => {
+  if (schedulerRunning) {
+    console.warn("[scheduler] tick skipped because previous tick is still running");
+    return;
+  }
+  schedulerRunning = true;
   try {
-    await dispatchFairBatch(Number(process.env.SCHEDULER_BATCH_SIZE ?? 50));
+    const now = Date.now();
+    if (now - lastSchedulerDbDiagnosticsAt > 60_000) {
+      lastSchedulerDbDiagnosticsAt = now;
+      console.info("[scheduler.db]", {
+        tickMs: schedulerTickMs,
+        batchSize: schedulerBatchSize,
+        workerConcurrency,
+        dbReadConcurrency: schedulerDbReadConcurrency,
+        campaignTake: schedulerCampaignTake,
+        cacheTtls: {
+          settingsMs: workerSettingsCacheMs,
+          smtpMs: workerSmtpCacheMs,
+          campaignMs: workerCampaignCacheMs
+        }
+      });
+    }
+    await dispatchFairBatch(schedulerBatchSize);
   } catch (error) {
     console.error("fair_scheduler_error", error);
+  } finally {
+    schedulerRunning = false;
   }
-}, Number(process.env.SCHEDULER_TICK_MS ?? 1500));
+}, schedulerTickMs);
 
 deliveryWorker.on("completed", async (job) => {
-  await prisma.campaignLog.create({
-    data: {
-      campaignId: job.data.campaignId,
-      recipientId: job.data.recipientId,
-      eventType: "worker_completed",
-      status: "success",
-      message: `job ${job.id} completed`
-    }
+  await safeCreateCampaignLog({
+    campaignId: job.data.campaignId,
+    recipientId: job.data.recipientId,
+    eventType: "worker_completed",
+    status: "success",
+    message: `job ${job.id} completed`
   });
 });
 
@@ -172,9 +255,9 @@ deliveryWorker.on("failed", async (job, error) => {
   if (!job) {
     return;
   }
-  const poolSetting = await prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } });
-  const retryCount = Number((poolSetting?.value as any)?.retryCount ?? 5);
-  const retryDelayMs = Number((poolSetting?.value as any)?.retryDelayMs ?? 2000);
+  const retrySettings = await getCachedPoolRetrySettings();
+  const retryCount = retrySettings.retryCount;
+  const retryDelayMs = retrySettings.retryDelayMs;
   const rateLimitRequeueDelayMs = Math.max(500, Number(process.env.RATE_LIMIT_REQUEUE_DELAY_MS ?? 5000));
   const isRateLimitedTimeout = (error?.message ?? "").includes("rate_limited_wait_timeout");
   const nextAttempt = Number(job.data.attempt ?? 1) + 1;
@@ -187,14 +270,12 @@ deliveryWorker.on("failed", async (job, error) => {
       delay
     });
     if (isRateLimitedTimeout) {
-      await prisma.campaignLog.create({
-        data: {
-          campaignId: job.data.campaignId,
-          recipientId: job.data.recipientId,
-          eventType: "rate_limited_delayed",
-          status: "skipped",
-          message: `rate limited, delayed ${delay}ms (attempt ${nextAttempt}/${retryCount})`
-        }
+      await safeCreateCampaignLog({
+        campaignId: job.data.campaignId,
+        recipientId: job.data.recipientId,
+        eventType: "rate_limited_delayed",
+        status: "skipped",
+        message: `rate limited, delayed ${delay}ms (attempt ${nextAttempt}/${retryCount})`
       });
       return;
     }
@@ -202,14 +283,12 @@ deliveryWorker.on("failed", async (job, error) => {
     await deadLetterQueue.add("delivery_dead", job.data);
   }
 
-  await prisma.campaignLog.create({
-    data: {
-      campaignId: job.data.campaignId,
-      recipientId: job.data.recipientId,
-      eventType: "worker_failed",
-      status: "failed",
-      message: error.message
-    }
+  await safeCreateCampaignLog({
+    campaignId: job.data.campaignId,
+    recipientId: job.data.recipientId,
+    eventType: "worker_failed",
+    status: "failed",
+    message: error instanceof Error ? error.message : String(error ?? "worker_failed")
   });
 });
 

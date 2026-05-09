@@ -5,10 +5,20 @@ const PUBLIC_PATHS = [
   "/login",
   "/api/auth/login",
   "/health",
+  "/api/unsubscribe/config",
+  "/api/unsubscribe/captcha",
+  "/api/unsubscribe/confirm",
   "/track/open",
   "/track/click",
   "/unsubscribe"
 ];
+
+function isPublicPath(pathname: string) {
+  if (pathname === "/unsubscribe" || pathname.startsWith("/unsubscribe/")) {
+    return true;
+  }
+  return PUBLIC_PATHS.some((path) => pathname === path);
+}
 
 function decodeBase64Url(input: string): string {
   const base64 = input.replace(/-/g, "+").replace(/_/g, "/");
@@ -69,7 +79,7 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  if (PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(path))) {
+  if (isPublicPath(pathname)) {
     return NextResponse.next();
   }
 

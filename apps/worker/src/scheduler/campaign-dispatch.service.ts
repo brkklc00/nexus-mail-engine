@@ -3,8 +3,71 @@ import { prisma } from "@nexus/db";
 import { deliveryQueue, safeJobId, withDistributedLock } from "@nexus/queue";
 import { FairCampaignScheduler } from "./fair-scheduler.js";
 import { transitionCampaignRecipientStatus } from "../state/campaign-recipient-state.service.js";
+import { safeCreateCampaignLog } from "../logging/safe-campaign-log.js";
 
 const scheduler = new FairCampaignScheduler();
+const WORKER_DB_READ_CONCURRENCY = Math.max(1, Math.min(5, Number(process.env.WORKER_DB_READ_CONCURRENCY ?? 2)));
+const WORKER_SETTINGS_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SETTINGS_CACHE_MS ?? 30_000));
+const WORKER_SMTP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_SMTP_CACHE_MS ?? 30_000));
+const WORKER_CAMPAIGN_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_CAMPAIGN_CACHE_MS ?? 10_000));
+const WORKER_WARMUP_CACHE_MS = Math.max(1_000, Number(process.env.WORKER_WARMUP_CACHE_MS ?? 30_000));
+let schedulerReadInFlight = 0;
+const schedulerReadQueue: Array<() => void> = [];
+
+let cachedPoolSettings: {
+  skipThrottled: boolean;
+  skipUnhealthy: boolean;
+  perSmtpConcurrency: number;
+  expiresAt: number;
+} | null = null;
+let cachedActiveCampaigns: { data: any[]; expiresAt: number } | null = null;
+let cachedSmtpState: { data: any[]; expiresAt: number; key: string } | null = null;
+let cachedWarmupState: { data: any[]; expiresAt: number; key: string } | null = null;
+
+async function withSchedulerReadSlot<T>(task: () => Promise<T>): Promise<T> {
+  if (schedulerReadInFlight >= WORKER_DB_READ_CONCURRENCY) {
+    await new Promise<void>((resolve) => schedulerReadQueue.push(resolve));
+  }
+  schedulerReadInFlight += 1;
+  try {
+    return await task();
+  } finally {
+    schedulerReadInFlight = Math.max(0, schedulerReadInFlight - 1);
+    const next = schedulerReadQueue.shift();
+    if (next) next();
+  }
+}
+
+async function getCachedPoolSettings() {
+  const now = Date.now();
+  if (cachedPoolSettings && cachedPoolSettings.expiresAt > now) {
+    return cachedPoolSettings;
+  }
+  const row = (await withSchedulerReadSlot(() =>
+    prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }).catch(() => null)
+  )) as { value?: unknown } | null;
+  const settings = ((row?.value as any) ?? {}) as {
+    skipThrottled?: boolean;
+    skipUnhealthy?: boolean;
+    perSmtpConcurrency?: number;
+  };
+  cachedPoolSettings = {
+    skipThrottled: settings.skipThrottled ?? true,
+    skipUnhealthy: settings.skipUnhealthy ?? true,
+    perSmtpConcurrency: Math.max(1, Number(settings.perSmtpConcurrency ?? 1)),
+    expiresAt: now + WORKER_SETTINGS_CACHE_MS
+  };
+  return cachedPoolSettings;
+}
+
+function campaignCacheClone(rows: any[]) {
+  return rows.map((row) => ({
+    ...row,
+    recipients: Array.isArray(row.recipients)
+      ? row.recipients.map((recipient: any) => ({ ...recipient }))
+      : []
+  }));
+}
 
 function idempotencyKey(campaignId: string, recipientId: string, templateVersion: number): string {
   return crypto
@@ -14,7 +77,12 @@ function idempotencyKey(campaignId: string, recipientId: string, templateVersion
 }
 
 export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
-  const activeCampaigns = await prisma.campaign.findMany({
+  const campaignTake = Math.max(1, Math.min(100, Number(process.env.SCHEDULER_CAMPAIGN_TAKE ?? 20)));
+  const recipientsTakePerCampaign = Math.max(5, Math.min(maxJobs, Number(process.env.SCHEDULER_RECIPIENTS_TAKE_PER_CAMPAIGN ?? 20)));
+  const nowMs = Date.now();
+  const campaignRows = cachedActiveCampaigns && cachedActiveCampaigns.expiresAt > nowMs
+    ? cachedActiveCampaigns.data
+    : ((await withSchedulerReadSlot(() => prisma.campaign.findMany({
     where: {
       OR: [
         { status: "running" },
@@ -24,15 +92,38 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
         }
       ]
     },
-    include: {
-      template: true,
+    select: {
+      id: true,
+      status: true,
+      startedAt: true,
+      smtpAccountId: true,
+      smtpPoolConfig: true,
+      templateId: true,
+      provider: true,
+      template: {
+        select: {
+          version: true
+        }
+      },
       recipients: {
         where: { sendStatus: "pending" },
-        take: maxJobs
+        take: recipientsTakePerCampaign,
+        select: {
+          recipientId: true,
+          smtpAccountId: true
+        }
       }
     },
-    orderBy: [{ createdAt: "asc" }]
-  });
+    orderBy: [{ createdAt: "asc" }],
+    take: campaignTake
+  }))) as any[]);
+  if (!cachedActiveCampaigns || cachedActiveCampaigns.expiresAt <= nowMs) {
+    cachedActiveCampaigns = {
+      data: campaignRows,
+      expiresAt: nowMs + WORKER_CAMPAIGN_CACHE_MS
+    };
+  }
+  const activeCampaigns = campaignCacheClone(campaignRows);
 
   const slots = activeCampaigns.map((campaign: any) => ({
     campaignId: campaign.id,
@@ -57,29 +148,41 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
   );
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const [smtpAccounts, warmupStats, poolSetting] = await Promise.all([
-    smtpIds.length
-      ? prisma.smtpAccount.findMany({
+  const smtpCacheKey = smtpIds.slice().sort().join(",");
+  const smtpAccounts = smtpIds.length === 0
+    ? []
+    : cachedSmtpState && cachedSmtpState.expiresAt > nowMs && cachedSmtpState.key === smtpCacheKey
+      ? cachedSmtpState.data
+      : (await withSchedulerReadSlot(() => prisma.smtpAccount.findMany({
           where: { id: { in: smtpIds }, isActive: true, isSoftDeleted: false },
           select: { id: true, isThrottled: true, healthStatus: true, targetRatePerSecond: true, maxRatePerSecond: true, warmupEnabled: true, warmupStartRps: true, warmupIncrementStep: true, warmupMaxRps: true, cooldownUntil: true }
-        })
-      : Promise.resolve([] as any[]),
-    smtpIds.length
-      ? prisma.smtpWarmupStat.findMany({
+        }))) as any[];
+  if (smtpIds.length > 0 && (!cachedSmtpState || cachedSmtpState.expiresAt <= nowMs || cachedSmtpState.key !== smtpCacheKey)) {
+    cachedSmtpState = {
+      key: smtpCacheKey,
+      data: smtpAccounts,
+      expiresAt: nowMs + WORKER_SMTP_CACHE_MS
+    };
+  }
+  const warmupStats = smtpIds.length === 0
+    ? []
+    : cachedWarmupState && cachedWarmupState.expiresAt > nowMs && cachedWarmupState.key === smtpCacheKey
+      ? cachedWarmupState.data
+      : (await withSchedulerReadSlot(() => prisma.smtpWarmupStat.findMany({
           where: { smtpAccountId: { in: smtpIds }, date: { gte: today } },
           select: { smtpAccountId: true, successfulDeliveries: true, failedDeliveries: true }
-        })
-      : Promise.resolve([] as any[]),
-    prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } })
-  ]);
-  const settings = ((poolSetting?.value as any) ?? {}) as {
-    skipThrottled?: boolean;
-    skipUnhealthy?: boolean;
-    perSmtpConcurrency?: number;
-  };
-  const skipThrottled = settings.skipThrottled ?? true;
-  const skipUnhealthy = settings.skipUnhealthy ?? true;
-  const perSmtpConcurrency = Math.max(1, Number(settings.perSmtpConcurrency ?? 1));
+        }))) as any[];
+  if (smtpIds.length > 0 && (!cachedWarmupState || cachedWarmupState.expiresAt <= nowMs || cachedWarmupState.key !== smtpCacheKey)) {
+    cachedWarmupState = {
+      key: smtpCacheKey,
+      data: warmupStats,
+      expiresAt: nowMs + WORKER_WARMUP_CACHE_MS
+    };
+  }
+  const poolSettings = await getCachedPoolSettings();
+  const skipThrottled = poolSettings.skipThrottled;
+  const skipUnhealthy = poolSettings.skipUnhealthy;
+  const perSmtpConcurrency = poolSettings.perSmtpConcurrency;
   const warmupMap = new Map<string, { smtpAccountId: string; successfulDeliveries: number; failedDeliveries: number }>(
     warmupStats.map((stat: any) => [
       stat.smtpAccountId as string,
@@ -154,14 +257,12 @@ export async function dispatchFairBatch(maxJobs = 100): Promise<number> {
           else selectedSmtp = roundRobin;
         }
         if (!selectedSmtp) {
-          await prisma.campaignLog.create({
-            data: {
-              campaignId: campaign.id,
-              recipientId: nextRecipient.recipientId,
-              eventType: "dispatch_waiting_smtp",
-              status: "skipped",
-              message: "No active SMTP available in pool; dispatch delayed."
-            }
+          await safeCreateCampaignLog({
+            campaignId: campaign.id,
+            recipientId: nextRecipient.recipientId,
+            eventType: "dispatch_waiting_smtp",
+            status: "skipped",
+            message: "No active SMTP available in pool; dispatch delayed."
           });
           return;
         }

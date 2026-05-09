@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -69,33 +69,47 @@ export function QueueObservabilityWidget() {
   const [confirmText, setConfirmText] = useState("");
   const [adminLoading, setAdminLoading] = useState<QueueAdminAction | null>(null);
   const [adminResult, setAdminResult] = useState<QueueAdminResponse | null>(null);
+  const inFlightRef = useRef(false);
+  const requestControllerRef = useRef<AbortController | null>(null);
+
+  const pull = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 3500);
+    try {
+      const response = await fetch("/api/observability/queues", { signal: controller.signal });
+      if (!response.ok) {
+        throw new Error("Kuyruk metrikleri kullanilamiyor");
+      }
+      const payload = (await response.json()) as QueuePayload;
+      setData(payload);
+      setError(null);
+    } catch (pullError) {
+      if (pullError instanceof Error && pullError.name === "AbortError") {
+        setError("Yuklenemedi");
+      } else {
+        setError(pullError instanceof Error ? pullError.message : "Metrik istegi basarisiz oldu");
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      inFlightRef.current = false;
+    }
+  }, []);
 
   useEffect(() => {
-    let mounted = true;
-    const pull = async () => {
-      try {
-        const response = await fetch("/api/observability/queues");
-        if (!response.ok) {
-          throw new Error("Kuyruk metrikleri kullanilamiyor");
-        }
-        const payload = (await response.json()) as QueuePayload;
-        if (mounted) {
-          setData(payload);
-          setError(null);
-        }
-      } catch (pullError) {
-        if (mounted) {
-          setError(pullError instanceof Error ? pullError.message : "Metrik istegi basarisiz oldu");
-        }
-      }
-    };
     void pull();
-    const interval = setInterval(() => void pull(), 4000);
+    const interval = setInterval(() => {
+      if (document.hidden) return;
+      void pull();
+    }, 5000);
     return () => {
-      mounted = false;
       clearInterval(interval);
+      requestControllerRef.current?.abort();
     };
-  }, []);
+  }, [pull]);
 
   const estimatedWaiting = (data?.deliveryCounts.waiting ?? 0) + (data?.retryCounts.waiting ?? 0);
 
