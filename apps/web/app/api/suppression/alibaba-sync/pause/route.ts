@@ -7,6 +7,18 @@ export async function POST() {
   if (!session) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
-  const summary = await pauseAlibabaSync();
-  return NextResponse.json({ ok: true, summary });
+  try {
+    const summary = await pauseAlibabaSync();
+    return NextResponse.json({ ok: true, summary });
+  } catch (error) {
+    console.error("[api/suppression/alibaba-sync/pause]", error);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Alibaba senkronizasyonu duraklatılamadı. Lütfen tekrar deneyin veya teknik logları kontrol edin.",
+        errorCode: "alibaba_sync_pause_failed"
+      },
+      { status: 500 }
+    );
+  }
 }

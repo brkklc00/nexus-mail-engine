@@ -86,18 +86,41 @@ function getMeta(raw: unknown) {
   };
 }
 
-async function getOrCreateState() {
-  return prisma.alibabaSuppressionSyncState.upsert({
-    where: { syncType: SYNC_TYPE },
-    create: {
-      syncType: SYNC_TYPE,
-      status: "idle",
-      startTime: "",
-      endTime: "",
-      meta: DEFAULT_META
-    },
-    update: {}
+async function getOrCreateAlibabaSyncState(syncType: string = SYNC_TYPE) {
+  const existing = await prisma.alibabaSuppressionSyncState.findFirst({
+    where: { syncType },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }]
   });
+  if (existing) {
+    return existing;
+  }
+  try {
+    return await prisma.alibabaSuppressionSyncState.create({
+      data: {
+        syncType,
+        status: "idle",
+        startTime: "",
+        endTime: "",
+        meta: DEFAULT_META
+      }
+    });
+  } catch (error: unknown) {
+    const code = error && typeof error === "object" && "code" in error ? String((error as { code?: string }).code) : "";
+    if (code === "P2002") {
+      const again = await prisma.alibabaSuppressionSyncState.findFirst({
+        where: { syncType },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }]
+      });
+      if (again) {
+        return again;
+      }
+    }
+    throw error;
+  }
+}
+
+async function getOrCreateState() {
+  return getOrCreateAlibabaSyncState(SYNC_TYPE);
 }
 
 function toPublicStatus(row: any): AlibabaSyncPublicStatus {

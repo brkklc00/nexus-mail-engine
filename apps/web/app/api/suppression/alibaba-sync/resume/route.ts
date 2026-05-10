@@ -11,9 +11,18 @@ export async function POST() {
     const summary = await resumeAlibabaSync();
     return NextResponse.json({ ok: true, summary });
   } catch (error) {
+    const msg = error instanceof Error ? error.message : "";
+    if (msg.includes("Kaldığı yer bilgisi")) {
+      return NextResponse.json({ ok: false, error: msg, errorCode: "alibaba_sync_resume_not_ready" }, { status: 400 });
+    }
+    console.error("[api/suppression/alibaba-sync/resume]", error);
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "Alibaba senkronizasyonu devam ettirilemedi" },
-      { status: 400 }
+      {
+        ok: false,
+        error: "Alibaba senkronizasyonu devam ettirilemedi. Lütfen tekrar deneyin veya teknik logları kontrol edin.",
+        errorCode: "alibaba_sync_resume_failed"
+      },
+      { status: 500 }
     );
   }
 }

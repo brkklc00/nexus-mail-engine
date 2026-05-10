@@ -262,11 +262,22 @@ export function SuppressionManager() {
         summary?: AlibabaSyncStatus;
       };
       if (!response.ok || !payload.ok || !payload.summary) {
-        throw new Error(payload.error ?? "Alibaba senkronizasyon durumu alınamadı");
+        console.error("[suppression] alibaba sync status", { status: response.status, payload });
+        toast.error(
+          "Alibaba senkronizasyon durumu alınamadı",
+          typeof payload.error === "string" && payload.error.trim().length > 0
+            ? payload.error
+            : "Lütfen tekrar deneyin veya teknik logları kontrol edin."
+        );
+        return;
       }
       setSyncStatus(payload.summary);
     } catch (err) {
-      toast.error("Alibaba senkronizasyon durumu alınamadı", err instanceof Error ? err.message : "İstek başarısız oldu");
+      console.error("[suppression] alibaba sync status", err);
+      toast.error(
+        "Alibaba senkronizasyon durumu alınamadı",
+        "Lütfen tekrar deneyin veya teknik logları kontrol edin."
+      );
     } finally {
       setSyncStatusLoading(false);
     }
@@ -297,13 +308,24 @@ export function SuppressionManager() {
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; summary?: AlibabaSyncStatus };
       if (!response.ok || !payload.ok || !payload.summary) {
-        throw new Error(payload.error ?? "Alibaba senkronizasyonu başlatılamadı");
+        console.error("[suppression] alibaba sync start", { status: response.status, payload });
+        toast.error(
+          "Alibaba senkronizasyonu başlatılamadı",
+          typeof payload.error === "string" && payload.error.trim().length > 0
+            ? payload.error
+            : "Lütfen tekrar deneyin veya teknik logları kontrol edin."
+        );
+        return;
       }
       setSyncStatus(payload.summary);
       toast.success("Alibaba senkronizasyonu başlatıldı", payload.summary.message);
       await loadStats();
     } catch (err) {
-      toast.error("Alibaba senkronizasyonu başlatılamadı", err instanceof Error ? err.message : "İstek başarısız oldu");
+      console.error("[suppression] alibaba sync start", err);
+      toast.error(
+        "Alibaba senkronizasyonu başlatılamadı",
+        "Lütfen tekrar deneyin veya teknik logları kontrol edin."
+      );
     } finally {
       setSyncLoading(false);
     }
@@ -315,13 +337,24 @@ export function SuppressionManager() {
       const response = await fetch("/api/suppression/alibaba-sync/resume", { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; summary?: AlibabaSyncStatus };
       if (!response.ok || !payload.ok || !payload.summary) {
-        throw new Error(payload.error ?? "Alibaba senkronizasyonu devam ettirilemedi");
+        console.error("[suppression] alibaba sync resume", { status: response.status, payload });
+        toast.error(
+          "Alibaba senkronizasyonu devam ettirilemedi",
+          typeof payload.error === "string" && payload.error.trim().length > 0
+            ? payload.error
+            : "Lütfen tekrar deneyin veya teknik logları kontrol edin."
+        );
+        return;
       }
       setSyncStatus(payload.summary);
       toast.success("Alibaba senkronizasyonu devam ettirildi", payload.summary.message);
       await loadStats();
     } catch (err) {
-      toast.error("Alibaba senkronizasyonu devam ettirilemedi", err instanceof Error ? err.message : "İstek başarısız oldu");
+      console.error("[suppression] alibaba sync resume", err);
+      toast.error(
+        "Alibaba senkronizasyonu devam ettirilemedi",
+        "Lütfen tekrar deneyin veya teknik logları kontrol edin."
+      );
     } finally {
       setSyncLoading(false);
     }
@@ -333,13 +366,24 @@ export function SuppressionManager() {
       const response = await fetch("/api/suppression/alibaba-sync/pause", { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; summary?: AlibabaSyncStatus };
       if (!response.ok || !payload.ok || !payload.summary) {
-        throw new Error(payload.error ?? "Alibaba senkronizasyonu duraklatılamadı");
+        console.error("[suppression] alibaba sync pause", { status: response.status, payload });
+        toast.error(
+          "Alibaba senkronizasyonu duraklatılamadı",
+          typeof payload.error === "string" && payload.error.trim().length > 0
+            ? payload.error
+            : "Lütfen tekrar deneyin veya teknik logları kontrol edin."
+        );
+        return;
       }
       setSyncStatus(payload.summary);
       toast.info("Alibaba senkronizasyonu duraklatılıyor");
       await loadStats();
     } catch (err) {
-      toast.error("Alibaba senkronizasyonu duraklatılamadı", err instanceof Error ? err.message : "İstek başarısız oldu");
+      console.error("[suppression] alibaba sync pause", err);
+      toast.error(
+        "Alibaba senkronizasyonu duraklatılamadı",
+        "Lütfen tekrar deneyin veya teknik logları kontrol edin."
+      );
     } finally {
       setSyncLoading(false);
     }
@@ -363,13 +407,21 @@ export function SuppressionManager() {
       });
       const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; summary?: AlibabaSyncStatus };
       if (!response.ok || !payload.ok || !payload.summary) {
-        throw new Error(payload.error ?? "Sıfırlama başarısız oldu");
+        console.error("[suppression] alibaba sync reset", { status: response.status, payload });
+        toast.error(
+          "Senkronizasyon sıfırlanamadı",
+          typeof payload.error === "string" && payload.error.trim().length > 0
+            ? payload.error
+            : "Lütfen tekrar deneyin veya teknik logları kontrol edin."
+        );
+        return;
       }
       setSyncStatus(payload.summary);
       toast.info("Alibaba senkronizasyon durumu sıfırlandı");
       await loadStats();
     } catch (err) {
-      toast.error("Senkronizasyon sıfırlanamadı", err instanceof Error ? err.message : "İstek başarısız oldu");
+      console.error("[suppression] alibaba sync reset", err);
+      toast.error("Senkronizasyon sıfırlanamadı", "Lütfen tekrar deneyin veya teknik logları kontrol edin.");
     } finally {
       setSyncLoading(false);
     }

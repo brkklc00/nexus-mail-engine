@@ -26,9 +26,14 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ ok: true, summary });
   } catch (error) {
+    console.error("[api/suppression/alibaba-sync/start]", error);
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "Alibaba senkronizasyonu başlatılamadı" },
-      { status: 400 }
+      {
+        ok: false,
+        error: "Alibaba senkronizasyonu başlatılamadı. Lütfen tekrar deneyin veya teknik logları kontrol edin.",
+        errorCode: "alibaba_sync_start_failed"
+      },
+      { status: 500 }
     );
   }
 }

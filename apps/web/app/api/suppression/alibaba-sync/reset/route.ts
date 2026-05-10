@@ -16,6 +16,18 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ ok: false, error: "Onay gerekli" }, { status: 400 });
   }
-  const summary = await resetAlibabaSyncState();
-  return NextResponse.json({ ok: true, summary });
+  try {
+    const summary = await resetAlibabaSyncState();
+    return NextResponse.json({ ok: true, summary });
+  } catch (error) {
+    console.error("[api/suppression/alibaba-sync/reset]", error);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Alibaba senkronizasyon durumu sıfırlanamadı. Lütfen tekrar deneyin.",
+        errorCode: "alibaba_sync_reset_failed"
+      },
+      { status: 500 }
+    );
+  }
 }
