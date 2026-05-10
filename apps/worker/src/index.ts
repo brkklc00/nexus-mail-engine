@@ -47,7 +47,11 @@ const alibabaSyncWorker = new Worker<AlibabaSuppressionSyncJob>(
   processAlibabaSuppressionSync,
   {
     connection: redis,
-    concurrency: 1
+    concurrency: 1,
+    lockDuration: 300_000,
+    lockRenewTime: 60_000,
+    stalledInterval: 30_000,
+    maxStalledCount: 3
   }
 );
 

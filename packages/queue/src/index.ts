@@ -119,7 +119,7 @@ export function getRedisConnection() {
 }
 
 type MinimalQueue<T> = {
-  add: (name: string, data: T, options?: { jobId?: string; delay?: number }) => Promise<unknown>;
+  add: (name: string, data: T, options?: JobsOptions) => Promise<unknown>;
   getJobCounts: () => Promise<Record<string, number>>;
   getJobs: (
     types?: any,
@@ -218,8 +218,10 @@ function getAlibabaSuppressionSyncQueue(): MinimalQueue<AlibabaSuppressionSyncJo
     alibabaSuppressionSyncQueueInstance = new Queue<AlibabaSuppressionSyncJob>(QUEUE_NAMES.ALIBABA_SUPPRESSION_SYNC, {
       connection: getOrCreateRedisClient() as unknown as IORedis,
       defaultJobOptions: {
-        ...defaultJobOptions,
-        attempts: 1
+        removeOnComplete: true,
+        removeOnFail: false,
+        attempts: 5,
+        backoff: { type: "exponential", delay: 5000 }
       }
     });
   }

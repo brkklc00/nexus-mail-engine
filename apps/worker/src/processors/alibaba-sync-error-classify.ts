@@ -30,6 +30,18 @@ export function classifyAlibabaSyncError(input: {
   const aliCode = norm(input.alibabaCode ?? "");
   const prismaCode = input.prismaCode ?? "";
 
+  if (
+    msg.includes("custom id cannot contain") ||
+    msg.includes("could not renew lock") ||
+    (msg.includes("missing key for job") && msg.includes("movetofinished"))
+  ) {
+    return {
+      retryable: true,
+      code: "BULLMQ_JOB_ID_OR_LOCK",
+      shortMessage: "Custom job id / lock renewal problem"
+    };
+  }
+
   if (prismaCode === "P2024" || prismaCode === "P1001" || prismaCode === "P1017" || prismaCode === "P2034") {
     return { retryable: true, code: `prisma_${prismaCode}`, shortMessage: "Veritabanı bağlantısı geçici olarak kullanılamıyor." };
   }
@@ -115,5 +127,23 @@ export function isRetryableFailureCode(code: string | null | undefined): boolean
     return RETRYABLE_HTTP.has(n);
   }
   if (code.startsWith("prisma_")) return true;
-  return ["network", "fetch", "redis", "db_transaction_closed", "db_pool_timeout", "alibaba_throttle"].includes(code);
+  return [
+    "network",
+    "fetch",
+    "redis",
+    "db_transaction_closed",
+    "db_pool_timeout",
+    "alibaba_throttle",
+    "BULLMQ_JOB_ID_OR_LOCK"
+  ].includes(code);
+}
+
+/** DB `lastError` / legacy rows without `lastFailureCode`. */
+export function isRecoverableBullmqLockOrJobIdError(lastError: string | null | undefined): boolean {
+  const m = norm(lastError ?? "");
+  return (
+    m.includes("custom id cannot contain") ||
+    m.includes("could not renew lock") ||
+    (m.includes("missing key for job") && m.includes("movetofinished"))
+  );
 }

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "@nexus/db";
-import { alibabaSuppressionSyncQueue } from "@nexus/queue";
+import { alibabaSuppressionSyncQueue, safeJobId } from "@nexus/queue";
 
 const SYNC_TYPE = "query_invalid_address";
 const DEFAULT_META = {
@@ -131,6 +131,20 @@ async function getOrCreateState() {
   return getOrCreateAlibabaSyncState(SYNC_TYPE);
 }
 
+function isBullmqLockOrJobIdRow(row: { lastError?: string | null; lastFailureCode?: string | null }) {
+  const le = String(row.lastError ?? "");
+  const lel = le.toLowerCase();
+  if (lel.includes("senkronizasyon geçici hatalar nedeniyle")) {
+    return false;
+  }
+  if (row.lastFailureCode === "BULLMQ_JOB_ID_OR_LOCK") return true;
+  return (
+    lel.includes("custom id cannot contain") ||
+    lel.includes("could not renew lock") ||
+    (lel.includes("missing key for job") && lel.includes("movetofinished"))
+  );
+}
+
 function toPublicStatus(row: any): AlibabaSyncPublicStatus {
   const meta = getMeta(row.meta);
   const totalCount = Number(row.totalCount ?? 0);
@@ -147,6 +161,11 @@ function toPublicStatus(row: any): AlibabaSyncPublicStatus {
       : etaMinutes < 60
         ? `~${Math.ceil(etaMinutes)} dk`
         : `~${Math.ceil(etaMinutes / 60)} saat`;
+  const bullmqLock = isBullmqLockOrJobIdRow(row);
+  const friendlyLastError =
+    row.status === "failed" && bullmqLock
+      ? "Geçici kuyruk hatası alındı, işlem kaldığı yerden devam edecek."
+      : (row.lastError ?? null);
   return {
     status: row.status as SyncStatus,
     startTime: row.startTime,
@@ -174,7 +193,7 @@ function toPublicStatus(row: any): AlibabaSyncPublicStatus {
     progressText: `${rawRecords.toLocaleString("tr-TR")} / ${totalCount.toLocaleString("tr-TR")} işlendi (%${progressPercent.toFixed(2)})`,
     throughputPerMinute,
     etaText,
-    lastError: row.lastError ?? null,
+    lastError: friendlyLastError,
     startedAt: row.startedAt ? new Date(row.startedAt).toISOString() : null,
     updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
     completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : null,
@@ -195,8 +214,10 @@ function toPublicStatus(row: any): AlibabaSyncPublicStatus {
             : row.status === "completed"
               ? "Senkronizasyon tamamlandı."
               : row.status === "failed"
-                ? (row.lastError as string | null)?.trim() ||
-                  "İşlem durdu. Devam Ettir ile kaldığı yerden tekrar başlatabilirsiniz."
+                ? bullmqLock
+                  ? "Geçici kuyruk hatası alındı, işlem kaldığı yerden devam edecek."
+                  : (row.lastError as string | null)?.trim() ||
+                    "İşlem durdu. Devam Ettir ile kaldığı yerden tekrar başlatabilirsiniz."
                 : row.lastError ?? "Hazır",
     responseKeys: meta.responseKeys,
     firstRecordKeys: meta.firstRecordKeys,
@@ -208,10 +229,11 @@ function toPublicStatus(row: any): AlibabaSyncPublicStatus {
 }
 
 async function enqueueSyncJob(syncStateId: string, trigger: "start" | "resume" | "auto" | "recovery") {
+  const jobId = safeJobId(`alibaba-sync-${trigger}-${syncStateId}-${Date.now()}`).slice(0, 120);
   const job = await alibabaSuppressionSyncQueue.add(
     "alibaba_suppression_sync",
     { syncStateId, trigger },
-    { jobId: `alibaba-sync:${syncStateId}:${Date.now()}` }
+    { jobId }
   );
   const state = await getOrCreateState();
   const meta = getMeta(state.meta);
@@ -221,7 +243,7 @@ async function enqueueSyncJob(syncStateId: string, trigger: "start" | "resume" |
       meta: {
         ...meta,
         workerJobId: String((job as any)?.id ?? ""),
-        batchPages: Math.max(1, Number(process.env.ALIBABA_SYNC_BATCH_PAGES ?? 200)),
+        batchPages: Math.max(1, Number(process.env.ALIBABA_SYNC_BATCH_PAGES ?? 50)),
         pageSize: Math.max(1, Number(process.env.ALIBABA_SYNC_PAGE_SIZE ?? 100))
       }
     }

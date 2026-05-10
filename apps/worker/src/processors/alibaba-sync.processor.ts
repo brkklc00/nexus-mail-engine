@@ -1,9 +1,10 @@
 import crypto from "node:crypto";
 import type { Job } from "bullmq";
 import { prisma } from "@nexus/db";
-import { alibabaSuppressionSyncQueue, type AlibabaSuppressionSyncJob } from "@nexus/queue";
+import { alibabaSuppressionSyncQueue, safeJobId, type AlibabaSuppressionSyncJob } from "@nexus/queue";
 import {
   classifyAlibabaSyncError,
+  isRecoverableBullmqLockOrJobIdError,
   isRetryableFailureCode,
   truncateMessage
 } from "./alibaba-sync-error-classify.js";
@@ -11,7 +12,7 @@ import {
 type SyncStatus = "idle" | "running" | "retrying" | "paused" | "completed" | "failed" | "cancelling" | "stopped_limit";
 
 const PAGE_SIZE = Math.max(1, Number(process.env.ALIBABA_SYNC_PAGE_SIZE ?? 100));
-const BATCH_PAGES = Math.max(1, Number(process.env.ALIBABA_SYNC_BATCH_PAGES ?? 200));
+const BATCH_PAGES = Math.max(1, Number(process.env.ALIBABA_SYNC_BATCH_PAGES ?? 50));
 const LOOP_DELAY_MS = Math.max(0, Number(process.env.ALIBABA_SYNC_LOOP_DELAY_MS ?? 50));
 const DB_CHUNK_SIZE = Math.max(100, Number(process.env.ALIBABA_SYNC_DB_CHUNK_SIZE ?? 5000));
 const REMOVE_CHUNK_SIZE = Math.max(100, Number(process.env.ALIBABA_SYNC_REMOVE_CHUNK_SIZE ?? 5000));
@@ -20,6 +21,11 @@ const AUTO_CONTINUE = String(process.env.ALIBABA_SYNC_AUTO_CONTINUE ?? "true").t
 const EMPTY_PARSER_FAIL_STREAK = Math.max(3, Number(process.env.ALIBABA_SYNC_EMPTY_PARSER_FAIL_STREAK ?? 8));
 
 type Candidate = { email: string; emailNormalized: string };
+
+/** BullMQ custom jobId must not contain ":"; keep length bounded. */
+function alibabaSyncBullmqJobId(kind: string, syncStateId: string) {
+  return safeJobId(`alibaba-sync-${kind}-${syncStateId}-${Date.now()}`).slice(0, 120);
+}
 
 function chunk<T>(items: T[], size: number): T[][] {
   const output: T[][] = [];
@@ -415,11 +421,15 @@ async function finalizeFailure(
 
   const delayMs = backoffMs(nextCf);
   const nextRetryAt = new Date(Date.now() + delayMs);
+  const retryLastError =
+    kind.code === "BULLMQ_JOB_ID_OR_LOCK"
+      ? "Geçici kuyruk hatası alındı, işlem kaldığı yerden devam edecek."
+      : kind.shortMessage.slice(0, 500);
   await prisma.alibabaSuppressionSyncState.update({
     where: { id: syncStateId },
     data: {
       status: "retrying",
-      lastError: kind.shortMessage.slice(0, 500),
+      lastError: retryLastError,
       lastFailureAt: new Date(),
       lastFailureCode: kind.code,
       lastFailureMessage: kind.shortMessage.slice(0, 500),
@@ -439,7 +449,7 @@ async function finalizeFailure(
   await alibabaSuppressionSyncQueue.add(
     "alibaba_suppression_sync",
     { syncStateId, trigger: "auto" },
-    { delay: delayMs, jobId: `alibaba-sync:retry:${syncStateId}:${Date.now()}` }
+    { delay: delayMs, jobId: alibabaSyncBullmqJobId("retry", syncStateId) }
   );
 }
 
@@ -694,7 +704,7 @@ export async function processAlibabaSuppressionSync(job: Job<AlibabaSuppressionS
       await alibabaSuppressionSyncQueue.add(
         "alibaba_suppression_sync_auto",
         { syncStateId, trigger: "auto" },
-        { jobId: `alibaba-sync:auto:${syncStateId}:${Date.now()}` }
+        { jobId: alibabaSyncBullmqJobId("auto", syncStateId) }
       );
     } else {
       await prisma.alibabaSuppressionSyncState.update({
@@ -724,6 +734,29 @@ export async function processAlibabaSuppressionSync(job: Job<AlibabaSuppressionS
 export async function recoverAlibabaSyncJobs() {
   const staleBefore = new Date(Date.now() - 2 * 60_000);
   const now = new Date();
+
+  const bullMqLockFailed = await prisma.alibabaSuppressionSyncState.findMany({
+    where: {
+      syncType: "query_invalid_address",
+      status: "failed",
+      NOT: { nextStart: null },
+      OR: [
+        { lastFailureCode: "BULLMQ_JOB_ID_OR_LOCK" },
+        { lastError: { contains: "Custom Id cannot contain", mode: "insensitive" } },
+        { lastError: { contains: "could not renew lock", mode: "insensitive" } },
+        { lastError: { contains: "Missing key for job", mode: "insensitive" } }
+      ]
+    },
+    select: {
+      id: true,
+      status: true,
+      pagesFetched: true,
+      rawRecords: true,
+      nextStart: true,
+      lastError: true,
+      lastFailureCode: true
+    }
+  });
 
   const [staleRunning, dueRetrying, nullRetrying, failedCandidates] = await Promise.all([
     prisma.alibabaSuppressionSyncState.findMany({
@@ -786,7 +819,7 @@ export async function recoverAlibabaSyncJobs() {
     await alibabaSuppressionSyncQueue.add(
       "alibaba_suppression_sync_recovery",
       { syncStateId: row.id, trigger: "recovery" },
-      { jobId: `alibaba-sync:recovery:${row.id}:${Date.now()}` }
+      { jobId: alibabaSyncBullmqJobId("recovery", row.id) }
     );
     console.info("[alibaba.sync.recovery] resumed", {
       status: row.status,
@@ -796,10 +829,45 @@ export async function recoverAlibabaSyncJobs() {
     });
   }
 
+  for (const row of bullMqLockFailed) {
+    if (seen.has(row.id)) continue;
+    if (!row.nextStart?.trim()) continue;
+    if (row.lastFailureCode !== "BULLMQ_JOB_ID_OR_LOCK" && !isRecoverableBullmqLockOrJobIdError(row.lastError)) {
+      continue;
+    }
+    seen.add(row.id);
+    await prisma.alibabaSuppressionSyncState.update({
+      where: { id: row.id },
+      data: {
+        status: "running",
+        lastError: null,
+        lastFailureCode: null,
+        lastFailureMessage: null,
+        lastFailureAt: null,
+        lockOwner: null,
+        lockedAt: null,
+        nextRetryAt: null,
+        consecutiveFailures: 0
+      }
+    });
+    await alibabaSuppressionSyncQueue.add(
+      "alibaba_suppression_sync_recovery",
+      { syncStateId: row.id, trigger: "recovery" },
+      { jobId: alibabaSyncBullmqJobId("recovery", row.id) }
+    );
+    console.info("[alibaba.sync.recovery] resumed", {
+      status: "running",
+      pagesFetched: row.pagesFetched,
+      rawRecords: row.rawRecords,
+      hasNextStart: true
+    });
+  }
+
   for (const row of staleRunning) await enqueueRecovery(row);
   for (const row of dueRetrying) await enqueueRecovery(row);
   for (const row of nullRetrying) await enqueueRecovery(row);
   for (const row of failedToResume) {
+    if (seen.has(row.id)) continue;
     await prisma.alibabaSuppressionSyncState.update({
       where: { id: row.id },
       data: {
