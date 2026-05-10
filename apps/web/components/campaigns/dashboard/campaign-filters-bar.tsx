@@ -2,6 +2,7 @@
 
 import { Filter, RotateCcw, Search } from "lucide-react";
 import type { FilterOptions } from "./campaign-dashboard-types";
+import { campaignTheme } from "./campaign-theme";
 
 const statusOptions = [
   "all",
@@ -49,6 +50,8 @@ type Props = {
   getStatusLabel: (s: string) => string;
 };
 
+const fieldClass = `rounded-xl border ${campaignTheme.border} bg-[#0a0e16] py-2.5 text-sm text-zinc-100 outline-none transition focus:border-indigo-500/55 focus:ring-1 focus:ring-indigo-500/25`;
+
 export function CampaignFiltersBar(props: Props) {
   const {
     search,
@@ -77,23 +80,18 @@ export function CampaignFiltersBar(props: Props) {
   } = props;
 
   return (
-    <section className="rounded-2xl border border-white/[0.08] bg-zinc-900/40 p-4 sm:p-5">
+    <section className={`rounded-2xl border ${campaignTheme.border} bg-[#121722]/95 p-4 shadow-lg shadow-black/25 sm:p-5`}>
       <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end">
         <label className="relative min-w-[200px] flex-1 lg:min-w-[220px]">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-indigo-300/70" />
           <input
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder="Kampanya ara..."
-            className="w-full rounded-xl border border-white/10 bg-zinc-950/80 py-2.5 pl-10 pr-3 text-sm text-zinc-100 outline-none transition focus:border-indigo-500/40"
+            className={`w-full pl-10 pr-3 ${fieldClass}`}
           />
         </label>
-        <select
-          value={status}
-          onChange={(e) => onStatusChange(e.target.value)}
-          className="min-w-[140px] rounded-xl border border-white/10 bg-zinc-950/80 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
-          aria-label="Durum"
-        >
+        <select value={status} onChange={(e) => onStatusChange(e.target.value)} className={`min-w-[140px] px-3 ${fieldClass}`} aria-label="Durum">
           {statusOptions.map((item) => (
             <option key={item} value={item}>
               {item === "all" ? "Durum: Tümü" : `Durum: ${getStatusLabel(item)}`}
@@ -103,7 +101,7 @@ export function CampaignFiltersBar(props: Props) {
         <select
           value={templateId}
           onChange={(e) => onTemplateIdChange(e.target.value)}
-          className="min-w-[160px] flex-1 rounded-xl border border-white/10 bg-zinc-950/80 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
+          className={`min-w-[160px] flex-1 px-3 ${fieldClass}`}
           aria-label="Şablon"
         >
           <option value="all">Şablon: Tümü</option>
@@ -116,7 +114,7 @@ export function CampaignFiltersBar(props: Props) {
         <select
           value={listSegmentId}
           onChange={(e) => onListSegmentIdChange(e.target.value)}
-          className="min-w-[180px] flex-1 rounded-xl border border-white/10 bg-zinc-950/80 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
+          className={`min-w-[180px] flex-1 px-3 ${fieldClass}`}
           aria-label="Liste veya segment"
         >
           <option value="all">Liste/Segment: Tümü</option>
@@ -129,7 +127,7 @@ export function CampaignFiltersBar(props: Props) {
         <select
           value={smtpAccountId}
           onChange={(e) => onSmtpAccountIdChange(e.target.value)}
-          className="min-w-[160px] flex-1 rounded-xl border border-white/10 bg-zinc-950/80 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
+          className={`min-w-[160px] flex-1 px-3 ${fieldClass}`}
           aria-label="SMTP"
         >
           <option value="all">SMTP: Tümü</option>
@@ -143,10 +141,10 @@ export function CampaignFiltersBar(props: Props) {
           <button
             type="button"
             onClick={onToggleAdvanced}
-            className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-medium transition ${
+            className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold transition ${
               advancedFiltersOpen
-                ? "border-indigo-500/40 bg-indigo-500/10 text-indigo-200"
-                : "border-white/10 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+                ? "border-indigo-500/50 bg-indigo-500/15 text-indigo-100 shadow-[0_0_18px_-6px_rgba(99,102,241,0.4)]"
+                : `border-[#3d4a63] bg-transparent text-zinc-400 hover:border-indigo-500/35 hover:text-zinc-200`
             }`}
           >
             <Filter className="h-3.5 w-3.5" />
@@ -155,7 +153,7 @@ export function CampaignFiltersBar(props: Props) {
           <button
             type="button"
             onClick={onApply}
-            className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-5 py-2.5 text-xs font-semibold text-white shadow-md shadow-indigo-500/20 transition hover:shadow-lg hover:shadow-indigo-500/30"
+            className={`rounded-xl px-5 py-2.5 text-xs font-bold text-white shadow-lg shadow-indigo-500/35 transition ${campaignTheme.primaryGradient} ${campaignTheme.primaryGradientHover}`}
           >
             Filtreleri Uygula
           </button>
@@ -163,7 +161,7 @@ export function CampaignFiltersBar(props: Props) {
             type="button"
             onClick={onReset}
             title="Sıfırla"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200"
+            className={`inline-flex h-10 w-10 items-center justify-center rounded-xl border ${campaignTheme.border} bg-[#10141F] text-zinc-400 transition hover:border-[#3d4a63] hover:text-zinc-100`}
           >
             <RotateCcw className="h-4 w-4" />
           </button>
@@ -171,12 +169,8 @@ export function CampaignFiltersBar(props: Props) {
       </div>
 
       {advancedFiltersOpen ? (
-        <div className="mt-4 grid gap-3 border-t border-white/[0.06] pt-4 sm:grid-cols-2 lg:grid-cols-4">
-          <select
-            value={range}
-            onChange={(e) => onRangeChange(e.target.value)}
-            className="rounded-xl border border-white/10 bg-zinc-950/80 px-3 py-2.5 text-sm text-zinc-100"
-          >
+        <div className={`mt-4 grid gap-3 border-t ${campaignTheme.border} pt-4 sm:grid-cols-2 lg:grid-cols-4`}>
+          <select value={range} onChange={(e) => onRangeChange(e.target.value)} className={`px-3 ${fieldClass}`}>
             {rangeOptions.map((item) => (
               <option key={item.id} value={item.id}>
                 Tarih: {item.label}
@@ -188,14 +182,14 @@ export function CampaignFiltersBar(props: Props) {
             value={from}
             onChange={(e) => onFromChange(e.target.value)}
             disabled={range !== "custom"}
-            className="rounded-xl border border-white/10 bg-zinc-950/80 px-3 py-2.5 text-sm text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+            className={`px-3 ${fieldClass} disabled:cursor-not-allowed disabled:opacity-40`}
           />
           <input
             type="datetime-local"
             value={to}
             onChange={(e) => onToChange(e.target.value)}
             disabled={range !== "custom"}
-            className="rounded-xl border border-white/10 bg-zinc-950/80 px-3 py-2.5 text-sm text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+            className={`px-3 ${fieldClass} disabled:cursor-not-allowed disabled:opacity-40`}
           />
         </div>
       ) : null}

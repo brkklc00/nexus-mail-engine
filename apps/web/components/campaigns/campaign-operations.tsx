@@ -4,12 +4,12 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { CampaignDashboardHeader } from "./dashboard/campaign-dashboard-header";
 import { CampaignDashboardTable } from "./dashboard/campaign-dashboard-table";
 import { CampaignFiltersBar } from "./dashboard/campaign-filters-bar";
 import { CampaignMetricCards } from "./dashboard/campaign-metric-cards";
 import { CampaignQueueMonitor } from "./dashboard/campaign-queue-monitor";
+import { CampaignStatusBadge } from "./dashboard/campaign-status-badge";
 import type {
   CampaignListResponse,
   CampaignStatus,
@@ -17,7 +17,8 @@ import type {
   QueueAdminAction,
   QueueAdminResponse
 } from "./dashboard/campaign-dashboard-types";
-import { fmtDate, fmtInt, getCampaignStatusLabel, toneForCampaignStatus } from "./dashboard/campaign-dashboard-utils";
+import { fmtDate, fmtInt, getCampaignStatusLabel } from "./dashboard/campaign-dashboard-utils";
+import { campaignTheme } from "./dashboard/campaign-theme";
 
 type CampaignDetailResponse = {
   campaign: {
@@ -359,7 +360,7 @@ export function CampaignOperations() {
   const statsSafe: ListStats | undefined = stats ?? undefined;
 
   return (
-    <div className="mx-auto max-w-[1600px] space-y-8 px-4 pb-10 pt-2">
+    <div className="mx-auto max-w-[1600px] space-y-8 px-4 pb-10 pt-6 text-zinc-200">
       <CampaignDashboardHeader />
 
       <CampaignMetricCards stats={statsSafe} statsWarning={statsWarning} />
@@ -424,7 +425,7 @@ export function CampaignOperations() {
       {detailOpen ? (
         <div className="fixed inset-0 z-[120] bg-black/55 p-4 backdrop-blur-sm" onClick={() => setDetailOpen(false)}>
           <div
-            className="ml-auto h-full w-full max-w-3xl overflow-y-auto rounded-2xl border border-white/10 bg-zinc-950 p-5 shadow-2xl"
+            className={`ml-auto h-full w-full max-w-3xl overflow-y-auto rounded-2xl border ${campaignTheme.border} bg-[#121722] p-5 shadow-2xl shadow-black/50 ring-1 ring-indigo-500/10`}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="mb-4 flex items-start justify-between gap-3">
@@ -453,7 +454,7 @@ export function CampaignOperations() {
                 <div className="grid gap-2 md:grid-cols-2">
                   <InfoCell
                     label="Durum"
-                    value={<StatusBadge label={getCampaignStatusLabel(detailData.status)} tone={toneForCampaignStatus(detailData.status)} />}
+                    value={<CampaignStatusBadge status={detailData.status} />}
                   />
                   <InfoCell label="Sağlayıcı" value={detailData.provider} />
                   <InfoCell label="Oluşturma" value={fmtDate(detailData.createdAt)} />
@@ -706,18 +707,18 @@ export function CampaignOperations() {
 
 function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-zinc-950/60 px-2 py-1.5">
+    <div className={`rounded-lg border ${campaignTheme.border} bg-[#0a0e16] px-2 py-1.5`}>
       <p className="text-[11px] text-zinc-500">{label}</p>
-      <p className="text-sm font-semibold text-zinc-100">{fmtInt(value)}</p>
+      <p className="text-sm font-semibold text-white">{fmtInt(value)}</p>
     </div>
   );
 }
 
 function InfoCell({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-zinc-900/40 p-3">
+    <div className={`rounded-lg border ${campaignTheme.border} bg-[#121722]/80 p-3`}>
       <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">{label}</p>
-      <div className="mt-1 text-sm text-zinc-200">{value}</div>
+      <div className="mt-1 text-sm text-zinc-100">{value}</div>
     </div>
   );
 }

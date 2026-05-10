@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Eye, FileDown, Loader2, MoreVertical, Pause, Play, Rocket, SquareX, Trash2 } from "lucide-react";
 import type { CampaignRow, CampaignStatus } from "./campaign-dashboard-types";
 import { availableCampaignRowActions } from "./campaign-dashboard-utils";
+import { campaignTheme } from "./campaign-theme";
 
 type Action = "start" | "pause" | "resume" | "cancel" | "report" | "delete" | "view";
 
@@ -51,7 +52,7 @@ export function CampaignRowActionsMenu({
           onView();
           setOpen(false);
         }}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-500/35 bg-indigo-500/10 px-3 py-1.5 text-xs font-medium text-indigo-200 transition hover:border-indigo-400/50 hover:bg-indigo-500/15"
+        className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-white shadow-md shadow-indigo-500/35 transition ${campaignTheme.primaryGradient} ${campaignTheme.primaryGradientHover}`}
       >
         <Eye className="h-3.5 w-3.5" />
         Görüntüle
