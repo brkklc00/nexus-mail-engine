@@ -153,10 +153,10 @@ export function CampaignQueueMonitor({
         <div className="mt-4 rounded-xl border border-white/[0.06] bg-black/20 p-4 text-xs text-zinc-400">
           <p className="font-medium text-zinc-300">Son kuyruk işlemi</p>
           <div className="mt-2 grid gap-1 sm:grid-cols-2">
-            <p>Taranan: {(queueSummary as { scanned?: number }).scanned ?? 0}</p>
-            <p>Temizlenen: {(queueSummary as { cleaned?: number }).cleaned ?? 0}</p>
-            <p>Korunan aktif: {(queueSummary as { skippedActive?: number }).skippedActive ?? 0}</p>
-            <p>Kalan: {(queueSummary as { remaining?: number }).remaining ?? 0}</p>
+            <p>Taranan: {queueSummary.scanned ?? queueSummary.progress?.scanned ?? 0}</p>
+            <p>Temizlenen: {queueSummary.cleaned ?? 0}</p>
+            <p>Korunan aktif: {queueSummary.skippedActive ?? 0}</p>
+            <p>Kalan: {queueSummary.remaining ?? queueSummary.progress?.remaining ?? 0}</p>
           </div>
         </div>
       ) : null}
