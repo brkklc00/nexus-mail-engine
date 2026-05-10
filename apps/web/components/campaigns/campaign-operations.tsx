@@ -1,122 +1,23 @@
 "use client";
 
-import Link from "next/link";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Activity,
-  BarChart3,
-  CalendarClock,
-  CheckCircle2,
-  Clock3,
-  Eye,
-  FileDown,
-  Loader2,
-  MailWarning,
-  Pause,
-  Play,
-  RefreshCw,
-  Rocket,
-  Search,
-  ShieldBan,
-  SquareX,
-  Trash2,
-  TrendingUp,
-  XCircle
-} from "lucide-react";
-import { StatusBadge } from "@/components/ui/status-badge";
-import { EmptyState } from "@/components/ui/empty-state";
+import { Loader2 } from "lucide-react";
 import { useConfirm, useToast } from "@/components/ui/notification-provider";
-
-type CampaignStatus = "pending" | "queued" | "running" | "paused" | "completed" | "failed" | "canceled" | string;
-
-type CampaignRow = {
-  id: string;
-  name: string;
-  status: CampaignStatus;
-  template: { id: string; title: string } | null;
-  list: { id: string; name: string } | null;
-  segment: { id: string; name: string } | null;
-  smtp: { id: string; name: string } | null;
-  targetedCount: number;
-  queuedCount: number;
-  sentCount: number;
-  failedCount: number;
-  skippedCount: number;
-  openCount: number;
-  clickCount: number;
-  progress: number;
-  createdAt: string;
-  lastActivity: string | null;
-};
-
-type ListStats = {
-  totalCampaigns: number;
-  runningCampaigns: number;
-  pausedCampaigns: number;
-  completedCampaigns: number;
-  canceledCampaigns: number;
-  totalTargeted: number;
-  totalSent: number;
-  totalFailed: number;
-  totalSkipped: number;
-  totalOpened: number;
-  totalClicked: number;
-  averageDeliveryRate: number;
-  queue: {
-    waiting: number;
-    active: number;
-    failed: number;
-    delayed: number;
-    retryWaiting: number;
-    deadWaiting: number;
-  };
-};
-
-type FilterOptions = {
-  templates: Array<{ id: string; title: string }>;
-  lists: Array<{ id: string; name: string }>;
-  segments: Array<{ id: string; name: string }>;
-  smtpAccounts: Array<{ id: string; name: string }>;
-};
-
-type CampaignListResponse = {
-  ok?: boolean;
-  code?: string;
-  error?: string;
-  items: CampaignRow[];
-  total: number;
-  page: number;
-  pageSize: number;
-  totalPages: number;
-  stats: ListStats;
-  filters: FilterOptions;
-};
-
-type QueueAdminAction = "pause" | "resume" | "clean_stale_campaign_jobs" | "clean_failed" | "clean_completed";
-
-type QueueAdminResponse = {
-  ok: boolean;
-  action?: QueueAdminAction;
-  scanned?: number;
-  cleaned?: number;
-  skippedActive?: number;
-  skippedUnknown?: number;
-  remaining?: number;
-  progress?: {
-    scanned: number;
-    cleaned: number;
-    skippedActive: number;
-    skippedUnknown: number;
-    remaining: number;
-  };
-  queueCounts?: {
-    campaign?: Record<string, number>;
-    delivery?: Record<string, number>;
-    retry?: Record<string, number>;
-    dead?: Record<string, number>;
-  };
-  error?: string;
-};
+import { StatusBadge } from "@/components/ui/status-badge";
+import { CampaignDashboardHeader } from "./dashboard/campaign-dashboard-header";
+import { CampaignDashboardTable } from "./dashboard/campaign-dashboard-table";
+import { CampaignFiltersBar } from "./dashboard/campaign-filters-bar";
+import { CampaignMetricCards } from "./dashboard/campaign-metric-cards";
+import { CampaignQueueMonitor } from "./dashboard/campaign-queue-monitor";
+import type {
+  CampaignListResponse,
+  CampaignStatus,
+  ListStats,
+  QueueAdminAction,
+  QueueAdminResponse
+} from "./dashboard/campaign-dashboard-types";
+import { fmtDate, fmtInt, getCampaignStatusLabel, toneForCampaignStatus } from "./dashboard/campaign-dashboard-utils";
 
 type CampaignDetailResponse = {
   campaign: {
@@ -180,68 +81,13 @@ type SummaryReport = {
   };
 };
 
-const statusOptions = ["all", "pending", "queued", "running", "paused", "completed", "partially_completed", "failed", "canceled"];
-const rangeOptions = [
-  { id: "all", label: "All time" },
-  { id: "24h", label: "Last 24h" },
-  { id: "7d", label: "Last 7d" },
-  { id: "30d", label: "Last 30d" },
-  { id: "custom", label: "Custom" }
-];
-
-const CAMPAIGN_STATUS_LABELS: Record<string, string> = {
-  pending: "Bekliyor",
-  queued: "Kuyrukta",
-  running: "Calisiyor",
-  paused: "Duraklatildi",
-  completed: "Tamamlandi",
-  partially_completed: "Kismen Tamamlandi",
-  failed: "Basarisiz",
-  canceled: "Iptal Edildi"
-};
-
-const INT_FORMATTER = new Intl.NumberFormat("en-US");
-
-function fmtDate(input: string | null): string {
-  if (!input) return "-";
-  const date = new Date(input);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString();
-}
-
-function fmtInt(value: number): string {
-  return INT_FORMATTER.format(value ?? 0);
-}
-
-function toneForStatus(status: string): "success" | "danger" | "warning" | "info" | "muted" {
-  if (status === "running" || status === "completed") return "success";
-  if (status === "failed" || status === "canceled") return "danger";
-  if (status === "paused" || status === "queued") return "warning";
-  if (status === "pending") return "info";
-  return "muted";
-}
-
-function getCampaignStatusLabel(status: string): string {
-  return CAMPAIGN_STATUS_LABELS[status] ?? status;
-}
-
-function availableActions(status: CampaignStatus): Array<"start" | "pause" | "resume" | "cancel" | "report" | "delete" | "view"> {
-  if (status === "running") return ["pause", "cancel", "view", "report", "delete"];
-  if (status === "paused") return ["resume", "cancel", "view", "report"];
-  if (status === "pending") return ["start", "cancel", "view"];
-  if (status === "queued") return ["start", "cancel", "view", "delete"];
-  if (status === "completed" || status === "partially_completed") return ["view", "report", "delete"];
-  if (status === "canceled") return ["view", "delete"];
-  if (status === "failed") return ["view", "report", "delete"];
-  return ["view"];
-}
-
 export function CampaignOperations() {
   const toast = useToast();
   const confirm = useConfirm();
 
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [statsWarning, setStatsWarning] = useState<string | null>(null);
   const [data, setData] = useState<CampaignListResponse | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
 
@@ -256,6 +102,7 @@ export function CampaignOperations() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [autoRefresh, setAutoRefresh] = useState<0 | 5 | 10>(0);
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -268,18 +115,21 @@ export function CampaignOperations() {
   const [queueSummary, setQueueSummary] = useState<QueueAdminResponse | null>(null);
   const [queueConfirmAction, setQueueConfirmAction] = useState<QueueAdminAction | null>(null);
   const [queueConfirmText, setQueueConfirmText] = useState("");
+  const [queueSectionWarning, setQueueSectionWarning] = useState<string | null>(null);
 
   const listsAndSegments = useMemo(() => {
     if (!data) return [];
     return [
-      ...data.filters.lists.map((item) => ({ id: item.id, label: `List: ${item.name}` })),
+      ...data.filters.lists.map((item) => ({ id: item.id, label: `Liste: ${item.name}` })),
       ...data.filters.segments.map((item) => ({ id: item.id, label: `Segment: ${item.name}` }))
     ];
   }, [data]);
 
   const fetchCampaigns = useCallback(async () => {
     setLoading(true);
-    setError(null);
+    setListError(null);
+    setStatsWarning(null);
+    setQueueSectionWarning(null);
     try {
       const params = new URLSearchParams({
         page: `${page}`,
@@ -299,53 +149,67 @@ export function CampaignOperations() {
         if (payload.code === "campaign_list_failed") {
           throw new Error("Kampanya listesi yüklenemedi");
         }
-        throw new Error(payload.error ?? "Kampanya listesi yuklenemedi");
+        throw new Error(payload.error ?? "Kampanya listesi yüklenemedi");
+      }
+      if (!payload.stats && Array.isArray(payload.items)) {
+        setStatsWarning("Özet metrikler şu anda alınamadı.");
+      }
+      if (payload.stats && typeof payload.stats.queue !== "object") {
+        setQueueSectionWarning("Kuyruk metrikleri şu anda alınamadı.");
       }
       setData(payload);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Kampanya listesi yuklenemedi");
-      setData(null);
+      const msg = err instanceof Error ? err.message : "Kampanya listesi yüklenemedi";
+      setListError(msg);
+      console.error("[campaigns] list fetch", err);
     } finally {
       setLoading(false);
     }
   }, [from, listSegmentId, page, pageSize, range, search, smtpAccountId, status, templateId, to]);
 
-  const fetchCampaignDetail = useCallback(async (id: string) => {
-    setDetailLoading(true);
-    setReportSummary(null);
-    try {
-      const response = await fetch(`/api/campaigns/${id}`, { cache: "no-store" });
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error ?? "Kampanya detaylari yuklenemedi");
+  const fetchCampaignDetail = useCallback(
+    async (id: string) => {
+      setDetailLoading(true);
+      setReportSummary(null);
+      try {
+        const response = await fetch(`/api/campaigns/${id}`, { cache: "no-store" });
+        const payload = (await response.json().catch(() => ({}))) as CampaignDetailResponse | { error?: string };
+        if (!response.ok || !("campaign" in payload)) {
+          throw new Error((payload as { error?: string }).error ?? "Kampanya detayları yüklenemedi");
+        }
+        setDetailData(payload.campaign);
+        setDetailOpen(true);
+      } catch (err) {
+        toast.error("Kampanya detayları açılamadı", err instanceof Error ? err.message : "Beklenmeyen hata");
+        console.error("[campaigns] detail", err);
+      } finally {
+        setDetailLoading(false);
       }
-      const payload = (await response.json()) as CampaignDetailResponse;
-      setDetailData(payload.campaign);
-      setDetailOpen(true);
-    } catch (err) {
-      toast.error("Kampanya detaylari acilamadi", err instanceof Error ? err.message : "Beklenmeyen hata");
-    } finally {
-      setDetailLoading(false);
-    }
-  }, [toast]);
+    },
+    [toast]
+  );
 
-  const fetchReportSummary = useCallback(async (id: string) => {
-    try {
-      const response = await fetch(`/api/campaigns/${id}/report?format=summary`, { cache: "no-store" });
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error ?? "Rapor ozeti yuklenemedi");
+  const fetchReportSummary = useCallback(
+    async (id: string) => {
+      try {
+        const response = await fetch(`/api/campaigns/${id}/report?format=summary`, { cache: "no-store" });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: string };
+          throw new Error(payload.error ?? "Rapor özeti yüklenemedi");
+        }
+        const payload = (await response.json()) as SummaryReport;
+        setReportSummary(payload);
+        toast.success("Rapor özeti hazır");
+        if (!detailData || detailData.id !== id) {
+          await fetchCampaignDetail(id);
+        }
+      } catch (err) {
+        toast.error("Rapor özeti yüklenemedi", err instanceof Error ? err.message : "Beklenmeyen hata");
+        console.error("[campaigns] report summary", err);
       }
-      const payload = (await response.json()) as SummaryReport;
-      setReportSummary(payload);
-      toast.success("Rapor ozeti hazir");
-      if (!detailData || detailData.id !== id) {
-        await fetchCampaignDetail(id);
-      }
-    } catch (err) {
-      toast.error("Rapor ozeti yuklenemedi", err instanceof Error ? err.message : "Beklenmeyen hata");
-    }
-  }, [detailData, fetchCampaignDetail, toast]);
+    },
+    [detailData, fetchCampaignDetail, toast]
+  );
 
   useEffect(() => {
     void fetchCampaigns();
@@ -368,17 +232,17 @@ export function CampaignOperations() {
   ) {
     if (action === "cancel") {
       const ok = await confirm({
-        title: "Campaign iptal edilsin mi?",
-        message: "Campaign will be stopped and pending sends will be terminated.",
-        confirmLabel: "Stop campaign",
-        cancelLabel: "Vazgec",
+        title: "Kampanya iptal edilsin mi?",
+        message: "Kampanya durdurulacak ve bekleyen gönderimler sonlandırılacak.",
+        confirmLabel: "İptal et",
+        cancelLabel: "Vazgeç",
         tone: "danger"
       });
       if (!ok) return;
     }
     if (action === "delete" && !forceDelete) {
       if (campaignStatus === "running" || campaignStatus === "queued") {
-        toast.warning("Running campaigns must be canceled before deletion.");
+        toast.warning("Çalışan kampanyalar silinmeden önce iptal edilmelidir.");
         return;
       }
       setDeleteTarget({
@@ -402,27 +266,28 @@ export function CampaignOperations() {
       };
       if (!response.ok) {
         if (payload.error && /campaign_must_be_canceled_first/i.test(payload.error)) {
-          throw new Error("Running campaigns must be canceled before deletion.");
+          throw new Error("Çalışan kampanyalar silinmeden önce iptal edilmelidir.");
         }
         throw new Error(payload.error ?? `${action} failed`);
       }
       if (action === "cancel") {
-        toast.info("Campaign canceled. Pending recipients will stop processing.");
+        toast.info("Kampanya iptal edildi. Bekleyen alıcılar işlenmeyecek.");
       } else if (action === "delete") {
-        toast.success("Kampanya basariyla silindi.");
+        toast.success("Kampanya silindi.");
         if (detailData?.id === campaignId) {
           setDetailOpen(false);
           setDetailData(null);
         }
       } else {
-        toast.success(`Kampanya islemi basarili: ${action}`);
+        toast.success(`İşlem tamamlandı: ${action}`);
       }
       await fetchCampaigns();
       if (action !== "delete" && detailData?.id === campaignId) {
         await fetchCampaignDetail(campaignId);
       }
     } catch (err) {
-      toast.error(`Kampanya islemi basarisiz: ${action}`, err instanceof Error ? err.message : "Beklenmeyen hata");
+      toast.error(`İşlem başarısız: ${action}`, err instanceof Error ? err.message : "Beklenmeyen hata");
+      console.error("[campaigns] action", action, err);
     } finally {
       setPendingAction(null);
     }
@@ -459,7 +324,7 @@ export function CampaignOperations() {
       });
       const payload = (await response.json().catch(() => ({}))) as QueueAdminResponse;
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Kuyruk islemi basarisiz");
+        throw new Error(payload.error ?? "Kuyruk işlemi başarısız");
       }
       setQueueSummary(payload);
       toast.success(
@@ -470,7 +335,8 @@ export function CampaignOperations() {
       setQueueConfirmText("");
       await fetchCampaigns();
     } catch (err) {
-      toast.error("Kuyruk islemi basarisiz", err instanceof Error ? err.message : "Beklenmeyen hata");
+      toast.error("Kuyruk işlemi başarısız", err instanceof Error ? err.message : "Beklenmeyen hata");
+      console.error("[campaigns] queue admin", err);
     } finally {
       setQueueActionLoading(null);
     }
@@ -490,414 +356,85 @@ export function CampaignOperations() {
     queueActionLoading === "clean_failed" ||
     queueActionLoading === "clean_completed";
 
+  const statsSafe: ListStats | undefined = stats ?? undefined;
+
   return (
-    <div className="space-y-4">
-      <section className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <StatCard title="Toplam Kampanya" value={fmtInt(stats?.totalCampaigns ?? 0)} icon={BarChart3} />
-        <StatCard title="Calisiyor" value={fmtInt(stats?.runningCampaigns ?? 0)} icon={Activity} tone="success" />
-        <StatCard title="Duraklatildi" value={fmtInt(stats?.pausedCampaigns ?? 0)} icon={Pause} tone="warning" />
-        <StatCard title="Tamamlandi" value={fmtInt(stats?.completedCampaigns ?? 0)} icon={CheckCircle2} tone="success" />
-        <StatCard title="Iptal Edildi" value={fmtInt(stats?.canceledCampaigns ?? 0)} icon={XCircle} tone="danger" />
-        <StatCard title="Ort. Teslimat Orani" value={`${stats?.averageDeliveryRate ?? 0}%`} icon={TrendingUp} />
-      </section>
+    <div className="mx-auto max-w-[1600px] space-y-8 px-4 pb-10 pt-2">
+      <CampaignDashboardHeader />
 
-      <section className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <StatCard title="Hedeflenen" value={fmtInt(stats?.totalTargeted ?? 0)} icon={MailWarning} />
-        <StatCard title="Gonderildi" value={fmtInt(stats?.totalSent ?? 0)} icon={CheckCircle2} tone="success" />
-        <StatCard title="Basarisiz" value={fmtInt(stats?.totalFailed ?? 0)} icon={XCircle} tone="danger" />
-        <StatCard title="Atlandi" value={fmtInt(stats?.totalSkipped ?? 0)} icon={ShieldBan} tone="warning" />
-        <StatCard title="Acilma" value={fmtInt(stats?.totalOpened ?? 0)} icon={Eye} />
-        <StatCard title="Tiklama" value={fmtInt(stats?.totalClicked ?? 0)} icon={Activity} />
-      </section>
+      <CampaignMetricCards stats={statsSafe} statsWarning={statsWarning} />
 
-      <section className="rounded-2xl border border-border bg-card p-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm font-medium text-white">Canli Kuyruk Izleme</p>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => void fetchCampaigns()}
-              className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              Yenile
-            </button>
-            <button
-              type="button"
-              onClick={() => requestQueueAction("pause")}
-              disabled={queueActionLoading !== null}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
-            >
-              Kuyrugu Duraklat
-            </button>
-            <button
-              type="button"
-              onClick={() => requestQueueAction("resume")}
-              disabled={queueActionLoading !== null}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
-            >
-              Kuyrugu Devam Ettir
-            </button>
-            <button
-              type="button"
-              onClick={() => requestQueueAction("clean_stale_campaign_jobs")}
-              disabled={queueActionLoading !== null}
-              className="rounded-lg border border-amber-500/40 px-3 py-1.5 text-xs text-amber-200 hover:bg-amber-500/10 disabled:opacity-50"
-            >
-              Eski/Iptal Edilmis Isleri Temizle
-            </button>
-            <button
-              type="button"
-              onClick={() => requestQueueAction("clean_failed")}
-              disabled={queueActionLoading !== null}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
-            >
-              Basarisiz Isleri Temizle
-            </button>
-            <button
-              type="button"
-              onClick={() => requestQueueAction("clean_completed")}
-              disabled={queueActionLoading !== null}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900 disabled:opacity-50"
-            >
-              Tamamlanan Isleri Temizle
-            </button>
-            <select
-              value={`${autoRefresh}`}
-              onChange={(event) => setAutoRefresh(Number(event.target.value) as 0 | 5 | 10)}
-              className="rounded-lg border border-border bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200"
-            >
-              <option value="0">Otomatik yenileme: Kapali</option>
-              <option value="5">Otomatik yenileme: 5sn</option>
-              <option value="10">Otomatik yenileme: 10sn</option>
-            </select>
-          </div>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
-          <QueuePill label="Bekleyen" value={stats?.queue.waiting ?? 0} />
-          <QueuePill label="Aktif" value={stats?.queue.active ?? 0} />
-          <QueuePill label="Basarisiz" value={stats?.queue.failed ?? 0} />
-          <QueuePill label="Gecikmeli" value={stats?.queue.delayed ?? 0} />
-          <QueuePill label="Retry Bekleyen" value={stats?.queue.retryWaiting ?? 0} />
-          <QueuePill label="Dead Bekleyen" value={stats?.queue.deadWaiting ?? 0} />
-        </div>
-        {queueSummary ? (
-          <div className="mt-3 rounded-lg border border-border bg-zinc-900/50 p-3 text-xs text-zinc-300">
-            <p>Taranan is: {queueSummary.scanned ?? queueSummary.progress?.scanned ?? 0}</p>
-            <p>Temizlenen is: {queueSummary.cleaned ?? 0}</p>
-            <p>Korunan aktif kampanya isi: {queueSummary.skippedActive ?? 0}</p>
-            <p>Bilinmeyen/atlanmis is: {queueSummary.skippedUnknown ?? 0}</p>
-            <p>Kalan (waiting/delayed): {queueSummary.remaining ?? queueSummary.progress?.remaining ?? 0}</p>
-            <p>
-              Guncel kuyruk bekleyen:{" "}
-              {Number(queueSummary.queueCounts?.delivery?.waiting ?? 0) + Number(queueSummary.queueCounts?.retry?.waiting ?? 0)}
-            </p>
-          </div>
-        ) : null}
-      </section>
+      <CampaignQueueMonitor
+        stats={statsSafe}
+        queueSummary={queueSummary}
+        autoRefresh={autoRefresh}
+        onAutoRefreshChange={setAutoRefresh}
+        onRefresh={() => void fetchCampaigns()}
+        onQueueAction={requestQueueAction}
+        queueActionLoading={queueActionLoading}
+        queueWarning={queueSectionWarning}
+      />
 
-      <section className="rounded-2xl border border-border bg-card p-4">
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-          <label className="relative">
-            <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-zinc-500" />
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Kampanya ara..."
-              className="w-full rounded-lg border border-border bg-zinc-950 py-2 pl-8 pr-3 text-sm text-zinc-100 outline-none focus:border-indigo-500"
-            />
-          </label>
-          <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-            className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
-          >
-            {statusOptions.map((item) => (
-              <option key={item} value={item}>
-                {item === "all" ? "Tum durumlar" : getCampaignStatusLabel(item)}
-              </option>
-            ))}
-          </select>
-          <select
-            value={templateId}
-            onChange={(event) => setTemplateId(event.target.value)}
-            className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
-          >
-            <option value="all">Tum sablonlar</option>
-            {data?.filters.templates.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.title}
-              </option>
-            ))}
-          </select>
-          <select
-            value={listSegmentId}
-            onChange={(event) => setListSegmentId(event.target.value)}
-            className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
-          >
-            <option value="all">Tum listeler/segmentler</option>
-            {listsAndSegments.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-          <select
-            value={smtpAccountId}
-            onChange={(event) => setSmtpAccountId(event.target.value)}
-            className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
-          >
-            <option value="all">Tum SMTP'ler</option>
-            {data?.filters.smtpAccounts.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-              </option>
-            ))}
-          </select>
-          <select
-            value={range}
-            onChange={(event) => setRange(event.target.value)}
-            className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
-          >
-            {rangeOptions.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-          <input
-            type="datetime-local"
-            value={from}
-            onChange={(event) => setFrom(event.target.value)}
-            disabled={range !== "custom"}
-            className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
-          />
-          <input
-            type="datetime-local"
-            value={to}
-            onChange={(event) => setTo(event.target.value)}
-            disabled={range !== "custom"}
-            className="rounded-lg border border-border bg-zinc-950 px-3 py-2 text-sm text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
-          />
-        </div>
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs text-zinc-400">
-            {data ? `${fmtInt(data.total)} kampanya` : "Kampanya listesi"}
-          </div>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={applyFilters}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900"
-            >
-              Filtreleri Uygula
-            </button>
-            <button
-              type="button"
-              onClick={resetFilters}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-900"
-            >
-              Sifirla
-            </button>
-          </div>
-        </div>
-      </section>
+      <CampaignFiltersBar
+        search={search}
+        onSearchChange={setSearch}
+        status={status}
+        onStatusChange={setStatus}
+        templateId={templateId}
+        onTemplateIdChange={setTemplateId}
+        listSegmentId={listSegmentId}
+        onListSegmentIdChange={setListSegmentId}
+        smtpAccountId={smtpAccountId}
+        onSmtpAccountIdChange={setSmtpAccountId}
+        listsAndSegments={listsAndSegments}
+        filters={data?.filters}
+        range={range}
+        onRangeChange={setRange}
+        from={from}
+        onFromChange={setFrom}
+        to={to}
+        onToChange={setTo}
+        advancedFiltersOpen={advancedFiltersOpen}
+        onToggleAdvanced={() => setAdvancedFiltersOpen((o) => !o)}
+        onApply={applyFilters}
+        onReset={resetFilters}
+        getStatusLabel={getCampaignStatusLabel}
+      />
 
-      <section className="rounded-2xl border border-border bg-card">
-        {loading ? (
-          <div className="p-6 text-sm text-zinc-300">
-            <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-            Kampanya verileri yukleniyor...
-          </div>
-        ) : error ? (
-          <div className="p-6 text-sm text-rose-300">{error}</div>
-        ) : data && data.items.length === 0 ? (
-          <div className="p-4">
-            <EmptyState
-              icon="megaphone"
-              title="Kampanya bulunamadi"
-              description="Filtreleri temizleyip tekrar deneyin veya Gonderim Kontrolu panelinden yeni kampanya baslatin."
-            />
-            <div className="mt-4 flex justify-center">
-              <Link href="/send" className="rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-900">
-                Kampanya olustur ve gonder
-              </Link>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-zinc-900/60 text-left text-xs uppercase tracking-wider text-zinc-400">
-                  <tr>
-                    <th className="px-3 py-2">Kampanya</th>
-                    <th className="px-3 py-2">Sablon</th>
-                    <th className="px-3 py-2">List/Segment</th>
-                    <th className="px-3 py-2">SMTP</th>
-                    <th className="px-3 py-2">Durum</th>
-                    <th className="px-3 py-2">Sayilar</th>
-                    <th className="px-3 py-2">Acilma/Tiklama</th>
-                    <th className="px-3 py-2">Ilerleme</th>
-                    <th className="px-3 py-2">Olusturma</th>
-                    <th className="px-3 py-2">Son Aktivite</th>
-                    <th className="px-3 py-2">Islemler</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {campaignItems.map((row) => {
-                    const actions = availableActions(row.status);
-                    return (
-                      <tr
-                        key={row.id}
-                        className="cursor-pointer border-t border-border text-zinc-200 transition hover:bg-zinc-900/40"
-                        onClick={() => void fetchCampaignDetail(row.id)}
-                      >
-                        <td className="px-3 py-2">
-                          <p className="font-medium text-white">{row.name}</p>
-                        </td>
-                        <td className="px-3 py-2">{row.template?.title ?? "-"}</td>
-                        <td className="px-3 py-2">{row.list?.name ?? row.segment?.name ?? "-"}</td>
-                        <td className="px-3 py-2">{row.smtp?.name ?? "-"}</td>
-                        <td className="px-3 py-2">
-                          <StatusBadge label={getCampaignStatusLabel(row.status)} tone={toneForStatus(row.status)} />
-                        </td>
-                        <td className="px-3 py-2 text-xs text-zinc-300">
-                          <p>T: {fmtInt(row.targetedCount)}</p>
-                          <p>Q: {fmtInt(row.queuedCount)}</p>
-                          <p>S: {fmtInt(row.sentCount)} F: {fmtInt(row.failedCount)} K: {fmtInt(row.skippedCount)}</p>
-                        </td>
-                        <td className="px-3 py-2 text-xs text-zinc-300">
-                          {fmtInt(row.openCount)} / {fmtInt(row.clickCount)}
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="w-28">
-                            <div className="mb-1 h-2 rounded bg-zinc-800">
-                              <div className="h-2 rounded bg-indigo-500" style={{ width: `${Math.max(0, Math.min(100, row.progress))}%` }} />
-                            </div>
-                            <p className="text-xs text-zinc-400">{row.progress}%</p>
-                          </div>
-                        </td>
-                        <td className="px-3 py-2 text-xs text-zinc-400">{fmtDate(row.createdAt)}</td>
-                        <td className="px-3 py-2 text-xs text-zinc-400">{fmtDate(row.lastActivity)}</td>
-                        <td className="px-3 py-2" onClick={(event) => event.stopPropagation()}>
-                          <div className="flex flex-wrap gap-1">
-                            {actions.includes("start") ? (
-                              <ActionButton
-                                label="Baslat"
-                                icon={Rocket}
-                                loading={pendingAction === `${row.id}:start`}
-                                onClick={() => void runAction(row.id, "start")}
-                              />
-                            ) : null}
-                            {actions.includes("pause") ? (
-                              <ActionButton
-                                label="Duraklat"
-                                icon={Pause}
-                                loading={pendingAction === `${row.id}:pause`}
-                                onClick={() => void runAction(row.id, "pause")}
-                              />
-                            ) : null}
-                            {actions.includes("resume") ? (
-                              <ActionButton
-                                label="Devam Et"
-                                icon={Play}
-                                loading={pendingAction === `${row.id}:resume`}
-                                onClick={() => void runAction(row.id, "resume")}
-                              />
-                            ) : null}
-                            {actions.includes("cancel") ? (
-                              <ActionButton
-                                label="Iptal Et"
-                                icon={SquareX}
-                                intent="danger"
-                                loading={pendingAction === `${row.id}:cancel`}
-                                onClick={() => void runAction(row.id, "cancel")}
-                              />
-                            ) : null}
-                            {actions.includes("view") ? (
-                              <ActionButton
-                                label="Goruntule"
-                                icon={Eye}
-                                onClick={() => void fetchCampaignDetail(row.id)}
-                              />
-                            ) : null}
-                            {actions.includes("report") ? (
-                              <ActionButton
-                                label="Rapor"
-                                icon={FileDown}
-                                onClick={() => void fetchReportSummary(row.id)}
-                              />
-                            ) : null}
-                            {actions.includes("delete") ? (
-                              <ActionButton
-                                label="Sil"
-                                icon={Trash2}
-                                intent="danger"
-                                loading={pendingAction === `${row.id}:delete`}
-                                onClick={() => void runAction(row.id, "delete", row.status, row.name)}
-                              />
-                            ) : null}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border p-3 text-xs text-zinc-300">
-              <div>
-                Sayfa {data?.page ?? 1} / {data?.totalPages ?? 1}
-              </div>
-              <div className="flex items-center gap-2">
-                <select
-                  value={`${pageSize}`}
-                  onChange={(event) => {
-                    setPageSize(Number(event.target.value));
-                    setPage(1);
-                  }}
-                  className="rounded border border-border bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-                >
-                  <option value="25">25</option>
-                  <option value="50">50</option>
-                  <option value="100">100</option>
-                </select>
-                <button
-                  type="button"
-                  onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-                  disabled={(data?.page ?? 1) <= 1}
-                  className="rounded border border-border px-2 py-1 disabled:opacity-50"
-                >
-                  Onceki
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPage((prev) => Math.min(data?.totalPages ?? 1, prev + 1))}
-                  disabled={(data?.page ?? 1) >= (data?.totalPages ?? 1)}
-                  className="rounded border border-border px-2 py-1 disabled:opacity-50"
-                >
-                  Sonraki
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-      </section>
+      <CampaignDashboardTable
+        loading={loading}
+        listError={listError}
+        items={campaignItems}
+        total={data?.total ?? 0}
+        page={data?.page ?? page}
+        totalPages={data?.totalPages ?? 1}
+        pageSize={pageSize}
+        onPageChange={(p) => setPage(p)}
+        onPageSizeChange={(n) => {
+          setPageSize(n);
+          setPage(1);
+        }}
+        pendingAction={pendingAction}
+        onRowClick={(id) => void fetchCampaignDetail(id)}
+        onView={(id) => void fetchCampaignDetail(id)}
+        onReport={(id) => void fetchReportSummary(id)}
+        onAction={(id, action, row) => void runAction(id, action, row.status, row.name)}
+      />
 
       {detailOpen ? (
         <div className="fixed inset-0 z-[120] bg-black/55 p-4 backdrop-blur-sm" onClick={() => setDetailOpen(false)}>
           <div
-            className="ml-auto h-full w-full max-w-3xl overflow-y-auto rounded-2xl border border-border bg-zinc-950 p-4"
+            className="ml-auto h-full w-full max-w-3xl overflow-y-auto rounded-2xl border border-white/10 bg-zinc-950 p-5 shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="mb-4 flex items-start justify-between gap-3">
               <div>
-                <p className="text-lg font-semibold text-white">{detailData?.name ?? "Campaign Detail"}</p>
-                <p className="text-xs text-zinc-400">Kampanya metadata, ilerleme, basarisizlik, takip ve log kayitlari</p>
+                <p className="text-lg font-semibold text-white">{detailData?.name ?? "Kampanya detayı"}</p>
+                <p className="text-xs text-zinc-500">İlerleme, başarısızlık, takip ve günlük kayıtları</p>
               </div>
               <button
                 type="button"
-                className="rounded border border-border px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-900"
+                className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-900"
                 onClick={() => setDetailOpen(false)}
               >
                 Kapat
@@ -905,60 +442,66 @@ export function CampaignOperations() {
             </div>
 
             {detailLoading ? (
-              <p className="text-sm text-zinc-300">
-                <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-                Detail loading...
+              <p className="flex items-center gap-2 text-sm text-zinc-400">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Yükleniyor…
               </p>
             ) : !detailData ? (
-              <p className="text-sm text-zinc-400">Kampanya detay verisi bulunamadi.</p>
+              <p className="text-sm text-zinc-500">Detay bulunamadı.</p>
             ) : (
               <div className="space-y-4 text-sm">
                 <div className="grid gap-2 md:grid-cols-2">
-                  <InfoCell label="Durum" value={<StatusBadge label={getCampaignStatusLabel(detailData.status)} tone={toneForStatus(detailData.status)} />} />
-                  <InfoCell label="Saglayici" value={detailData.provider} />
-                  <InfoCell label="Olusturma" value={fmtDate(detailData.createdAt)} />
-                  <InfoCell label="Baslangic" value={fmtDate(detailData.startedAt)} />
-                  <InfoCell label="Bitis" value={fmtDate(detailData.finishedAt)} />
-                  <InfoCell label="Konu" value={detailData.subject || "-"} />
-                  <InfoCell label="Sablon" value={detailData.template?.title ?? "-"} />
-                  <InfoCell label="Liste/Segment" value={detailData.list?.name ?? detailData.segment?.name ?? "-"} />
-                  <InfoCell label="SMTP" value={detailData.smtp?.name ?? "-"} />
                   <InfoCell
-                    label="SMTP Host"
-                    value={detailData.smtp ? `${detailData.smtp.host}:${detailData.smtp.port} (${detailData.smtp.fromEmail})` : "-"}
+                    label="Durum"
+                    value={<StatusBadge label={getCampaignStatusLabel(detailData.status)} tone={toneForCampaignStatus(detailData.status)} />}
+                  />
+                  <InfoCell label="Sağlayıcı" value={detailData.provider} />
+                  <InfoCell label="Oluşturma" value={fmtDate(detailData.createdAt)} />
+                  <InfoCell label="Başlangıç" value={fmtDate(detailData.startedAt)} />
+                  <InfoCell label="Bitiş" value={fmtDate(detailData.finishedAt)} />
+                  <InfoCell label="Konu" value={detailData.subject || "—"} />
+                  <InfoCell label="Şablon" value={detailData.template?.title ?? "—"} />
+                  <InfoCell label="Liste/Segment" value={detailData.list?.name ?? detailData.segment?.name ?? "—"} />
+                  <InfoCell label="SMTP" value={detailData.smtp?.name ?? "—"} />
+                  <InfoCell
+                    label="SMTP host"
+                    value={detailData.smtp ? `${detailData.smtp.host}:${detailData.smtp.port} (${detailData.smtp.fromEmail})` : "—"}
                   />
                 </div>
 
-                <div className="rounded-xl border border-border bg-zinc-900/50 p-3">
-                  <p className="mb-2 text-xs uppercase tracking-wide text-zinc-400">Teslimat Ilerlemesi</p>
-                  <div className="mb-2 h-2 rounded bg-zinc-800">
-                    <div className="h-2 rounded bg-indigo-500" style={{ width: `${detailData.metrics.progress}%` }} />
+                <div className="rounded-xl border border-white/10 bg-zinc-900/50 p-4">
+                  <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">Teslimat ilerlemesi</p>
+                  <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-zinc-800">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500"
+                      style={{ width: `${detailData.metrics.progress}%` }}
+                    />
                   </div>
-                  <p className="text-xs text-zinc-300">{detailData.metrics.progress}% completed</p>
+                  <p className="text-xs text-zinc-400">{detailData.metrics.progress}% tamamlandı</p>
                   <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
-                    <Metric label="Targeted" value={detailData.metrics.targeted} />
-                    <Metric label="Sent" value={detailData.metrics.sent} />
-                    <Metric label="Failed" value={detailData.metrics.failed} />
-                    <Metric label="Skipped" value={detailData.metrics.skipped} />
-                    <Metric label="Opened" value={detailData.metrics.opened} />
-                    <Metric label="Clicked" value={detailData.metrics.clicked} />
-                    <Metric label="Total Clicks" value={detailData.metrics.totalClicks} />
-                    <Metric label="Unique Clicks" value={detailData.metrics.uniqueClicks} />
-                    <Metric label="Unsubs" value={detailData.metrics.unsubscribed} />
+                    <Metric label="Hedeflenen" value={detailData.metrics.targeted} />
+                    <Metric label="Gönderilen" value={detailData.metrics.sent} />
+                    <Metric label="Başarısız" value={detailData.metrics.failed} />
+                    <Metric label="Atlanan" value={detailData.metrics.skipped} />
+                    <Metric label="Açılma" value={detailData.metrics.opened} />
+                    <Metric label="Tıklama" value={detailData.metrics.clicked} />
+                    <Metric label="Toplam tıklama" value={detailData.metrics.totalClicks} />
+                    <Metric label="Benzersiz tıklama" value={detailData.metrics.uniqueClicks} />
+                    <Metric label="Çıkış" value={detailData.metrics.unsubscribed} />
                     <Metric label="Bounce" value={detailData.metrics.bounce} />
-                    <Metric label="Complaint" value={detailData.metrics.complaint} />
-                    <Metric label="Suppression Skip" value={detailData.skippedSummary.suppressionMatched} />
+                    <Metric label="Şikayet" value={detailData.metrics.complaint} />
+                    <Metric label="Baskılama eşleşmesi" value={detailData.skippedSummary.suppressionMatched} />
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-border bg-zinc-900/50 p-3">
-                  <p className="mb-2 text-xs uppercase tracking-wide text-zinc-400">Basarisizlik Dagilimi</p>
+                <div className="rounded-xl border border-white/10 bg-zinc-900/50 p-4">
+                  <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">Başarısızlık dağılımı</p>
                   {detailData.failureBreakdown.length === 0 ? (
-                    <p className="text-xs text-zinc-400">Failure breakdown not found.</p>
+                    <p className="text-xs text-zinc-500">Kayıt yok.</p>
                   ) : (
                     <div className="space-y-1">
                       {detailData.failureBreakdown.map((item) => (
-                        <div key={item.eventType} className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1 text-xs">
+                        <div key={item.eventType} className="flex items-center justify-between rounded-lg bg-zinc-950/60 px-2 py-1.5 text-xs">
                           <span className="text-zinc-300">{item.eventType}</span>
                           <span className="text-rose-300">{fmtInt(item.count)}</span>
                         </div>
@@ -967,70 +510,70 @@ export function CampaignOperations() {
                   )}
                 </div>
 
-                <div className="rounded-xl border border-border bg-zinc-900/50 p-3">
-                  <p className="mb-2 text-xs uppercase tracking-wide text-zinc-400">En Cok Tiklanan Linkler</p>
+                <div className="rounded-xl border border-white/10 bg-zinc-900/50 p-4">
+                  <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">En çok tıklanan bağlantılar</p>
                   {detailData.topLinks.length === 0 ? (
-                    <p className="text-xs text-zinc-400">Click data not found.</p>
+                    <p className="text-xs text-zinc-500">Veri yok.</p>
                   ) : (
                     <div className="space-y-1">
                       {detailData.topLinks.map((item) => (
-                        <div key={item.id} className="rounded bg-zinc-950/60 px-2 py-1 text-xs">
+                        <div key={item.id} className="rounded-lg bg-zinc-950/60 px-2 py-1.5 text-xs">
                           <p className="truncate text-zinc-300">{item.url}</p>
-                          <p className="text-zinc-500">{fmtInt(item.clicks)} clicks</p>
+                          <p className="text-zinc-500">{fmtInt(item.clicks)} tıklama</p>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
 
-                <div className="rounded-xl border border-border bg-zinc-900/50 p-3">
+                <div className="rounded-xl border border-white/10 bg-zinc-900/50 p-4">
                   <div className="mb-2 flex items-center justify-between gap-2">
-                    <p className="text-xs uppercase tracking-wide text-zinc-400">Rapor ve Disa Aktarma</p>
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">Rapor</p>
                     <button
                       type="button"
-                      className="rounded border border-border px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-900"
+                      className="rounded-lg border border-white/10 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-900"
                       onClick={() => void fetchReportSummary(detailData.id)}
                     >
-                      Ozeti Yenile
+                      Özeti yenile
                     </button>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <button
                       type="button"
                       onClick={() => window.open(`/api/campaigns/${detailData.id}/report?format=failed`, "_blank")}
-                      className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-900"
+                      className="rounded-lg border border-white/10 px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-900"
                     >
-                      Basarisiz CSV Disa Aktar
+                      Başarısız CSV
                     </button>
                     <button
                       type="button"
                       onClick={() => window.open(`/api/campaigns/${detailData.id}/report?format=skipped`, "_blank")}
-                      className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-900"
+                      className="rounded-lg border border-white/10 px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-900"
                     >
-                      Atlanan CSV Disa Aktar
+                      Atlanan CSV
                     </button>
                   </div>
                   {reportSummary ? (
-                    <div className="mt-2 rounded bg-zinc-950/60 p-2 text-xs text-zinc-300">
-                      Teslimat orani: {reportSummary.totals.deliveryRate}% · Hedeflenen: {fmtInt(reportSummary.totals.targeted)} ·
-                      Gonderilen: {fmtInt(reportSummary.totals.sent)} · Basarisiz: {fmtInt(reportSummary.totals.failed)} · Atlanan:{" "}
+                    <div className="mt-2 rounded-lg bg-zinc-950/60 p-2 text-xs text-zinc-300">
+                      Teslimat oranı: {reportSummary.totals.deliveryRate}% · Hedeflenen: {fmtInt(reportSummary.totals.targeted)} · Gönderilen:{" "}
+                      {fmtInt(reportSummary.totals.sent)} · Başarısız: {fmtInt(reportSummary.totals.failed)} · Atlanan:{" "}
                       {fmtInt(reportSummary.totals.skipped)}
                     </div>
                   ) : null}
                 </div>
 
-                <div className="rounded-xl border border-border bg-zinc-900/50 p-3">
-                  <p className="mb-2 text-xs uppercase tracking-wide text-zinc-400">Son Kampanya Kayitlari</p>
+                <div className="rounded-xl border border-white/10 bg-zinc-900/50 p-4">
+                  <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">Son günlük kayıtları</p>
                   <div className="max-h-64 space-y-1 overflow-y-auto text-xs">
                     {detailData.recentLogs.length === 0 ? (
-                      <p className="text-zinc-500">Kayit bulunamadi.</p>
+                      <p className="text-zinc-500">Kayıt yok.</p>
                     ) : (
                       detailData.recentLogs.map((log) => (
-                        <div key={log.id} className="rounded bg-zinc-950/60 px-2 py-1">
+                        <div key={log.id} className="rounded-lg bg-zinc-950/60 px-2 py-1.5">
                           <p className="text-zinc-300">
                             [{fmtDate(log.createdAt)}] {log.eventType} · {log.status}
                           </p>
-                          <p className="truncate text-zinc-500">{log.message ?? "-"}</p>
+                          <p className="truncate text-zinc-500">{log.message ?? "—"}</p>
                         </div>
                       ))
                     )}
@@ -1038,9 +581,9 @@ export function CampaignOperations() {
                 </div>
 
                 {detailData.template ? (
-                  <div className="rounded-xl border border-border bg-zinc-900/50 p-3">
-                  <p className="mb-2 text-xs uppercase tracking-wide text-zinc-400">Sablon Onizleme</p>
-                    <div className="h-64 overflow-hidden rounded border border-border bg-white">
+                  <div className="rounded-xl border border-white/10 bg-zinc-900/50 p-4">
+                    <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">Şablon önizleme</p>
+                    <div className="h-64 overflow-hidden rounded-lg border border-white/10 bg-white">
                       <iframe
                         title="campaign-template-preview"
                         className="h-full w-full"
@@ -1049,7 +592,7 @@ export function CampaignOperations() {
                       />
                     </div>
                     {detailData.template.plainTextBody ? (
-                      <pre className="mt-2 max-h-32 overflow-auto rounded bg-zinc-950/60 p-2 text-xs text-zinc-300">
+                      <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-zinc-950/60 p-2 text-xs text-zinc-300">
                         {detailData.template.plainTextBody}
                       </pre>
                     ) : null}
@@ -1063,18 +606,16 @@ export function CampaignOperations() {
 
       {deleteDialogOpen && deleteTarget ? (
         <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl border border-border bg-zinc-950 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-zinc-950 p-5 shadow-2xl">
             <p className="text-base font-semibold text-white">Kampanya silinsin mi?</p>
-            <p className="mt-2 text-sm text-zinc-300">
-              Bu islem kampanyayi listeden kaldirir. Teslimat kayitlari ve raporlar korunur.
-            </p>
-            <p className="mt-2 text-xs text-zinc-500">Campaign: {deleteTarget.name}</p>
+            <p className="mt-2 text-sm text-zinc-400">Bu işlem kampanyayı listeden kaldırır. Teslimat kayıtları korunur.</p>
+            <p className="mt-2 text-xs text-zinc-600">{deleteTarget.name}</p>
             <div className="mt-3">
-              <label className="text-xs text-zinc-400">Onaylamak icin DELETE yazin</label>
+              <label className="text-xs text-zinc-500">Onaylamak için DELETE yazın</label>
               <input
                 value={deleteConfirmText}
                 onChange={(event) => setDeleteConfirmText(event.target.value)}
-                className="mt-1 w-full rounded-lg border border-border bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-rose-400"
+                className="mt-1 w-full rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-rose-400/50"
                 placeholder="DELETE"
               />
             </div>
@@ -1086,9 +627,9 @@ export function CampaignOperations() {
                   setDeleteTarget(null);
                   setDeleteConfirmText("");
                 }}
-                className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
+                className="rounded-xl border border-white/10 px-4 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
               >
-                Iptal
+                Vazgeç
               </button>
               <button
                 type="button"
@@ -1100,9 +641,9 @@ export function CampaignOperations() {
                   setDeleteTarget(null);
                   setDeleteConfirmText("");
                 }}
-                className="rounded-lg border border-rose-500/60 px-3 py-2 text-xs text-rose-200 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-xl border border-rose-500/50 px-4 py-2 text-xs text-rose-200 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {pendingAction === `${deleteTarget.id}:delete` ? "Siliniyor..." : "Kampanyayi sil"}
+                {pendingAction === `${deleteTarget.id}:delete` ? "Siliniyor…" : "Sil"}
               </button>
             </div>
           </div>
@@ -1111,17 +652,17 @@ export function CampaignOperations() {
 
       {queueConfirmAction ? (
         <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-xl rounded-2xl border border-border bg-zinc-950 p-4">
-            <p className="text-base font-semibold text-white">Kuyruk temizleme onayi</p>
-            <p className="mt-2 text-sm text-zinc-300">
-              Bu işlem yalnızca iptal edilmiş, tamamlanmış, başarısız veya silinmiş kampanyalara ait kuyruk işlerini temizler.
-              Aktif kampanyaların kuyrukları korunur.
+          <div className="w-full max-w-xl rounded-2xl border border-white/10 bg-zinc-950 p-5 shadow-2xl">
+            <p className="text-base font-semibold text-white">Kuyruk temizleme onayı</p>
+            <p className="mt-2 text-sm text-zinc-400">
+              Bu işlem yalnızca iptal edilmiş, tamamlanmış, başarısız veya silinmiş kampanyalara ait kuyruk işlerini temizler. Aktif
+              kampanyalar korunur.
             </p>
-            <p className="mt-2 text-xs text-zinc-500">Onaylamak icin TEMIZLE yazin.</p>
+            <p className="mt-2 text-xs text-zinc-600">Onaylamak için TEMIZLE yazın.</p>
             <input
               value={queueConfirmText}
               onChange={(event) => setQueueConfirmText(event.target.value)}
-              className="mt-2 w-full rounded-lg border border-border bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-400"
+              className="mt-2 w-full rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-400/50"
               placeholder="TEMIZLE"
             />
             <div className="mt-4 flex justify-end gap-2">
@@ -1131,17 +672,17 @@ export function CampaignOperations() {
                   setQueueConfirmAction(null);
                   setQueueConfirmText("");
                 }}
-                className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
+                className="rounded-xl border border-white/10 px-4 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
               >
-                Vazgec
+                Vazgeç
               </button>
               <button
                 type="button"
                 disabled={queueConfirmText.trim().toUpperCase() !== "TEMIZLE" || queueActionLoading !== null}
                 onClick={() => void runQueueAction(queueConfirmAction)}
-                className="rounded-lg border border-amber-500/50 px-3 py-2 text-xs text-amber-200 hover:bg-amber-500/10 disabled:opacity-50"
+                className="rounded-xl border border-amber-500/40 px-4 py-2 text-xs text-amber-200 hover:bg-amber-500/10 disabled:opacity-50"
               >
-                {queueActionLoading ? "Calisiyor..." : "Temizlemeyi Onayla"}
+                {queueActionLoading ? "Çalışıyor…" : "Onayla"}
               </button>
             </div>
           </div>
@@ -1150,14 +691,12 @@ export function CampaignOperations() {
 
       {isCleanupRunning ? (
         <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-border bg-zinc-950 p-5 text-center">
-            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-zinc-950 p-6 text-center shadow-2xl">
+            <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10">
               <Loader2 className="h-5 w-5 animate-spin text-amber-300" />
             </div>
-            <p className="text-base font-semibold text-white">Kuyruk temizliği devam ediyor</p>
-            <p className="mt-2 text-sm text-zinc-400">
-              Bekleyen ve gecikmeli işler taranıyor, aktif kampanyalar korunarak eski işler siliniyor.
-            </p>
+            <p className="text-base font-semibold text-white">Kuyruk temizliği</p>
+            <p className="mt-2 text-sm text-zinc-500">Eski işler taranıyor; aktif kampanyalar korunuyor.</p>
           </div>
         </div>
       ) : null}
@@ -1165,86 +704,19 @@ export function CampaignOperations() {
   );
 }
 
-function StatCard({
-  title,
-  value,
-  icon: Icon,
-  tone = "default"
-}: {
-  title: string;
-  value: string;
-  icon: React.ComponentType<{ className?: string }>;
-  tone?: "default" | "success" | "warning" | "danger";
-}) {
-  const toneClass =
-    tone === "success"
-      ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10"
-      : tone === "warning"
-        ? "text-amber-300 border-amber-500/30 bg-amber-500/10"
-        : tone === "danger"
-          ? "text-rose-300 border-rose-500/30 bg-rose-500/10"
-          : "text-zinc-200 border-border bg-zinc-900/50";
-  return (
-    <div className={`rounded-2xl border p-3 ${toneClass}`}>
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs uppercase tracking-wide">{title}</p>
-        <Icon className="h-4 w-4" />
-      </div>
-      <p className="mt-2 text-xl font-semibold">{value}</p>
-    </div>
-  );
-}
-
-function QueuePill({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-lg border border-border bg-zinc-900/50 px-3 py-2">
-      <p className="text-xs text-zinc-400">{label}</p>
-      <p className="mt-1 text-lg font-semibold text-zinc-100">{fmtInt(value)}</p>
-    </div>
-  );
-}
-
-function ActionButton({
-  label,
-  icon: Icon,
-  loading,
-  onClick,
-  intent = "default"
-}: {
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  loading?: boolean;
-  onClick: () => void;
-  intent?: "default" | "danger";
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={loading}
-      className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs disabled:opacity-50 ${
-        intent === "danger" ? "border-rose-500/50 text-rose-300 hover:bg-rose-500/10" : "border-border text-zinc-200 hover:bg-zinc-900"
-      }`}
-    >
-      {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Icon className="h-3 w-3" />}
-      {label}
-    </button>
-  );
-}
-
 function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded border border-border bg-zinc-950/60 px-2 py-1">
+    <div className="rounded-lg border border-white/10 bg-zinc-950/60 px-2 py-1.5">
       <p className="text-[11px] text-zinc-500">{label}</p>
       <p className="text-sm font-semibold text-zinc-100">{fmtInt(value)}</p>
     </div>
   );
 }
 
-function InfoCell({ label, value }: { label: string; value: React.ReactNode }) {
+function InfoCell({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="rounded border border-border bg-zinc-900/40 p-2">
-      <p className="text-[11px] uppercase tracking-wide text-zinc-500">{label}</p>
+    <div className="rounded-lg border border-white/10 bg-zinc-900/40 p-3">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">{label}</p>
       <div className="mt-1 text-sm text-zinc-200">{value}</div>
     </div>
   );
