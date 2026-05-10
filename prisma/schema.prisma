@@ -447,9 +447,18 @@ model AlibabaSuppressionSyncState {
   startedAt            DateTime?
   updatedAt            DateTime @updatedAt
   completedAt          DateTime?
+  retryCount           Int      @default(0)
+  maxRetries           Int      @default(10)
+  lastRetryAt          DateTime?
+  lastFailureAt        DateTime?
+  lastFailureCode      String?
+  lastFailureMessage   String?
+  nextRetryAt          DateTime?
+  consecutiveFailures  Int      @default(0)
 
   @@unique([syncType], name: "alibaba_sync_type_unique")
   @@index([status, updatedAt])
+  @@index([status, nextRetryAt])
 }
 
 model AuditLog {

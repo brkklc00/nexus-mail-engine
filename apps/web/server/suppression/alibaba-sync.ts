@@ -15,12 +15,13 @@ const DEFAULT_META = {
   runAlreadySuppressed: 0,
   runRemovedFromLists: 0,
   nextStartLength: 0,
+  emptyParserPageStreak: 0,
   workerJobId: null as string | null,
   batchPages: 0,
   pageSize: 0
 };
 
-type SyncStatus = "idle" | "running" | "paused" | "completed" | "failed" | "cancelling" | "stopped_limit";
+type SyncStatus = "idle" | "running" | "retrying" | "paused" | "completed" | "failed" | "cancelling" | "stopped_limit";
 
 export type AlibabaSyncPublicStatus = {
   status: SyncStatus;
@@ -60,6 +61,13 @@ export type AlibabaSyncPublicStatus = {
   workerJobId: string | null;
   batchPages: number;
   pageSize: number;
+  retryCount: number;
+  consecutiveFailures: number;
+  maxRetries: number;
+  lastFailureCode: string | null;
+  lastFailureMessage: string | null;
+  nextRetryAt: string | null;
+  lastRetryAt: string | null;
 };
 
 type StartInput = {
@@ -170,14 +178,26 @@ function toPublicStatus(row: any): AlibabaSyncPublicStatus {
     startedAt: row.startedAt ? new Date(row.startedAt).toISOString() : null,
     updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
     completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : null,
+    retryCount: Number(row.retryCount ?? 0),
+    consecutiveFailures: Number(row.consecutiveFailures ?? 0),
+    maxRetries: Math.max(1, Number(row.maxRetries ?? 10)),
+    lastFailureCode: row.lastFailureCode ?? null,
+    lastFailureMessage: row.lastFailureMessage ?? null,
+    nextRetryAt: row.nextRetryAt ? new Date(row.nextRetryAt).toISOString() : null,
+    lastRetryAt: row.lastRetryAt ? new Date(row.lastRetryAt).toISOString() : null,
     message:
       row.status === "running"
         ? "Alibaba senkronizasyonu arka planda devam ediyor."
-        : row.status === "paused" || row.status === "stopped_limit"
-          ? "İşlem duraklatıldı. Devam Ettir ile kaldığı yerden sürdürebilirsiniz."
-          : row.status === "completed"
-            ? "Senkronizasyon tamamlandı."
-            : row.lastError ?? "Hazır",
+        : row.status === "retrying"
+          ? "Geçici hata alındı; sistem otomatik olarak tekrar deneyecek."
+          : row.status === "paused" || row.status === "stopped_limit"
+            ? "İşlem duraklatıldı. Devam Ettir ile kaldığı yerden sürdürebilirsiniz."
+            : row.status === "completed"
+              ? "Senkronizasyon tamamlandı."
+              : row.status === "failed"
+                ? (row.lastError as string | null)?.trim() ||
+                  "İşlem durdu. Devam Ettir ile kaldığı yerden tekrar başlatabilirsiniz."
+                : row.lastError ?? "Hazır",
     responseKeys: meta.responseKeys,
     firstRecordKeys: meta.firstRecordKeys,
     parserPathUsed: typeof meta.parserPathUsed === "string" ? meta.parserPathUsed : null,
@@ -215,7 +235,7 @@ export async function getAlibabaSyncStatus(): Promise<AlibabaSyncPublicStatus> {
 
 export async function startAlibabaBackgroundSync(input: StartInput): Promise<AlibabaSyncPublicStatus> {
   const current = await getOrCreateState();
-  if (current.status === "running" || current.status === "cancelling") {
+  if (current.status === "running" || current.status === "cancelling" || current.status === "retrying") {
     return toPublicStatus(current);
   }
   const startedAt = new Date();
@@ -242,11 +262,19 @@ export async function startAlibabaBackgroundSync(input: StartInput): Promise<Ali
       ignoredTemporary: 0,
       ignoredUnknown: 0,
       lastError: null,
+      retryCount: 0,
+      consecutiveFailures: 0,
+      nextRetryAt: null,
+      lastRetryAt: null,
+      lastFailureAt: null,
+      lastFailureCode: null,
+      lastFailureMessage: null,
       startedAt,
       completedAt: null,
       meta: {
         ...DEFAULT_META,
         nextStartLength: 0,
+        emptyParserPageStreak: 0,
         processedNextStartHashes: []
       }
     }
@@ -257,6 +285,19 @@ export async function startAlibabaBackgroundSync(input: StartInput): Promise<Ali
 
 export async function pauseAlibabaSync(): Promise<AlibabaSyncPublicStatus> {
   const state = await getOrCreateState();
+  if (state.status === "retrying") {
+    await prisma.alibabaSuppressionSyncState.update({
+      where: { id: state.id },
+      data: {
+        status: "paused",
+        stopRequested: false,
+        nextRetryAt: null,
+        lockOwner: null,
+        lockedAt: null
+      }
+    });
+    return getAlibabaSyncStatus();
+  }
   if (state.status === "running") {
     await prisma.alibabaSuppressionSyncState.update({
       where: { id: state.id },
@@ -271,12 +312,25 @@ export async function resumeAlibabaSync(): Promise<AlibabaSyncPublicStatus> {
   if (state.status === "running" || state.status === "cancelling") {
     return toPublicStatus(state);
   }
-  if (!state.nextStart && Number(state.rawRecords ?? 0) > 0 && Number(state.totalCount ?? 0) > Number(state.rawRecords ?? 0)) {
-    throw new Error("Kaldığı yer bilgisi bulunamadı. Lütfen senkronizasyonu sıfırlayıp yeniden başlatın.");
+  if (state.status !== "retrying") {
+    if (!state.nextStart && Number(state.rawRecords ?? 0) > 0 && Number(state.totalCount ?? 0) > Number(state.rawRecords ?? 0)) {
+      throw new Error("Kaldığı yer bilgisi bulunamadı. Lütfen senkronizasyonu sıfırlayıp yeniden başlatın.");
+    }
   }
   await prisma.alibabaSuppressionSyncState.update({
     where: { id: state.id },
-    data: { status: "running", stopRequested: false, lastError: null, completedAt: null }
+    data: {
+      status: "running",
+      stopRequested: false,
+      lastError: null,
+      completedAt: null,
+      nextRetryAt: null,
+      consecutiveFailures: 0,
+      retryCount: 0,
+      lastFailureCode: null,
+      lastFailureMessage: null,
+      lastFailureAt: null
+    }
   });
   await enqueueSyncJob(state.id, "resume");
   return getAlibabaSyncStatus();
@@ -306,6 +360,13 @@ export async function resetAlibabaSyncState() {
       ignoredTemporary: 0,
       ignoredUnknown: 0,
       lastError: null,
+      retryCount: 0,
+      consecutiveFailures: 0,
+      nextRetryAt: null,
+      lastRetryAt: null,
+      lastFailureAt: null,
+      lastFailureCode: null,
+      lastFailureMessage: null,
       startedAt: null,
       completedAt: null,
       meta: DEFAULT_META

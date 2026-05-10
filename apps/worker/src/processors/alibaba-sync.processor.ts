@@ -2,8 +2,13 @@ import crypto from "node:crypto";
 import type { Job } from "bullmq";
 import { prisma } from "@nexus/db";
 import { alibabaSuppressionSyncQueue, type AlibabaSuppressionSyncJob } from "@nexus/queue";
+import {
+  classifyAlibabaSyncError,
+  isRetryableFailureCode,
+  truncateMessage
+} from "./alibaba-sync-error-classify.js";
 
-type SyncStatus = "idle" | "running" | "paused" | "completed" | "failed" | "cancelling" | "stopped_limit";
+type SyncStatus = "idle" | "running" | "retrying" | "paused" | "completed" | "failed" | "cancelling" | "stopped_limit";
 
 const PAGE_SIZE = Math.max(1, Number(process.env.ALIBABA_SYNC_PAGE_SIZE ?? 100));
 const BATCH_PAGES = Math.max(1, Number(process.env.ALIBABA_SYNC_BATCH_PAGES ?? 200));
@@ -12,6 +17,7 @@ const DB_CHUNK_SIZE = Math.max(100, Number(process.env.ALIBABA_SYNC_DB_CHUNK_SIZ
 const REMOVE_CHUNK_SIZE = Math.max(100, Number(process.env.ALIBABA_SYNC_REMOVE_CHUNK_SIZE ?? 5000));
 const MAX_RUNTIME_MS = Math.max(0, Number(process.env.ALIBABA_SYNC_MAX_RUNTIME_MS ?? 0));
 const AUTO_CONTINUE = String(process.env.ALIBABA_SYNC_AUTO_CONTINUE ?? "true").toLowerCase() !== "false";
+const EMPTY_PARSER_FAIL_STREAK = Math.max(3, Number(process.env.ALIBABA_SYNC_EMPTY_PARSER_FAIL_STREAK ?? 8));
 
 type Candidate = { email: string; emailNormalized: string };
 
@@ -48,7 +54,8 @@ function getMeta(raw: unknown) {
     workerJobId: typeof obj.workerJobId === "string" ? obj.workerJobId : null,
     batchPages: Number(obj.batchPages ?? BATCH_PAGES),
     pageSize: Number(obj.pageSize ?? PAGE_SIZE),
-    nextStartLength: Number(obj.nextStartLength ?? 0)
+    nextStartLength: Number(obj.nextStartLength ?? 0),
+    emptyParserPageStreak: Number(obj.emptyParserPageStreak ?? 0)
   };
 }
 
@@ -62,9 +69,7 @@ function resolveCredentials() {
     process.env.ALIBABA_ACCESS_KEY_SECRET ??
     process.env.ALIYUN_ACCESS_KEY_SECRET;
   const region =
-    process.env.ALIBABA_DM_REGION ??
-    process.env.ALIBABA_REGION ??
-    process.env.ALIYUN_REGION;
+    process.env.ALIBABA_DM_REGION ?? process.env.ALIBABA_REGION ?? process.env.ALIYUN_REGION;
   if (!accessKeyId || !accessKeySecret || !region) return null;
   return { accessKeyId, accessKeySecret, region };
 }
@@ -184,6 +189,33 @@ function extractNextStart(payload: any): string | null {
   return null;
 }
 
+function extractAlibabaApiCodeMessage(payload: any): { code?: string; message?: string } {
+  const code =
+    payload?.Code ??
+    payload?.code ??
+    payload?.Body?.Code ??
+    payload?.Body?.code ??
+    payload?.ErrorCode ??
+    payload?.errorCode;
+  const message =
+    payload?.Message ??
+    payload?.message ??
+    payload?.Body?.Message ??
+    payload?.Body?.message ??
+    payload?.error?.message;
+  return {
+    code: code != null ? String(code) : undefined,
+    message: message != null ? String(message) : undefined
+  };
+}
+
+function isAlibabaSuccessPayload(payload: any): boolean {
+  const { code } = extractAlibabaApiCodeMessage(payload);
+  if (!code) return true;
+  const c = code.toLowerCase();
+  return c === "ok" || c === "success";
+}
+
 function toNumericValue(input: unknown): number | null {
   if (typeof input === "number" && Number.isFinite(input)) return input;
   if (typeof input === "string" && input.trim()) {
@@ -217,9 +249,13 @@ function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+function backoffMs(consecutiveFailures: number) {
+  return Math.min(60_000, Math.pow(2, Math.max(1, consecutiveFailures)) * 2000);
+}
+
 async function applySuppressionBatch(candidates: Candidate[], removeFromLists: boolean) {
   if (candidates.length === 0) {
-    return { addedToSuppression: 0, alreadySuppressed: 0, removedFromLists: 0 };
+    return { addedToSuppression: 0, alreadySuppressed: 0, removedFromLists: 0, listRemovalWarning: null as string | null };
   }
   const existing = new Set<string>();
   for (const candidateChunk of chunk(candidates, DB_CHUNK_SIZE)) {
@@ -250,25 +286,47 @@ async function applySuppressionBatch(candidates: Candidate[], removeFromLists: b
   }
 
   let removedFromLists = 0;
+  let listRemovalWarning: string | null = null;
   if (removeFromLists) {
-    for (const emailChunk of chunk(candidates.map((item) => item.emailNormalized), REMOVE_CHUNK_SIZE)) {
-      const recipients = await prisma.recipient.findMany({
-        where: { emailNormalized: { in: emailChunk } },
-        select: { id: true }
-      });
-      if (recipients.length === 0) continue;
-      for (const recipientChunk of chunk(recipients.map((row: { id: string }) => row.id), REMOVE_CHUNK_SIZE)) {
-        const deleted = await prisma.recipientListMembership.deleteMany({
-          where: { recipientId: { in: recipientChunk } }
+    try {
+      for (const emailChunk of chunk(candidates.map((item) => item.emailNormalized), REMOVE_CHUNK_SIZE)) {
+        const recipients = await prisma.recipient.findMany({
+          where: { emailNormalized: { in: emailChunk } },
+          select: { id: true }
         });
-        removedFromLists += deleted.count;
+        if (recipients.length === 0) continue;
+        for (const recipientChunk of chunk(recipients.map((row: { id: string }) => row.id), REMOVE_CHUNK_SIZE)) {
+          try {
+            const deleted = await prisma.recipientListMembership.deleteMany({
+              where: { recipientId: { in: recipientChunk } }
+            });
+            removedFromLists += deleted.count;
+          } catch (inner: unknown) {
+            const msg = inner instanceof Error ? inner.message : String(inner);
+            const prismaCode =
+              inner && typeof inner === "object" && "code" in inner ? String((inner as { code?: string }).code) : "";
+            const kind = classifyAlibabaSyncError({ message: msg, prismaCode });
+            if (kind.retryable) throw inner;
+            listRemovalWarning = truncateMessage(msg, 180);
+            console.warn("[alibaba.sync] list_removal_chunk_skipped", { code: kind.code });
+          }
+        }
       }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const prismaCode =
+        error && typeof error === "object" && "code" in error ? String((error as { code?: string }).code) : "";
+      const kind = classifyAlibabaSyncError({ message: msg, prismaCode });
+      if (kind.retryable) throw error;
+      listRemovalWarning = truncateMessage(msg, 180);
+      console.warn("[alibaba.sync] list_removal_partial", { code: kind.code });
     }
   }
   return {
     addedToSuppression,
     alreadySuppressed: Math.max(0, existing.size + (addable.length - addedToSuppression)),
-    removedFromLists
+    removedFromLists,
+    listRemovalWarning
   };
 }
 
@@ -280,38 +338,149 @@ function sleep(ms: number) {
 async function markPaused(syncStateId: string) {
   await prisma.alibabaSuppressionSyncState.update({
     where: { id: syncStateId },
-    data: { status: "paused", stopRequested: false, lockOwner: null, lockedAt: null }
+    data: {
+      status: "paused",
+      stopRequested: false,
+      lockOwner: null,
+      lockedAt: null,
+      nextRetryAt: null
+    }
   });
+}
+
+async function releaseLockIfHeld(syncStateId: string, lockOwner: string) {
+  await prisma.alibabaSuppressionSyncState.updateMany({
+    where: { id: syncStateId, lockOwner },
+    data: { lockOwner: null, lockedAt: null }
+  });
+}
+
+async function acquireAlibabaSyncLock(syncStateId: string, lockOwner: string) {
+  const staleThreshold = new Date(Date.now() - 2 * 60_000);
+  const now = new Date();
+  const freeLock = {
+    OR: [{ lockOwner: null }, { lockedAt: { lt: staleThreshold } }, { lockOwner }] as const
+  };
+
+  const runningBranch = { status: "running" as const, ...freeLock };
+  const retryingDue = { status: "retrying" as const, nextRetryAt: { lte: now }, ...freeLock };
+  const retryingNull = { status: "retrying" as const, nextRetryAt: null, ...freeLock };
+
+  const lockUpdate = await prisma.alibabaSuppressionSyncState.updateMany({
+    where: {
+      id: syncStateId,
+      OR: [runningBranch, retryingDue, retryingNull]
+    },
+    data: {
+      lockOwner,
+      lockedAt: new Date(),
+      status: "running",
+      nextRetryAt: null,
+      lastRetryAt: new Date()
+    }
+  });
+  return lockUpdate.count > 0;
+}
+
+async function finalizeFailure(
+  syncStateId: string,
+  kind: ReturnType<typeof classifyAlibabaSyncError>,
+  consecutiveFailures: number,
+  maxRetries: number,
+  currentRetryCount: number
+) {
+  const nextCf = consecutiveFailures + 1;
+  if (!kind.retryable || nextCf >= maxRetries) {
+    const userMsg =
+      kind.retryable && nextCf >= maxRetries
+        ? "Senkronizasyon geçici hatalar nedeniyle durduruldu. Devam Ettir ile kaldığı yerden tekrar deneyebilirsiniz."
+        : kind.shortMessage;
+    await prisma.alibabaSuppressionSyncState.update({
+      where: { id: syncStateId },
+      data: {
+        status: "failed",
+        lastError: userMsg.slice(0, 500),
+        lastFailureAt: new Date(),
+        lastFailureCode: kind.code,
+        lastFailureMessage: kind.shortMessage.slice(0, 500),
+        consecutiveFailures: nextCf,
+        lockOwner: null,
+        lockedAt: null,
+        nextRetryAt: null
+      }
+    });
+    console.info("[alibaba.sync.failed]", { errorCode: kind.code, shortMessage: kind.shortMessage });
+    return;
+  }
+
+  const delayMs = backoffMs(nextCf);
+  const nextRetryAt = new Date(Date.now() + delayMs);
+  await prisma.alibabaSuppressionSyncState.update({
+    where: { id: syncStateId },
+    data: {
+      status: "retrying",
+      lastError: kind.shortMessage.slice(0, 500),
+      lastFailureAt: new Date(),
+      lastFailureCode: kind.code,
+      lastFailureMessage: kind.shortMessage.slice(0, 500),
+      consecutiveFailures: nextCf,
+      retryCount: currentRetryCount + 1,
+      nextRetryAt,
+      lockOwner: null,
+      lockedAt: null
+    }
+  });
+  console.info("[alibaba.sync.retry]", {
+    errorCode: kind.code,
+    retryable: true,
+    consecutiveFailures: nextCf,
+    nextRetryAt: nextRetryAt.toISOString()
+  });
+  await alibabaSuppressionSyncQueue.add(
+    "alibaba_suppression_sync",
+    { syncStateId, trigger: "auto" },
+    { delay: delayMs, jobId: `alibaba-sync:retry:${syncStateId}:${Date.now()}` }
+  );
 }
 
 export async function processAlibabaSuppressionSync(job: Job<AlibabaSuppressionSyncJob>) {
   const syncStateId = job.data.syncStateId;
   const credentials = resolveCredentials();
   if (!credentials) {
+    const kind = classifyAlibabaSyncError({ message: "missing alibaba credentials", alibabaCode: "MissingConfig" });
     await prisma.alibabaSuppressionSyncState.update({
       where: { id: syncStateId },
-      data: { status: "failed", lastError: "Alibaba kimlik bilgileri bulunamadi.", lockOwner: null, lockedAt: null }
+      data: {
+        status: "failed",
+        lastError: "Alibaba kimlik bilgileri bulunamadı.",
+        lastFailureAt: new Date(),
+        lastFailureCode: "config_missing",
+        lastFailureMessage: kind.shortMessage,
+        lockOwner: null,
+        lockedAt: null,
+        nextRetryAt: null
+      }
     });
+    console.info("[alibaba.sync.failed]", { errorCode: "config_missing", shortMessage: "credentials missing" });
     return;
   }
 
   const lockOwner = `worker:${process.pid}:${job.id}`;
-  const staleThreshold = new Date(Date.now() - 2 * 60_000);
-  const lockUpdate = await prisma.alibabaSuppressionSyncState.updateMany({
-    where: {
-      id: syncStateId,
-      OR: [{ lockOwner: null }, { lockedAt: { lt: staleThreshold } }, { lockOwner }]
-    },
-    data: { lockOwner, lockedAt: new Date(), status: "running" }
-  });
-  if (lockUpdate.count === 0) return;
+  const acquired = await acquireAlibabaSyncLock(syncStateId, lockOwner);
+  if (!acquired) return;
 
   const started = Date.now();
   try {
     for (let page = 0; page < BATCH_PAGES; page += 1) {
       const state = await prisma.alibabaSuppressionSyncState.findUnique({ where: { id: syncStateId } });
-      if (!state) return;
-      if (state.status !== "running") return;
+      if (!state) {
+        await releaseLockIfHeld(syncStateId, lockOwner);
+        return;
+      }
+      if (state.status !== "running") {
+        await releaseLockIfHeld(syncStateId, lockOwner);
+        return;
+      }
       if (state.stopRequested) {
         await markPaused(syncStateId);
         return;
@@ -319,25 +488,47 @@ export async function processAlibabaSuppressionSync(job: Job<AlibabaSuppressionS
       if (MAX_RUNTIME_MS > 0 && Date.now() - started > MAX_RUNTIME_MS) {
         await prisma.alibabaSuppressionSyncState.update({
           where: { id: syncStateId },
-          data: { status: "paused", stopRequested: false, lockOwner: null, lockedAt: null }
+          data: { status: "paused", stopRequested: false, lockOwner: null, lockedAt: null, nextRetryAt: null }
         });
         return;
       }
 
       const meta = getMeta(state.meta);
-      const url = buildSignedAlibabaUrl(credentials, state.startTime, state.endTime, PAGE_SIZE, state.nextStart);
-      const response = await fetch(url, { method: "GET", cache: "no-store" });
-      const payload = (await response.json().catch(() => ({}))) as any;
+      const maxRetries = Math.max(1, Number(state.maxRetries ?? 10));
+      const currentRetryCount = Number(state.retryCount ?? 0);
+      const consecutiveFailures = Number(state.consecutiveFailures ?? 0);
+
+      let response: Response;
+      let payload: any;
+      try {
+        const url = buildSignedAlibabaUrl(credentials, state.startTime, state.endTime, PAGE_SIZE, state.nextStart);
+        response = await fetch(url, { method: "GET", cache: "no-store" });
+        payload = (await response.json().catch(() => ({}))) as any;
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        const kind = classifyAlibabaSyncError({ message: msg, causeMessage: (error as Error)?.cause ? String((error as Error).cause) : "" });
+        await finalizeFailure(syncStateId, kind, consecutiveFailures, maxRetries, currentRetryCount);
+        return;
+      }
+
+      const aliMeta = extractAlibabaApiCodeMessage(payload);
       if (!response.ok) {
-        await prisma.alibabaSuppressionSyncState.update({
-          where: { id: syncStateId },
-          data: {
-            status: "failed",
-            lastError: payload?.Message ? String(payload.Message) : `Alibaba API hatasi: ${response.status}`,
-            lockOwner: null,
-            lockedAt: null
-          }
+        const kind = classifyAlibabaSyncError({
+          httpStatus: response.status,
+          message: aliMeta.message ?? payload?.Message,
+          alibabaCode: aliMeta.code
         });
+        await finalizeFailure(syncStateId, kind, consecutiveFailures, maxRetries, currentRetryCount);
+        return;
+      }
+
+      if (!isAlibabaSuccessPayload(payload)) {
+        const kind = classifyAlibabaSyncError({
+          httpStatus: 200,
+          message: aliMeta.message,
+          alibabaCode: aliMeta.code
+        });
+        await finalizeFailure(syncStateId, kind, consecutiveFailures, maxRetries, currentRetryCount);
         return;
       }
 
@@ -371,21 +562,51 @@ export async function processAlibabaSuppressionSync(job: Job<AlibabaSuppressionS
         pageCandidatesMap.set(emailNormalized, { email: rawEmail.trim(), emailNormalized });
       }
       const pageCandidates = [...pageCandidatesMap.values()];
-      const batchSummary = await applySuppressionBatch(pageCandidates, Boolean(state.removeFromLists));
+
+      let batchSummary: Awaited<ReturnType<typeof applySuppressionBatch>>;
+      try {
+        batchSummary = await applySuppressionBatch(pageCandidates, Boolean(state.removeFromLists));
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        const prismaCode =
+          error && typeof error === "object" && "code" in error ? String((error as { code?: string }).code) : "";
+        const kind = classifyAlibabaSyncError({ message: msg, prismaCode });
+        await finalizeFailure(syncStateId, kind, consecutiveFailures, maxRetries, currentRetryCount);
+        return;
+      }
+
       const extractedNextStart = extractNextStart(payload);
       const extractedHash = hashNextStart(extractedNextStart);
       if (extractedHash && meta.processedNextStartHashes.includes(extractedHash)) {
-        await prisma.alibabaSuppressionSyncState.update({
-          where: { id: syncStateId },
-          data: {
-            status: "failed",
-            lastError: "Alibaba NextStart tekrarı tespit edildi.",
-            lockOwner: null,
-            lockedAt: null
-          }
+        const kind = classifyAlibabaSyncError({
+          message: "NextStart loop detected",
+          alibabaCode: "NextStartLoop"
         });
+        const permanent = { ...kind, retryable: false };
+        await finalizeFailure(syncStateId, permanent, consecutiveFailures, maxRetries, currentRetryCount);
         return;
       }
+
+      let emptyParserPageStreak = meta.emptyParserPageStreak;
+      if (parser.records.length === 0 && totalCount > 0) {
+        const rawSoFar = Number(state.rawRecords ?? 0);
+        const looksIncomplete = Boolean(extractedNextStart) || rawSoFar < totalCount;
+        if (looksIncomplete) {
+          emptyParserPageStreak += 1;
+        }
+      } else {
+        emptyParserPageStreak = 0;
+      }
+      if (emptyParserPageStreak >= EMPTY_PARSER_FAIL_STREAK) {
+        const kind = classifyAlibabaSyncError({
+          message: "Parser returned no records repeatedly",
+          alibabaCode: "EmptyParserStreak"
+        });
+        const permanent = { ...kind, retryable: false };
+        await finalizeFailure(syncStateId, permanent, consecutiveFailures, maxRetries, currentRetryCount);
+        return;
+      }
+
       const processedNextStartHashes = extractedHash
         ? [...meta.processedNextStartHashes, extractedHash].slice(-500)
         : meta.processedNextStartHashes;
@@ -406,6 +627,10 @@ export async function processAlibabaSuppressionSync(job: Job<AlibabaSuppressionS
           removedFromLists: { increment: batchSummary.removedFromLists },
           invalidEmailSkipped: { increment: invalidEmailSkipped },
           lastError: null,
+          consecutiveFailures: 0,
+          lastFailureCode: null,
+          lastFailureMessage: null,
+          nextRetryAt: null,
           completedAt: nextStatus === "completed" ? new Date() : null,
           lockedAt: new Date(),
           meta: {
@@ -414,6 +639,7 @@ export async function processAlibabaSuppressionSync(job: Job<AlibabaSuppressionS
             firstRecordKeys,
             parserPathUsed,
             processedNextStartHashes,
+            emptyParserPageStreak,
             runPagesFetched: meta.runPagesFetched + 1,
             runRawRecords: meta.runRawRecords + parser.records.length,
             runParsedEmails: meta.runParsedEmails + parsedEmails,
@@ -427,10 +653,16 @@ export async function processAlibabaSuppressionSync(job: Job<AlibabaSuppressionS
         }
       });
 
-      console.info("[alibaba.sync] page", {
+      if (batchSummary.listRemovalWarning) {
+        console.warn("[alibaba.sync] list_removal_warning", { message: batchSummary.listRemovalWarning });
+      }
+
+      console.info("[alibaba.sync.page]", {
         page: page + 1,
         rawCount: parser.records.length,
         parsedCount: parsedEmails,
+        added: batchSummary.addedToSuppression,
+        alreadySuppressed: batchSummary.alreadySuppressed,
         hasNextStart: Boolean(extractedNextStart)
       });
 
@@ -467,7 +699,7 @@ export async function processAlibabaSuppressionSync(job: Job<AlibabaSuppressionS
     } else {
       await prisma.alibabaSuppressionSyncState.update({
         where: { id: syncStateId },
-        data: { status: "paused", lockOwner: null, lockedAt: null }
+        data: { status: "paused", lockOwner: null, lockedAt: null, nextRetryAt: null }
       });
       return;
     }
@@ -475,34 +707,111 @@ export async function processAlibabaSuppressionSync(job: Job<AlibabaSuppressionS
       where: { id: syncStateId },
       data: { lockOwner: null, lockedAt: null }
     });
-  } catch (error) {
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const prismaCode =
+      error && typeof error === "object" && "code" in error ? String((error as { code?: string }).code) : "";
+    const stateRow = await prisma.alibabaSuppressionSyncState.findUnique({ where: { id: syncStateId } });
+    const maxRetries = Math.max(1, Number(stateRow?.maxRetries ?? 10));
+    const currentRetryCount = Number(stateRow?.retryCount ?? 0);
+    const consecutiveFailures = Number(stateRow?.consecutiveFailures ?? 0);
+    const kind = classifyAlibabaSyncError({ message: msg, prismaCode });
+    await finalizeFailure(syncStateId, kind, consecutiveFailures, maxRetries, currentRetryCount);
+  }
+}
+
+/** Boot + periodic: resume stuck Alibaba sync jobs without raw cursor in logs. */
+export async function recoverAlibabaSyncJobs() {
+  const staleBefore = new Date(Date.now() - 2 * 60_000);
+  const now = new Date();
+
+  const [staleRunning, dueRetrying, nullRetrying, failedCandidates] = await Promise.all([
+    prisma.alibabaSuppressionSyncState.findMany({
+      where: {
+        syncType: "query_invalid_address",
+        status: "running",
+        updatedAt: { lt: staleBefore }
+      },
+      select: { id: true, status: true, pagesFetched: true, rawRecords: true, nextStart: true }
+    }),
+    prisma.alibabaSuppressionSyncState.findMany({
+      where: {
+        syncType: "query_invalid_address",
+        status: "retrying",
+        nextRetryAt: { lte: now }
+      },
+      select: { id: true, status: true, pagesFetched: true, rawRecords: true, nextStart: true }
+    }),
+    prisma.alibabaSuppressionSyncState.findMany({
+      where: {
+        syncType: "query_invalid_address",
+        status: "retrying",
+        nextRetryAt: null
+      },
+      select: { id: true, status: true, pagesFetched: true, rawRecords: true, nextStart: true }
+    }),
+    prisma.alibabaSuppressionSyncState.findMany({
+      where: { syncType: "query_invalid_address", status: "failed" },
+      select: {
+        id: true,
+        lastFailureCode: true,
+        consecutiveFailures: true,
+        maxRetries: true,
+        retryCount: true,
+        pagesFetched: true,
+        rawRecords: true,
+        nextStart: true,
+        status: true
+      }
+    })
+  ]);
+
+  const failedToResume = failedCandidates.filter(
+    (row: (typeof failedCandidates)[number]) =>
+      isRetryableFailureCode(row.lastFailureCode) &&
+      Number(row.consecutiveFailures ?? 0) < Math.max(1, Number(row.maxRetries ?? 10)) &&
+      Number(row.retryCount ?? 0) < Math.max(1, Number(row.maxRetries ?? 10))
+  );
+
+  const seen = new Set<string>();
+  async function enqueueRecovery(row: {
+    id: string;
+    status: string;
+    pagesFetched: number;
+    rawRecords: number;
+    nextStart: string | null;
+  }) {
+    if (seen.has(row.id)) return;
+    seen.add(row.id);
+    await alibabaSuppressionSyncQueue.add(
+      "alibaba_suppression_sync_recovery",
+      { syncStateId: row.id, trigger: "recovery" },
+      { jobId: `alibaba-sync:recovery:${row.id}:${Date.now()}` }
+    );
+    console.info("[alibaba.sync.recovery] resumed", {
+      status: row.status,
+      pagesFetched: row.pagesFetched,
+      rawRecords: row.rawRecords,
+      hasNextStart: Boolean(row.nextStart)
+    });
+  }
+
+  for (const row of staleRunning) await enqueueRecovery(row);
+  for (const row of dueRetrying) await enqueueRecovery(row);
+  for (const row of nullRetrying) await enqueueRecovery(row);
+  for (const row of failedToResume) {
     await prisma.alibabaSuppressionSyncState.update({
-      where: { id: syncStateId },
+      where: { id: row.id },
       data: {
-        status: "failed",
-        lastError: error instanceof Error ? error.message.slice(0, 400) : "unknown_error",
+        status: "retrying",
+        nextRetryAt: new Date(),
         lockOwner: null,
         lockedAt: null
       }
     });
+    await enqueueRecovery({ ...row, status: "retrying" });
   }
 }
 
-export async function resumeStaleAlibabaSyncJobs() {
-  const stale = await prisma.alibabaSuppressionSyncState.findMany({
-    where: {
-      syncType: "query_invalid_address",
-      status: "running",
-      updatedAt: { lt: new Date(Date.now() - 2 * 60_000) }
-    },
-    select: { id: true }
-  });
-  for (const item of stale) {
-    await alibabaSuppressionSyncQueue.add(
-      "alibaba_suppression_sync_recovery",
-      { syncStateId: item.id, trigger: "recovery" },
-      { jobId: `alibaba-sync:recovery:${item.id}:${Date.now()}` }
-    );
-    console.info("[alibaba.sync] resuming stale running sync", { syncStateId: item.id });
-  }
-}
+/** @deprecated use recoverAlibabaSyncJobs */
+export const resumeStaleAlibabaSyncJobs = recoverAlibabaSyncJobs;

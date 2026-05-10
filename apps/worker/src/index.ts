@@ -18,7 +18,7 @@ import { dispatchFairBatch } from "./scheduler/campaign-dispatch.service.js";
 import { recoverCampaignQueuesOnBoot } from "./scheduler/campaign-recovery.service.js";
 import { getAllSafetyStates } from "./safety/distributed-safety.service.js";
 import { safeCreateCampaignLog } from "./logging/safe-campaign-log.js";
-import { processAlibabaSuppressionSync, resumeStaleAlibabaSyncJobs } from "./processors/alibaba-sync.processor.js";
+import { processAlibabaSuppressionSync, recoverAlibabaSyncJobs } from "./processors/alibaba-sync.processor.js";
 
 const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
   maxRetriesPerRequest: null
@@ -221,10 +221,10 @@ const workerMetricsInterval = setInterval(() => {
   void sampleWorkerMetrics();
 }, 10_000);
 void sampleWorkerMetrics();
-void resumeStaleAlibabaSyncJobs();
+void recoverAlibabaSyncJobs();
 void recoverCampaignQueuesOnBoot();
 const alibabaRecoveryInterval = setInterval(() => {
-  void resumeStaleAlibabaSyncJobs();
+  void recoverAlibabaSyncJobs();
 }, 60_000);
 
 let schedulerRunning = false;

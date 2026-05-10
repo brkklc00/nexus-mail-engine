@@ -42,6 +42,7 @@ type AlibabaSyncStatus = {
   status:
     | "idle"
     | "running"
+    | "retrying"
     | "paused"
     | "completed"
     | "failed"
@@ -83,6 +84,13 @@ type AlibabaSyncStatus = {
   workerJobId: string | null;
   batchPages: number;
   pageSize: number;
+  retryCount: number;
+  consecutiveFailures: number;
+  maxRetries: number;
+  lastFailureCode: string | null;
+  lastFailureMessage: string | null;
+  nextRetryAt: string | null;
+  lastRetryAt: string | null;
 };
 
 type Filters = {
@@ -96,6 +104,29 @@ type Filters = {
   page: number;
   pageSize: number;
 };
+
+function formatAlibabaSyncStatusLabel(status: string | undefined) {
+  switch (status) {
+    case "running":
+      return "Çalışıyor";
+    case "retrying":
+      return "Geçici hata, tekrar deneniyor";
+    case "paused":
+      return "Duraklatıldı";
+    case "completed":
+      return "Tamamlandı";
+    case "failed":
+      return "Hata";
+    case "cancelling":
+      return "Durduruluyor";
+    case "stopped_limit":
+      return "Duraklatıldı (limit)";
+    case "idle":
+      return "Hazır";
+    default:
+      return status ?? "-";
+  }
+}
 
 const DEFAULT_FILTERS: Filters = {
   q: "",
@@ -285,7 +316,10 @@ export function SuppressionManager() {
 
   async function startAlibabaSyncLast30Days() {
     const range = computeSyncPresetRange("last30d");
-    if (syncStatus?.hasNextStart && (syncStatus.status === "paused" || syncStatus.status === "stopped_limit")) {
+    if (
+      syncStatus?.hasNextStart &&
+      (syncStatus.status === "paused" || syncStatus.status === "stopped_limit" || syncStatus.status === "failed")
+    ) {
       const accepted = await confirm({
         title: "Mevcut senkronizasyon yeniden başlatılsın mı?",
         message: "Mevcut kaldığı yer bilgisi silinecek. Emin misiniz?",
@@ -774,8 +808,11 @@ export function SuppressionManager() {
         return;
       }
       await loadAlibabaSyncStatus();
-      const running = syncStatus?.status === "running" || syncStatus?.status === "cancelling";
-      timer = setTimeout(poll, running ? 2000 : 10000);
+      const activePoll =
+        syncStatus?.status === "running" ||
+        syncStatus?.status === "cancelling" ||
+        syncStatus?.status === "retrying";
+      timer = setTimeout(poll, activePoll ? 2000 : 10000);
     };
     timer = setTimeout(poll, 2000);
     return () => {
@@ -1027,7 +1064,12 @@ export function SuppressionManager() {
             <button
               type="button"
               onClick={() => void startAlibabaSyncLast30Days()}
-              disabled={syncLoading || syncStatus?.status === "running"}
+              disabled={
+                syncLoading ||
+                syncStatus?.status === "running" ||
+                syncStatus?.status === "cancelling" ||
+                syncStatus?.status === "retrying"
+              }
               className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-sm text-zinc-200 disabled:opacity-60"
             >
               {syncLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -1036,7 +1078,12 @@ export function SuppressionManager() {
             <button
               type="button"
               onClick={() => void pauseAlibabaSync()}
-              disabled={syncLoading || (syncStatus?.status !== "running" && syncStatus?.status !== "cancelling")}
+              disabled={
+                syncLoading ||
+                (syncStatus?.status !== "running" &&
+                  syncStatus?.status !== "cancelling" &&
+                  syncStatus?.status !== "retrying")
+              }
               className="inline-flex items-center gap-1 rounded-lg border border-amber-400/40 px-3 py-2 text-sm text-amber-200 disabled:opacity-60"
             >
               Duraklat
@@ -1044,7 +1091,15 @@ export function SuppressionManager() {
             <button
               type="button"
               onClick={() => void continueAlibabaSync()}
-              disabled={syncLoading || !syncStatus?.hasNextStart}
+              disabled={
+                syncLoading ||
+                syncStatus?.status === "retrying" ||
+                syncStatus?.status === "running" ||
+                syncStatus?.status === "cancelling" ||
+                !syncStatus?.hasNextStart ||
+                syncStatus?.status === "idle" ||
+                syncStatus?.status === "completed"
+              }
               className="inline-flex items-center gap-1 rounded-lg border border-indigo-400/40 px-3 py-2 text-sm text-indigo-200 disabled:opacity-60"
             >
               Devam Ettir
@@ -1072,11 +1127,23 @@ export function SuppressionManager() {
         </p>
         <p className="mt-2 rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-xs text-indigo-200">
           Alibaba Toplam Kayıt, Alibaba tarafındaki toplam invalid adres sayısıdır. Sistem bu kayıtları güvenli şekilde
-          parça parça çeker. Devam Ettir butonuyla kaldığı yerden devam eder.
+          parça parça çeker; geçici hatalarda otomatik tekrar dener. Devam Ettir yalnızca duraklatma veya kalıcı hata
+          sonrası gereklidir.
         </p>
         <p className="mt-2 rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200">
-          Bu işlem arka planda çalışır. Sayfayı yenileseniz bile ilerleme kaybolmaz. Sistem kaldığı yerden devam eder.
+          Bu işlem arka planda çalışır. Sayfayı yenileseniz bile ilerleme kaybolmaz. Son başarılı sayfa sonrası kaldığı
+          yer bilgisi korunur.
         </p>
+        {syncStatus?.status === "retrying" ? (
+          <p className="mt-2 rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-100">
+            Geçici hata alındı, sistem otomatik tekrar deneyecek. İlerleme korunur; Devam Ettir gerekmez.
+          </p>
+        ) : null}
+        {syncStatus?.status === "failed" ? (
+          <p className="mt-2 rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1.5 text-xs text-rose-100">
+            İşlem durdu. Sorunu giderdikten sonra Devam Ettir ile kaldığı yerden tekrar başlatabilirsiniz.
+          </p>
+        ) : null}
         <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
           <input
             type="checkbox"
@@ -1086,7 +1153,7 @@ export function SuppressionManager() {
           Eklenen baskilanan e-postalari tum alici listelerinden de kaldir
         </label>
         <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-300 md:grid-cols-5">
-          <StatCard title="Durum" value={syncStatus?.status ?? "-"} isText />
+          <StatCard title="Durum" value={formatAlibabaSyncStatusLabel(syncStatus?.status)} isText />
           <StatCard title="Alibaba Toplam Kayıt" value={syncStatus?.totalCount ?? 0} />
           <StatCard title="Toplam İşlenen Sayfa" value={syncStatus?.pagesFetched ?? 0} />
           <StatCard title="Toplam İşlenen Kayıt" value={syncStatus?.rawRecords ?? 0} />
@@ -1096,6 +1163,33 @@ export function SuppressionManager() {
           <StatCard title="Alibaba’dan Toplam Eklenen" value={syncStatus?.addedToSuppression ?? 0} />
           <StatCard title="Kaldığı Yer Bilgisi" value={syncStatus?.hasNextStart ? "Var" : "Yok"} isText />
           <StatCard title="Son Güncelleme" value={syncStatus?.updatedAt ? new Date(syncStatus.updatedAt).toLocaleString() : "-"} isText />
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-300 md:grid-cols-3">
+          <StatCard
+            title="Son Hata"
+            value={
+              (syncStatus?.lastFailureMessage?.trim() && syncStatus.lastFailureMessage) ||
+              (syncStatus?.lastError?.trim() && syncStatus.lastError) ||
+              "-"
+            }
+            isText
+          />
+          <StatCard title="Hata Kodu" value={syncStatus?.lastFailureCode ?? "-"} isText />
+          <StatCard
+            title="Tekrar (üst üste / üst sınır)"
+            value={`${syncStatus?.consecutiveFailures ?? 0} / ${syncStatus?.maxRetries ?? 10} · toplam ${syncStatus?.retryCount ?? 0}`}
+            isText
+          />
+          <StatCard
+            title="Son İş Denemesi"
+            value={syncStatus?.lastRetryAt ? new Date(syncStatus.lastRetryAt).toLocaleString() : "-"}
+            isText
+          />
+          <StatCard
+            title="Sonraki Otomatik Tekrar"
+            value={syncStatus?.nextRetryAt ? new Date(syncStatus.nextRetryAt).toLocaleString() : "-"}
+            isText
+          />
         </div>
         <div className="mt-3 rounded-lg border border-border bg-zinc-900/40 p-2">
           <div className="mb-1 flex items-center justify-between text-xs text-zinc-300">
@@ -1124,6 +1218,11 @@ export function SuppressionManager() {
         <p className="mt-2 text-xs text-zinc-400">{syncStatus?.message ?? "Henüz senkronizasyon başlatılmadı."}</p>
         {syncTechnicalOpen ? (
           <div className="mt-2 rounded-lg border border-border bg-zinc-900/40 p-2 text-xs text-zinc-300">
+            <p className="font-medium text-zinc-200">Özet</p>
+            <p>errorCode: {syncStatus?.lastFailureCode ?? "-"}</p>
+            <p>shortMessage: {syncStatus?.lastFailureMessage ?? syncStatus?.lastError ?? "-"}</p>
+            <p>requestId: -</p>
+            <p className="mt-2 font-medium text-zinc-200">Ayrıştırıcı</p>
             <p>responseKeys: {(syncStatus?.responseKeys ?? []).join(", ") || "-"}</p>
             <p>firstRecordKeys: {(syncStatus?.firstRecordKeys ?? []).join(", ") || "-"}</p>
             <p>parser path used: {syncStatus?.parserPathUsed ?? "-"}</p>
