@@ -84,6 +84,17 @@ function startOfToday() {
   return now;
 }
 
+function isStatsQueryError(message: string): boolean {
+  const value = message.toLowerCase();
+  return (
+    value.includes("campaignrecipient.count") ||
+    value.includes("campaignrecipient") ||
+    value.includes("could not resize shared memory segment") ||
+    value.includes("no space left on device") ||
+    value.includes("53100")
+  );
+}
+
 function isUnknownSmtpFieldError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("Invalid `prisma.smtpAccount") && message.includes("Unknown argument");
@@ -97,6 +108,7 @@ export async function GET() {
 
   const today = startOfToday();
   try {
+    let smtpStatsUnavailable = false;
     const accountsPromise = prisma.smtpAccount
       .findMany({
         where: { isSoftDeleted: false },
@@ -182,27 +194,44 @@ export async function GET() {
         }));
       });
 
-    const [accounts, sentTodayAgg, failedTodayAgg, warmupRows, poolSetting] = await Promise.all([
+    const [accounts, smtpDailyLogAgg, warmupRows, poolSetting] = await Promise.all([
       accountsPromise,
-      prisma.$queryRaw<Array<{ total: bigint }>>`
-        SELECT COUNT(*)::bigint as total
+      prisma.$queryRaw<Array<{ smtp_id: string; sent_total: bigint; failed_total: bigint }>>`
+        SELECT
+          (cl.metadata->>'smtpAccountId') AS smtp_id,
+          COUNT(*) FILTER (WHERE cl."eventType" = 'sent')::bigint AS sent_total,
+          COUNT(*) FILTER (WHERE cl."status" = 'failed')::bigint AS failed_total
         FROM "CampaignLog" cl
-        JOIN "Campaign" c ON c.id = cl."campaignId"
-        WHERE cl."eventType" = 'sent' AND cl."createdAt" >= ${today}
-      `,
-      prisma.$queryRaw<Array<{ total: bigint }>>`
-        SELECT COUNT(*)::bigint as total
-        FROM "CampaignLog" cl
-        JOIN "Campaign" c ON c.id = cl."campaignId"
-        WHERE cl."status" = 'failed' AND cl."createdAt" >= ${today}
-      `,
+        WHERE cl."createdAt" >= ${today}
+          AND (cl.metadata->>'smtpAccountId') IS NOT NULL
+          AND (cl."eventType" = 'sent' OR cl."status" = 'failed')
+        GROUP BY (cl.metadata->>'smtpAccountId')
+      `.catch((error: unknown) => {
+        smtpStatsUnavailable = true;
+        console.warn("[api/smtp GET] grouped smtp stats unavailable", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return [];
+      }),
       prisma.smtpWarmupStat.findMany({
         where: { date: { gte: today } },
         select: { smtpAccountId: true, successfulDeliveries: true, failedDeliveries: true, tierName: true, effectiveRate: true }
+      }).catch((error: unknown) => {
+        smtpStatsUnavailable = true;
+        console.warn("[api/smtp GET] warmup smtp stats unavailable", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return [];
       }),
       prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } })
     ]);
 
+    const smtpLogAggMap = new Map<string, { sent: number; failed: number }>(
+      smtpDailyLogAgg.map((row: { smtp_id: string; sent_total: bigint; failed_total: bigint }) => [
+        String(row.smtp_id),
+        { sent: Number(row.sent_total ?? 0), failed: Number(row.failed_total ?? 0) }
+      ])
+    );
     const warmupMap = new Map<string, { smtpAccountId: string; successfulDeliveries: number; failedDeliveries: number; tierName: string | null; effectiveRate: number | null }>(
       warmupRows.map((row: any) => [
         row.smtpAccountId as string,
@@ -217,12 +246,17 @@ export async function GET() {
     );
     const enriched = accounts.map((account: any) => {
       const row = warmupMap.get(account.id);
+      const aggRow = smtpLogAggMap.get(account.id);
+      const rawLastError = typeof account.lastError === "string" ? account.lastError : null;
+      const statsQueryLikeError = rawLastError ? isStatsQueryError(rawLastError) : false;
       return {
         ...account,
-        sentToday: Number(row?.successfulDeliveries ?? 0),
-        failedToday: Number(row?.failedDeliveries ?? 0),
+        sentToday: Number(aggRow?.sent ?? row?.successfulDeliveries ?? 0),
+        failedToday: Number(aggRow?.failed ?? row?.failedDeliveries ?? 0),
         warmupTier: row?.tierName ?? null,
-        effectiveRps: row?.effectiveRate ?? account.targetRatePerSecond
+        effectiveRps: row?.effectiveRate ?? account.targetRatePerSecond,
+        statsUnavailable: smtpStatsUnavailable || statsQueryLikeError,
+        lastError: statsQueryLikeError ? null : rawLastError
       };
     });
     const totalAccounts = enriched.length;
@@ -259,8 +293,8 @@ export async function GET() {
         activeSmtpAccounts: activeAccounts,
         healthySmtpAccounts: healthyAccounts,
         throttledSmtpAccounts: throttledAccounts,
-        totalSentToday: Number(sentTodayAgg[0]?.total ?? 0),
-        totalFailedToday: Number(failedTodayAgg[0]?.total ?? 0),
+        totalSentToday: enriched.reduce((sum: number, item: any) => sum + Number(item.sentToday ?? 0), 0),
+        totalFailedToday: enriched.reduce((sum: number, item: any) => sum + Number(item.failedToday ?? 0), 0),
         effectiveTotalRps: Number(effectiveTotalRps.toFixed(2)),
         estimatedDailyCapacity
       },

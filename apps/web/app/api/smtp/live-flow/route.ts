@@ -211,31 +211,17 @@ export async function GET() {
         LIVE_FLOW_MAIN_TIMEOUT_MS
       );
 
-    const [dailySummaryRow, poolSettingsRow, schedulerDiagRow, dbStatusRowsRaw] = await Promise.all([
+    const [dailySummaryRow, poolSettingsRow, schedulerDiagRow] = await Promise.all([
       prisma.appSetting.findUnique({ where: { key: "smtp_daily_target_summary" } }).catch(() => null),
       prisma.appSetting.findUnique({ where: { key: "smtp_pool_settings" } }).catch(() => null),
-      prisma.appSetting.findUnique({ where: { key: "scheduler_runtime_diagnostics" } }).catch(() => null),
-      prisma.campaignRecipient.groupBy({
-        by: ["sendStatus"],
-        where: {
-          campaign: {
-            status: { in: ["running", "queued", "partially_completed"] },
-            isDeleted: false
-          }
-        },
-        _count: { _all: true }
-      }).catch(() => [])
+      prisma.appSetting.findUnique({ where: { key: "scheduler_runtime_diagnostics" } }).catch(() => null)
     ]);
-    const dbStatusRows = (Array.isArray(dbStatusRowsRaw) ? dbStatusRowsRaw : []) as Array<{
-      sendStatus: "pending" | "queued" | "sent" | "failed" | "skipped";
-      _count: { _all: number };
-    }>;
-    const dbPendingRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "pending")?._count._all ?? 0);
-    const dbQueuedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "queued")?._count._all ?? 0);
-    const dbProcessingRecipients = dbQueuedRecipients;
-    const dbSentRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "sent")?._count._all ?? 0);
-    const dbFailedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "failed")?._count._all ?? 0);
-    const dbSkippedRecipients = Number(dbStatusRows.find((row) => row.sendStatus === "skipped")?._count._all ?? 0);
+    const dbPendingRecipients = 0;
+    const dbQueuedRecipients = 0;
+    const dbProcessingRecipients = 0;
+    const dbSentRecipients = 0;
+    const dbFailedRecipients = 0;
+    const dbSkippedRecipients = 0;
 
     const smtpIds = (activeSmtps as ActiveSmtpRow[]).map((smtp) => smtp.id);
     const warmupRows = smtpIds.length

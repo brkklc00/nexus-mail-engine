@@ -29,6 +29,7 @@ export async function POST(req: Request) {
 
   const parsedLines = parseBulkAlibabaLines(parsedBody.data.lines);
   const errors = [...parsedLines.errors];
+  const importedIds: string[] = [];
   let added = 0;
   let updated = 0;
   let skippedDuplicate = 0;
@@ -104,15 +105,18 @@ export async function POST(req: Request) {
             }
           });
         }
+        importedIds.push(String(existing.id));
         updated += 1;
       } else {
+        let createdId: string;
         try {
-          await prisma.smtpAccount.create({
+          const row = await prisma.smtpAccount.create({
             data: fullData as any
           });
+          createdId = String(row.id);
         } catch (error) {
           if (!isUnknownSmtpFieldError(error)) throw error;
-          await prisma.smtpAccount.create({
+          const row = await prisma.smtpAccount.create({
             data: {
               name: fullData.name,
               host: fullData.host,
@@ -128,7 +132,9 @@ export async function POST(req: Request) {
               warmupEnabled: true
             }
           });
+          createdId = String(row.id);
         }
+        importedIds.push(createdId);
         added += 1;
       }
     } catch {
@@ -152,7 +158,8 @@ export async function POST(req: Request) {
     updated,
     skippedDuplicate,
     invalid,
-    errors
+    errors,
+    importedIds
   });
 }
 

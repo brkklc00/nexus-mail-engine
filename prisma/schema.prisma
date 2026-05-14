@@ -253,6 +253,8 @@ model CampaignRecipient {
   @@unique([campaignId, recipientId])
   @@index([sendStatus, createdAt])
   @@index([smtpAccountId, sendStatus])
+  @@index([smtpAccountId, sendStatus, updatedAt])
+  @@index([campaignId, sendStatus, updatedAt])
 }
 
 model CampaignLog {

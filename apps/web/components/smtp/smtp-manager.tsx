@@ -28,6 +28,14 @@ import { OverlayPortal } from "@/components/ui/overlay-portal";
 import { getBulkAlibabaPreviewRows } from "@/lib/smtp-bulk-alibaba-parse";
 import { LiveSmtpFlowCard } from "@/components/smtp/live-smtp-flow-card";
 
+/** Alibaba DirectMail (AP Southeast 1) toplu içe aktarma — API ile aynı sabitler */
+const ALIBABA_BULK_SMTP_DEFAULTS = {
+  host: "smtpdm-ap-southeast-1.aliyuncs.com",
+  port: 465,
+  encryptionStored: "ssl",
+  encryptionUi: "SSL / TLS (implicit · port 465)"
+} as const;
+
 type Account = {
   id: string;
   name: string;
@@ -62,6 +70,7 @@ type Account = {
   failedToday: number;
   warmupTier: string | null;
   effectiveRps: number;
+  statsUnavailable?: boolean;
 };
 
 type Metrics = {
@@ -335,6 +344,7 @@ export function SmtpManager({
   });
   const [bulkAlibabaLines, setBulkAlibabaLines] = useState("");
   const [bulkAlibabaUpdateExisting, setBulkAlibabaUpdateExisting] = useState(false);
+  const [bulkAlibabaTestAfterImport, setBulkAlibabaTestAfterImport] = useState(true);
   const [bulkAlibabaResult, setBulkAlibabaResult] = useState<{
     scanned: number;
     added: number;
@@ -648,7 +658,7 @@ export function SmtpManager({
       if (bulkScope === "selected") return selectedSet.has(account.id);
       if (bulkScope === "all_active") return account.isActive;
       if (bulkScope === "healthy") return account.isActive && account.healthStatus === "healthy" && !account.isThrottled;
-      return account.healthStatus === "error" || account.isThrottled || Boolean(account.lastError);
+      return account.healthStatus === "error" || account.isThrottled;
     });
   }, [accounts, bulkScope, selectedIdList]);
 
@@ -1555,6 +1565,52 @@ export function SmtpManager({
     }
   }
 
+  /** İçe aktarılan SMTP kimlikleriyle doğrudan toplu bağlantı testi (seçim state’ine bağlı kalmaz). */
+  async function runBulkSmtpTestForImportedIds(ids: string[]) {
+    if (ids.length === 0) return;
+    setBulkTestScope("selected");
+    setSelectedIds(new Set(ids));
+    setBulkTestType("connection");
+    setBulkTestJobId(null);
+    setBulkTestStatus("idle");
+    setBulkTestTotal(0);
+    setBulkTestProcessed(0);
+    setBulkTestResults([]);
+    setBulkTestSummary({ success: 0, failed: 0, skipped: 0 });
+    setBulkTestShowOnlyFailed(false);
+    setBulkTestModalOpen(true);
+    setActionLoading("bulk_test");
+    try {
+      const response = await fetch("/api/smtp/bulk-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: "selected",
+          ids,
+          testType: "connection",
+          testRecipient: undefined,
+          concurrency: bulkTestConcurrency,
+          timeoutSeconds: bulkTestTimeoutSeconds,
+          updateHealth: bulkTestUpdateHealth,
+          clearThrottleOnSuccess: bulkTestClearThrottleOnSuccess,
+          onlyActive: bulkTestOnlyActive,
+          noAutoDisable: bulkTestNoAutoDisable
+        })
+      });
+      const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; jobId?: string };
+      if (!response.ok || !payload.ok || !payload.jobId) {
+        throw new Error(payload.error ?? "Toplu SMTP testi başlatılamadı");
+      }
+      setBulkTestJobId(payload.jobId);
+      setBulkTestStatus("running");
+      toast.info("Bağlantı testi başlatıldı", `${ids.length} yeni içe aktarılan hesap`);
+    } catch (error) {
+      toast.error("İçe aktarma sonrası test başlatılamadı", error instanceof Error ? error.message : "Beklenmeyen hata");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   function downloadBulkTestCsv() {
     if (bulkTestResults.length === 0) return;
     const rows = [
@@ -1734,14 +1790,15 @@ export function SmtpManager({
 
   async function submitBulkAlibabaImport() {
     if (!bulkAlibabaLines.trim()) {
-      toast.warning("Paste at least one email:password line");
+      toast.warning("En az bir satır girin", "Her satır: eposta:sifre (ilk iki nokta üst üste ayrımı)");
       return;
     }
     const accepted = await confirm({
-      title: "Run bulk Alibaba SMTP import?",
-      message: "SMTP records will be created or updated based on your setting.",
-      confirmLabel: "Import",
-      cancelLabel: "Cancel",
+      title: "Toplu Alibaba SMTP içe aktarılsın mı?",
+      message:
+        "Satırlar Alibaba DirectMail sabitleriyle (host, port, şifreleme) kaydedilir. Mevcut hesapları güncelle seçeneği açıksa aynı gönderen e-postasına sahip kayıtların şifresi ve alanları güncellenir.",
+      confirmLabel: "İçe aktar",
+      cancelLabel: "İptal",
       tone: "warning"
     });
     if (!accepted) return;
@@ -1765,10 +1822,12 @@ export function SmtpManager({
         skippedDuplicate?: number;
         invalid?: number;
         errors?: string[];
+        importedIds?: string[];
       };
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Bulk import failed");
+        throw new Error(payload.error ?? "Toplu içe aktarma başarısız");
       }
+      const importedIds = Array.isArray(payload.importedIds) ? payload.importedIds.map(String) : [];
       const summary = {
         scanned: Number(payload.scanned ?? 0),
         added: Number(payload.added ?? 0),
@@ -1779,12 +1838,16 @@ export function SmtpManager({
       };
       setBulkAlibabaResult(summary);
       toast.success(
-        "Bulk Alibaba import completed",
-        `scanned ${summary.scanned}, added ${summary.added}, updated ${summary.updated}, duplicate ${summary.skippedDuplicate}, invalid ${summary.invalid}`
+        "Toplu içe aktarma tamamlandı",
+        `Taranan: ${summary.scanned}, eklenen: ${summary.added}, güncellenen: ${summary.updated}, atlanan (yinelenen): ${summary.skippedDuplicate}, geçersiz: ${summary.invalid}`
       );
       await refreshSmtpSnapshot();
+      if (bulkAlibabaTestAfterImport && importedIds.length > 0) {
+        setShowBulkAlibabaModal(false);
+        await runBulkSmtpTestForImportedIds(importedIds);
+      }
     } catch (error) {
-      toast.error("Bulk Alibaba import failed", error instanceof Error ? error.message : "Unexpected error");
+      toast.error("Toplu içe aktarma başarısız", error instanceof Error ? error.message : "Beklenmeyen hata");
     } finally {
       setActionLoading(null);
     }
@@ -2171,7 +2234,7 @@ export function SmtpManager({
                   }}
                   className="rounded-lg border border-indigo-400/40 px-3 py-2 text-xs text-indigo-200"
                 >
-                  Alibaba SMTP Toplu Ekle
+                  Toplu SMTP (email:şifre · Alibaba)
                 </button>
                 <button type="button" onClick={() => { resetForm(); setShowModal(true); }} className="rounded-lg bg-accent px-3 py-2 text-xs text-white">
                   SMTP Ekle
@@ -2393,6 +2456,7 @@ export function SmtpManager({
                             <p>Warmup Tier: {account.warmupTier ?? "-"}</p>
                             <p>Max RPS: {account.maxRatePerSecond ?? "-"}</p>
                             <p>Son hata: {account.lastError ?? "-"}</p>
+                            <p>Istatistik: {account.statsUnavailable ? "Kullanilamiyor" : "Hazir"}</p>
                           </div>
                         </td>
                       </tr>
@@ -2421,7 +2485,7 @@ export function SmtpManager({
                 <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs text-zinc-300">
                   <p>Target/Max RPS: {account.targetRatePerSecond}/{account.maxRatePerSecond ?? "-"}</p>
                   <p>Warmup tier: {account.warmupTier ?? "-"}</p>
-                  <p>Sent/Failed today: {account.sentToday}/{account.failedToday}</p>
+                  <p>Sent/Failed today: {account.statsUnavailable ? "Istatistik kullanilamiyor" : `${account.sentToday}/${account.failedToday}`}</p>
                   <p>Last test: {account.lastTestAt ? new Date(account.lastTestAt).toLocaleString() : "-"}</p>
                 </div>
                 <p className="mt-3 text-xs text-zinc-500">Last error: {account.lastError ?? "-"}</p>
