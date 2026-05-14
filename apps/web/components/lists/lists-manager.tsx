@@ -39,8 +39,10 @@ type ActionState =
   | "removeInvalid"
   | "removeSuppressed"
   | "clear"
-  | "exportValid"
-  | "exportInvalid"
+  | "exportTxtAll"
+  | "exportTxtValid"
+  | "exportTxtInvalid"
+  | "exportTxtUnsuppressed"
   | null;
 
 type ActionResultSummary = {
@@ -398,6 +400,7 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
   const [editOpen, setEditOpen] = useState(false);
   const [bulkRemoveOpen, setBulkRemoveOpen] = useState(false);
   const [validationOpen, setValidationOpen] = useState(false);
+  const [exportTxtOpen, setExportTxtOpen] = useState(false);
 
   const [listForm, setListForm] = useState({
     name: "",
@@ -882,25 +885,51 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
     router.refresh();
   }
 
-  async function exportCsv(status: "valid" | "invalid") {
-    if (!selected) return;
-    setActionState(status === "valid" ? "exportValid" : "exportInvalid");
-    const response = await fetch(`/api/lists/${selected.id}/export?status=${status}`);
-    if (!response.ok) {
-      toast.error("Disa aktarma basarisiz");
-      setActionState(null);
-      return;
+  function stateForExportType(type: "all" | "valid" | "invalid" | "unsuppressed"): ActionState {
+    if (type === "valid") return "exportTxtValid";
+    if (type === "invalid") return "exportTxtInvalid";
+    if (type === "unsuppressed") return "exportTxtUnsuppressed";
+    return "exportTxtAll";
+  }
+
+  function parseFilenameFromDisposition(disposition: string | null): string | null {
+    if (!disposition) return null;
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match?.[1]) {
+      try {
+        return decodeURIComponent(utf8Match[1].trim());
+      } catch {
+        return utf8Match[1].trim();
+      }
     }
-    const csv = await response.text();
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `list-${selected.id}-${status}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success(`CSV export completed (${status})`);
-    setActionState(null);
+    const basicMatch = disposition.match(/filename="([^"]+)"/i);
+    if (basicMatch?.[1]) return basicMatch[1];
+    return null;
+  }
+
+  async function exportTxt(type: "all" | "valid" | "invalid" | "unsuppressed") {
+    if (!selected) return;
+    setActionState(stateForExportType(type));
+    try {
+      const response = await fetch(`/api/lists/${selected.id}/export-txt?type=${type}`);
+      if (!response.ok) {
+        throw new Error("TXT dışa aktarma başarısız oldu.");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download =
+        parseFilenameFromDisposition(response.headers.get("content-disposition")) ?? `${selected.id}-emails.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("TXT indirme başlatıldı.");
+      setExportTxtOpen(false);
+    } catch (error) {
+      toast.error("TXT dışa aktarma başarısız oldu.", error instanceof Error ? error.message : "Beklenmeyen hata");
+    } finally {
+      setActionState(null);
+    }
   }
 
   async function importCsvFile(file: File) {
@@ -1022,6 +1051,15 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
                   className="rounded-lg border border-border px-3 py-2 text-xs text-zinc-200"
                 >
                   Validation Tools
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportTxtOpen(true)}
+                  disabled={actionState !== null}
+                  className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-xs text-zinc-200 disabled:opacity-60"
+                >
+                  {actionState?.startsWith("exportTxt") ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                  {actionState?.startsWith("exportTxt") ? "TXT hazırlanıyor..." : "TXT İndir"}
                 </button>
               </div>
             </div>
@@ -1236,29 +1274,29 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
       <ModalShell open={validationOpen} title="Validation Tools" onClose={() => setValidationOpen(false)}>
         <div className="flex flex-wrap gap-2">
           <ActionBtn
-            label="Validate list"
+            label="Listeyi doğrula"
             loading={actionState === "validate"}
             onClick={() => void runListAction("validate", "validate", "Validate this list?", "Invalid emails will be marked as invalid.")}
           />
           <ActionBtn
-            label="Deduplicate list"
+            label="Tekrarlananları temizle"
             loading={actionState === "dedupe"}
             onClick={() => void runListAction("dedupe", "dedupe", "Run deduplication?", "Duplicate membership rows will be removed.")}
           />
           <ActionBtn
-            label="Remove invalid emails"
+            label="Geçersiz e-postaları kaldır"
             loading={actionState === "removeInvalid"}
             onClick={() => void runListAction("remove_invalid", "removeInvalid", "Remove invalid records?", "Membership rows with invalid status will be removed.")}
           />
           <ActionBtn
-            label="Remove suppressed emails"
+            label="Baskılanmış e-postaları kaldır"
             loading={actionState === "removeSuppressed"}
             onClick={() =>
               void runListAction("remove_suppressed", "removeSuppressed", "Remove suppressed records?", "Memberships matching global/list suppression will be removed.")
             }
           />
           <ActionBtn
-            label="Clear selected list"
+            label="Seçili listeyi temizle"
             loading={actionState === "clear"}
             danger
             onClick={() =>
@@ -1266,18 +1304,55 @@ export function ListsManager({ initialLists }: { initialLists: ListItem[] }) {
             }
           />
           <ActionBtn
-            label="Gecerli e-postalari disa aktar"
-            loading={actionState === "exportValid"}
+            label="Tüm e-postaları TXT indir"
+            loading={actionState === "exportTxtAll"}
             icon={<Download className="h-3.5 w-3.5" />}
-            onClick={() => void exportCsv("valid")}
+            onClick={() => void exportTxt("all")}
           />
           <ActionBtn
-            label="Gecersiz e-postalari disa aktar"
-            loading={actionState === "exportInvalid"}
+            label="Geçerli e-postaları TXT indir"
+            loading={actionState === "exportTxtValid"}
             icon={<Download className="h-3.5 w-3.5" />}
-            onClick={() => void exportCsv("invalid")}
+            onClick={() => void exportTxt("valid")}
+          />
+          <ActionBtn
+            label="Geçersiz e-postaları TXT indir"
+            loading={actionState === "exportTxtInvalid"}
+            icon={<Download className="h-3.5 w-3.5" />}
+            onClick={() => void exportTxt("invalid")}
           />
         </div>
+        <p className="mt-2 text-xs text-zinc-400">Seçili listedeki tüm e-posta adreslerini satır satır TXT olarak indirir.</p>
+      </ModalShell>
+
+      <ModalShell open={exportTxtOpen} title="TXT olarak indir" onClose={() => setExportTxtOpen(false)}>
+        <div className="space-y-2">
+          <ActionBtn
+            label="Tüm e-postalar"
+            loading={actionState === "exportTxtAll"}
+            icon={<Download className="h-3.5 w-3.5" />}
+            onClick={() => void exportTxt("all")}
+          />
+          <ActionBtn
+            label="Sadece geçerli e-postalar"
+            loading={actionState === "exportTxtValid"}
+            icon={<Download className="h-3.5 w-3.5" />}
+            onClick={() => void exportTxt("valid")}
+          />
+          <ActionBtn
+            label="Sadece geçersiz e-postalar"
+            loading={actionState === "exportTxtInvalid"}
+            icon={<Download className="h-3.5 w-3.5" />}
+            onClick={() => void exportTxt("invalid")}
+          />
+          <ActionBtn
+            label="Baskılanmamış e-postalar"
+            loading={actionState === "exportTxtUnsuppressed"}
+            icon={<Download className="h-3.5 w-3.5" />}
+            onClick={() => void exportTxt("unsuppressed")}
+          />
+        </div>
+        <p className="mt-3 text-xs text-zinc-400">TXT hazırlanıyor... İşlem büyük listelerde birkaç saniye sürebilir.</p>
       </ModalShell>
     </div>
   );
